@@ -1,0 +1,18 @@
+{
+  "mcpServers": {
+    "builder-mcp": {
+      "autoApprove": [
+        "ReadInternalWebsites",
+        "InternalSearch",
+        "BrazilBuildAnalyzerTool"
+      ],
+      "disabled": false,
+      "timeout": 60,
+      "type": "stdio",
+      "command": "builder-mcp",
+      "env": {
+        "PATH": "/home/swaym/.toolbox/bin:$PATH"
+      }
+    }
+  }
+}

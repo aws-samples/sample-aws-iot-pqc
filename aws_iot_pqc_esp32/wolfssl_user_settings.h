@@ -1,0 +1,112 @@
+/*
+ * wolfssl_user_settings.h
+ *
+ * Reference wolfSSL configuration for ESP32 + AWS IoT Core + PQC.
+ *
+ * HOW TO USE:
+ *   Copy the #define lines below into the wolfSSL library's user_settings.h
+ *   file. The file location depends on your OS:
+ *
+ *   Arduino IDE (local):
+ *     Windows: C:\Users\<you>\Documents\Arduino\libraries\wolfssl\src\user_settings.h
+ *     macOS:   ~/Documents/Arduino/libraries/wolfssl/src/user_settings.h
+ *     Linux:   ~/Arduino/libraries/wolfssl/src/user_settings.h
+ *
+ *   Arduino Cloud IDE:
+ *     Upload this as a custom library or use the Secret tab for certs.
+ *     You may need to fork the wolfSSL Arduino library and modify
+ *     user_settings.h in your fork, then import it.
+ *
+ * IMPORTANT:
+ *   - Do NOT #include this file directly in your sketch.
+ *   - These defines go into the wolfSSL library's own user_settings.h.
+ *   - After changing user_settings.h, do a clean rebuild (Sketch > Clean).
+ */
+
+#ifndef WOLFSSL_USER_SETTINGS_PQC_H
+#define WOLFSSL_USER_SETTINGS_PQC_H
+
+// ─── Platform: Espressif ESP32 ──────────────────────────────────────────────
+#define WOLFSSL_ESPIDF
+#define WOLFSSL_ESPWROOM32          // Works for all ESP32 variants
+#define WOLFSSL_ESP32
+
+// Use ESP32 hardware acceleration where available
+#define WOLFSSL_ESP32_CRYPT         // HW AES, SHA, RSA acceleration
+#define USE_FAST_MATH
+#define TFM_TIMING_RESISTANT
+
+// ─── TLS 1.3 ────────────────────────────────────────────────────────────────
+#define WOLFSSL_TLS13
+#define HAVE_TLS_EXTENSIONS
+#define HAVE_SUPPORTED_CURVES
+#define HAVE_FFDHE_2048             // Finite-field DH for TLS 1.3
+#define HAVE_HKDF                   // Required for TLS 1.3 key derivation
+
+// ─── Post-Quantum Cryptography (Kyber / ML-KEM) ────────────────────────────
+// These enables are per the wolfSSL blog post:
+//   https://www.wolfssl.com/post-quantum-key-share-on-the-espressif-esp32/
+#define WOLFSSL_EXPERIMENTAL_SETTINGS
+#define WOLFSSL_HAVE_KYBER          // Enable Kyber / ML-KEM support
+#define WOLFSSL_WC_KYBER            // Use wolfSSL's native Kyber implementation
+#define WOLFSSL_SHA3                // Required by Kyber
+
+// ─── ECC (for hybrid PQC key exchange) ──────────────────────────────────────
+#define HAVE_ECC
+#define ECC_TIMING_RESISTANT
+#define HAVE_ECC_SIGN
+#define HAVE_ECC_VERIFY
+#define HAVE_ECC_DHE
+#define ECC_SHAMIR
+
+// P-256 and P-521 curves for hybrid key exchange
+#define HAVE_ECC256                 // NIST P-256 (for P256_KYBER_LEVEL1)
+#define HAVE_ECC521                 // NIST P-521 (for P521_KYBER_LEVEL5)
+
+// ─── RSA (for certificate verification) ─────────────────────────────────────
+#define RSA_LOW_MEM
+#define WC_RSA_BLINDING
+#define WOLFSSL_KEY_GEN
+
+// ─── Cipher Suites ──────────────────────────────────────────────────────────
+#define HAVE_AESGCM                 // AES-GCM (primary TLS 1.3 cipher)
+#define HAVE_AESCCM
+#define HAVE_CHACHA
+#define HAVE_POLY1305
+#define HAVE_ONE_TIME_AUTH
+
+// ─── Hashing ────────────────────────────────────────────────────────────────
+#define WOLFSSL_SHA384
+#define WOLFSSL_SHA512
+
+// ─── X.509 Certificate Support ──────────────────────────────────────────────
+#define HAVE_SNI                    // Server Name Indication (required for AWS)
+#define HAVE_CERTIFICATE_STATUS_REQUEST
+#define WOLFSSL_ASN_TEMPLATE
+#define WOLFSSL_BASE64_ENCODE
+
+// ─── Memory / Performance Tuning for ESP32 ──────────────────────────────────
+#define SMALL_SESSION_CACHE
+#define NO_SESSION_CACHE_REF
+#define WOLFSSL_SMALL_STACK
+#define WOLFSSL_SMALL_STACK_CACHE
+
+// Increase max handshake message size for PQC (Kyber keys are larger)
+#define MAX_CERTIFICATE_SZ   4096
+#define LARGE_STATIC_BUFFERS
+
+// ─── Disable Unused Features (save flash/RAM) ──────────────────────────────
+#define NO_DSA
+#define NO_DES3
+#define NO_RC4
+#define NO_MD4
+#define NO_MD5
+#define NO_OLD_TLS
+#define NO_PSK
+#define WOLFSSL_NO_TLS12            // TLS 1.3 only (saves significant space)
+
+// ─── Debugging (uncomment for development) ──────────────────────────────────
+// #define DEBUG_WOLFSSL
+// #define WOLFSSL_LOG_PRINTF
+
+#endif // WOLFSSL_USER_SETTINGS_PQC_H
