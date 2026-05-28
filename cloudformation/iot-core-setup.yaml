@@ -1,0 +1,278 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  AWS IoT Core infrastructure for the ESP32 PQC (Post-Quantum Cryptography)
+  sample project. Creates an IoT Thing, certificate, policy, and IoT Rules
+  for telemetry and lifecycle event routing.
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Parameters
+# ─────────────────────────────────────────────────────────────────────────────
+Parameters:
+  ThingName:
+    Type: String
+    Default: my-esp32-pqc-thing
+    Description: >
+      Name of the IoT Thing. Must match THINGNAME in the device's secrets.h.
+    AllowedPattern: '[a-zA-Z0-9_-]+'
+    ConstraintDescription: >
+      Thing name must contain only alphanumeric characters, hyphens, and underscores.
+
+  ThingTypeName:
+    Type: String
+    Default: esp32-pqc-device
+    Description: Thing Type for grouping PQC-capable ESP32 devices.
+
+  EnableTelemetryRule:
+    Type: String
+    Default: 'true'
+    AllowedValues: ['true', 'false']
+    Description: >
+      Whether to create an IoT Rule that routes telemetry messages to CloudWatch Logs.
+
+  EnableLifecycleRule:
+    Type: String
+    Default: 'true'
+    AllowedValues: ['true', 'false']
+    Description: >
+      Whether to create an IoT Rule that routes lifecycle events to CloudWatch Logs.
+
+  TelemetryLogGroupRetentionDays:
+    Type: Number
+    Default: 14
+    AllowedValues: [1, 3, 5, 7, 14, 30, 60, 90, 120, 150, 180, 365]
+    Description: CloudWatch Logs retention period for telemetry messages.
+
+Conditions:
+  CreateTelemetryRule: !Equals [!Ref EnableTelemetryRule, 'true']
+  CreateLifecycleRule: !Equals [!Ref EnableLifecycleRule, 'true']
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Resources
+# ─────────────────────────────────────────────────────────────────────────────
+Resources:
+
+  # ─── Thing Type ──────────────────────────────────────────────────────────
+  IoTThingType:
+    Type: AWS::IoT::ThingType
+    Properties:
+      ThingTypeName: !Ref ThingTypeName
+      ThingTypeProperties:
+        ThingTypeDescription: >
+          ESP32 devices using post-quantum cryptography (PQC) with wolfSSL
+          TLS 1.3 and hybrid Kyber/ML-KEM key exchange.
+        SearchableAttributes:
+          - firmware_version
+          - pqc_algorithm
+
+  # ─── Thing ──────────────────────────────────────────────────────────────
+  IoTThing:
+    Type: AWS::IoT::Thing
+    Properties:
+      ThingName: !Ref ThingName
+      ThingTypeName: !Ref ThingTypeName
+      AttributePayload:
+        Attributes:
+          firmware_version: '1.0.0'
+          pqc_algorithm: P521_KYBER_LEVEL5
+          chip_family: ESP32
+    DependsOn: IoTThingType
+
+  # ─── IoT Policy ─────────────────────────────────────────────────────────
+  # Grants the device permission to connect, publish telemetry/lifecycle,
+  # and subscribe to command topics. Follows least-privilege principle.
+  IoTPolicy:
+    Type: AWS::IoT::Policy
+    Properties:
+      PolicyName: !Sub '${ThingName}-policy'
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          # Allow MQTT connect with the Thing name as client ID
+          - Effect: Allow
+            Action: iot:Connect
+            Resource: !Sub 'arn:aws:iot:${AWS::Region}:${AWS::AccountId}:client/${ThingName}'
+
+          # Allow publishing telemetry and lifecycle events
+          - Effect: Allow
+            Action: iot:Publish
+            Resource:
+              - !Sub 'arn:aws:iot:${AWS::Region}:${AWS::AccountId}:topic/dt/${ThingName}/telemetry'
+              - !Sub 'arn:aws:iot:${AWS::Region}:${AWS::AccountId}:topic/dt/${ThingName}/lifecycle'
+
+          # Allow subscribing to command topics (wildcard)
+          - Effect: Allow
+            Action: iot:Subscribe
+            Resource:
+              - !Sub 'arn:aws:iot:${AWS::Region}:${AWS::AccountId}:topicfilter/cmd/${ThingName}/+'
+
+          # Allow receiving messages on command topics
+          - Effect: Allow
+            Action: iot:Receive
+            Resource:
+              - !Sub 'arn:aws:iot:${AWS::Region}:${AWS::AccountId}:topic/cmd/${ThingName}/*'
+
+          # Allow retained messages (for lifecycle LWT)
+          - Effect: Allow
+            Action: iot:RetainPublish
+            Resource:
+              - !Sub 'arn:aws:iot:${AWS::Region}:${AWS::AccountId}:topic/dt/${ThingName}/lifecycle'
+
+  # ─── Certificate ────────────────────────────────────────────────────────
+  # Creates a new certificate and key pair. The certificate ARN and ID are
+  # exported for use in attaching to the Thing and downloading credentials.
+  # NOTE: The private key is only available at creation time via the console
+  # or CLI. CloudFormation cannot output it directly.
+  IoTCertificate:
+    Type: AWS::IoT::Certificate
+    Properties:
+      Status: ACTIVE
+      CertificateMode: DEFAULT
+
+  # ─── Attach Policy to Certificate ───────────────────────────────────────
+  IoTPolicyAttachment:
+    Type: AWS::IoT::PolicyPrincipalAttachment
+    Properties:
+      PolicyName: !Ref IoTPolicy
+      Principal: !GetAtt IoTCertificate.Arn
+
+  # ─── Attach Certificate to Thing ────────────────────────────────────────
+  IoTThingCertAttachment:
+    Type: AWS::IoT::ThingPrincipalAttachment
+    Properties:
+      ThingName: !Ref IoTThing
+      Principal: !GetAtt IoTCertificate.Arn
+
+  # ─── CloudWatch Log Group for Telemetry ─────────────────────────────────
+  TelemetryLogGroup:
+    Type: AWS::Logs::LogGroup
+    Condition: CreateTelemetryRule
+    Properties:
+      LogGroupName: !Sub '/aws/iot/${ThingName}/telemetry'
+      RetentionInDays: !Ref TelemetryLogGroupRetentionDays
+
+  # ─── CloudWatch Log Group for Lifecycle ─────────────────────────────────
+  LifecycleLogGroup:
+    Type: AWS::Logs::LogGroup
+    Condition: CreateLifecycleRule
+    Properties:
+      LogGroupName: !Sub '/aws/iot/${ThingName}/lifecycle'
+      RetentionInDays: !Ref TelemetryLogGroupRetentionDays
+
+  # ─── IAM Role for IoT Rules ─────────────────────────────────────────────
+  IoTRuleRole:
+    Type: AWS::IAM::Role
+    Condition: CreateTelemetryRule
+    Properties:
+      RoleName: !Sub '${ThingName}-iot-rule-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: iot.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: CloudWatchLogsAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                  - logs:DescribeLogStreams
+                Resource:
+                  - !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/iot/${ThingName}/*'
+
+  # ─── IoT Rule: Route Telemetry to CloudWatch Logs ───────────────────────
+  TelemetryRule:
+    Type: AWS::IoT::TopicRule
+    Condition: CreateTelemetryRule
+    Properties:
+      RuleName: !Sub '${AWS::StackName}_telemetry'
+      TopicRulePayload:
+        Description: >
+          Routes device telemetry from dt/<thingName>/telemetry to CloudWatch Logs
+          for monitoring and debugging.
+        Sql: !Sub "SELECT *, timestamp() as server_timestamp FROM 'dt/${ThingName}/telemetry'"
+        AwsIotSqlVersion: '2016-03-23'
+        RuleDisabled: false
+        Actions:
+          - CloudwatchLogs:
+              LogGroupName: !Ref TelemetryLogGroup
+              RoleArn: !GetAtt IoTRuleRole.Arn
+    DependsOn: TelemetryLogGroup
+
+  # ─── IoT Rule: Route Lifecycle Events to CloudWatch Logs ────────────────
+  LifecycleRule:
+    Type: AWS::IoT::TopicRule
+    Condition: CreateLifecycleRule
+    Properties:
+      RuleName: !Sub '${AWS::StackName}_lifecycle'
+      TopicRulePayload:
+        Description: >
+          Routes device lifecycle events (online/offline) from
+          dt/<thingName>/lifecycle to CloudWatch Logs for presence tracking.
+        Sql: !Sub "SELECT *, timestamp() as server_timestamp FROM 'dt/${ThingName}/lifecycle'"
+        AwsIotSqlVersion: '2016-03-23'
+        RuleDisabled: false
+        Actions:
+          - CloudwatchLogs:
+              LogGroupName: !Ref LifecycleLogGroup
+              RoleArn: !GetAtt IoTRuleRole.Arn
+    DependsOn: LifecycleLogGroup
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Outputs
+# ─────────────────────────────────────────────────────────────────────────────
+Outputs:
+  ThingName:
+    Description: IoT Thing name (use this as THINGNAME in secrets.h)
+    Value: !Ref IoTThing
+
+  ThingArn:
+    Description: IoT Thing ARN
+    Value: !Sub 'arn:aws:iot:${AWS::Region}:${AWS::AccountId}:thing/${ThingName}'
+
+  IoTEndpoint:
+    Description: >
+      IoT Data-ATS endpoint. Use this as AWS_IOT_ENDPOINT in secrets.h.
+      Note: This is the account-level endpoint, retrieve it with:
+      aws iot describe-endpoint --endpoint-type iot:Data-ATS
+    Value: !Sub '${AWS::AccountId}-ats.iot.${AWS::Region}.amazonaws.com'
+
+  CertificateArn:
+    Description: >
+      Certificate ARN. Download the certificate and private key from the
+      IoT Console (Security > Certificates) or use the AWS CLI.
+    Value: !GetAtt IoTCertificate.Arn
+
+  CertificateId:
+    Description: Certificate ID for CLI operations
+    Value: !Ref IoTCertificate
+
+  PolicyName:
+    Description: IoT Policy name attached to the certificate
+    Value: !Ref IoTPolicy
+
+  TelemetryTopic:
+    Description: MQTT topic where the device publishes telemetry
+    Value: !Sub 'dt/${ThingName}/telemetry'
+
+  LifecycleTopic:
+    Description: MQTT topic for device online/offline lifecycle events (and LWT)
+    Value: !Sub 'dt/${ThingName}/lifecycle'
+
+  CommandTopic:
+    Description: MQTT topic pattern for sending commands to the device
+    Value: !Sub 'cmd/${ThingName}/request'
+
+  TelemetryLogGroup:
+    Condition: CreateTelemetryRule
+    Description: CloudWatch Log Group receiving telemetry messages
+    Value: !Ref TelemetryLogGroup
+
+  LifecycleLogGroup:
+    Condition: CreateLifecycleRule
+    Description: CloudWatch Log Group receiving lifecycle events
+    Value: !Ref LifecycleLogGroup

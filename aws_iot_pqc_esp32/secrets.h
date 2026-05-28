@@ -24,12 +24,30 @@
 #define WIFI_SSID     "YOUR_WIFI_SSID"
 #define WIFI_PASSWORD "YOUR_WIFI_PASSWORD"
 
+// ─── Logging Configuration ──────────────────────────────────────────────────
+// Controls the verbosity of serial output via the Espressif logging framework.
+// Set to one of:
+//   0 = ESP_LOG_NONE    - No log output
+//   1 = ESP_LOG_ERROR   - Errors only (critical failures)
+//   2 = ESP_LOG_WARN    - Errors + warnings (connection retries, fallbacks)
+//   3 = ESP_LOG_INFO    - Normal operation (connections, publishes) [DEFAULT]
+//   4 = ESP_LOG_DEBUG   - Detailed diagnostics (heap, cert sizes, task info)
+//   5 = ESP_LOG_VERBOSE - Everything (I/O byte counts, handshake polling)
+#define LOG_LEVEL  3
+
 // ─── AWS IoT Core Configuration ─────────────────────────────────────────────
 #define AWS_IOT_ENDPOINT "xxxxxxxxxxxxxx-ats.iot.us-east-1.amazonaws.com"
 #define AWS_IOT_PORT     8883
 #define THINGNAME        "my-esp32-pqc-thing"
 
 // MQTT topics
+// Topics are auto-generated from THINGNAME using AWS IoT best practices:
+//   Telemetry (device → cloud):  dt/<THINGNAME>/telemetry
+//   Lifecycle (online/offline):  dt/<THINGNAME>/lifecycle
+//   Commands (cloud → device):   cmd/<THINGNAME>/+
+//
+// The old flat topics below are kept for backward compatibility with
+// existing IoT Rules. Remove them if you only use the structured topics.
 #define AWS_IOT_PUBLISH_TOPIC   "esp32/pqc/pub"
 #define AWS_IOT_SUBSCRIBE_TOPIC "esp32/pqc/sub"
 

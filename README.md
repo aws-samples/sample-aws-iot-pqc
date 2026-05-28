@@ -18,6 +18,7 @@ WiFi and MQTT run as independent FreeRTOS tasks with automatic failure recovery.
 - [Upload and Run](#upload-and-run)
 - [Expected Serial Output](#expected-serial-output)
 - [Code Walkthrough](#code-walkthrough)
+- [MQTT Best Practices](#mqtt-best-practices)
 - [PQC Key Exchange Details](#pqc-key-exchange-details)
 - [Memory and Performance](#memory-and-performance)
 - [Troubleshooting](#troubleshooting)
@@ -76,16 +77,20 @@ If WiFi drops, the WiFi task reconnects automatically. The MQTT task detects the
 Sample-aws-iot-pqc/
 +-- README.md                              This file
 +-- aws_iot_pqc_esp32/
-    +-- aws_iot_pqc_esp32.ino              Main sketch
-    +-- secrets.h                          WiFi + AWS IoT credentials (you edit this)
-    +-- wolfssl_user_settings.h            Reference wolfSSL PQC configuration
+|   +-- aws_iot_pqc_esp32.ino              Main sketch
+|   +-- secrets.h                          WiFi + AWS IoT credentials (you edit this)
+|   +-- wolfssl_user_settings.h            Reference wolfSSL PQC configuration
++-- cloudformation/
+    +-- iot-core-setup.yaml                CloudFormation template for AWS IoT Core
+    +-- README.md                          Deployment instructions for the template
 ```
 
 | File | Description |
 |------|-------------|
 | `aws_iot_pqc_esp32.ino` | Main Arduino sketch containing the WolfSSLClient class, FreeRTOS tasks, wolfSSL context setup, and MQTT logic. |
-| `secrets.h` | Placeholder file for WiFi SSID/password, AWS IoT endpoint, Thing name, MQTT topics, and PEM-encoded certificates. |
+| `secrets.h` | Placeholder file for WiFi SSID/password, AWS IoT endpoint, Thing name, log level, and PEM-encoded certificates. |
 | `wolfssl_user_settings.h` | Reference `#define` values that must be copied into the wolfSSL library's own `user_settings.h` to enable TLS 1.3 and Kyber/ML-KEM on ESP32. |
+| `cloudformation/iot-core-setup.yaml` | CloudFormation template that creates the IoT Thing, certificate, policy, and IoT Rules for telemetry/lifecycle routing to CloudWatch. |
 
 ---
 
@@ -274,7 +279,107 @@ After editing, do a **clean build**: in the Arduino IDE, hold Shift and click th
 
 ## AWS IoT Core Setup
 
-### Step 1: Create a Thing
+You can set up the AWS IoT Core infrastructure either automatically using CloudFormation or manually through the console.
+
+### Option A: Automated Setup with CloudFormation (Recommended)
+
+The `cloudformation/` folder contains a template that creates everything you need in one command.
+
+**Prerequisites:** AWS CLI installed and configured with permissions for IoT, IAM, and CloudWatch.
+
+#### Step 1: Deploy the Stack
+
+```bash
+aws cloudformation deploy \
+  --template-file cloudformation/iot-core-setup.yaml \
+  --stack-name esp32-pqc-iot \
+  --parameter-overrides ThingName=my-esp32-pqc-thing \
+  --capabilities CAPABILITY_NAMED_IAM
+```
+
+This creates:
+- IoT Thing (`my-esp32-pqc-thing`)
+- IoT Thing Type (`esp32-pqc-device`)
+- X.509 certificate (active)
+- IoT Policy with least-privilege permissions for the structured topic hierarchy
+- IoT Rules routing telemetry and lifecycle events to CloudWatch Logs
+- IAM Role for the IoT Rules
+
+#### Step 2: Get Your IoT Endpoint
+
+```bash
+aws iot describe-endpoint --endpoint-type iot:Data-ATS --query 'endpointAddress' --output text
+```
+
+Save this value — you will paste it into `secrets.h` as `AWS_IOT_ENDPOINT`.
+
+#### Step 3: Download the Certificate and Private Key
+
+The CloudFormation stack creates a certificate, but you need to retrieve the credentials:
+
+```bash
+# Get the certificate ID from stack outputs
+CERT_ID=$(aws cloudformation describe-stacks \
+  --stack-name esp32-pqc-iot \
+  --query 'Stacks[0].Outputs[?OutputKey==`CertificateId`].OutputValue' \
+  --output text)
+
+# Download the certificate PEM
+aws iot describe-certificate \
+  --certificate-id $CERT_ID \
+  --query 'certificateDescription.certificatePem' \
+  --output text > device-certificate.pem.crt
+
+echo "Certificate saved to device-certificate.pem.crt"
+```
+
+**Important:** The private key is generated internally by CloudFormation and cannot be retrieved after creation. If you need the private key, create the certificate manually instead:
+
+```bash
+# Create a new certificate with downloadable private key
+aws iot create-keys-and-certificate \
+  --set-as-active \
+  --certificate-pem-outfile device-cert.pem \
+  --private-key-outfile device-private-key.pem \
+  --public-key-outfile device-public-key.pem
+
+# Get the certificate ARN from the output
+CERT_ARN=$(aws iot list-certificates --query 'certificates[-1].certificateArn' --output text)
+
+# Attach the policy and thing
+aws iot attach-policy --policy-name my-esp32-pqc-thing-policy --target $CERT_ARN
+aws iot attach-thing-principal --thing-name my-esp32-pqc-thing --principal $CERT_ARN
+```
+
+#### Step 4: Download Amazon Root CA 1
+
+```bash
+curl -o AmazonRootCA1.pem https://www.amazontrust.com/repository/AmazonRootCA1.pem
+```
+
+#### Step 5: View Stack Outputs
+
+```bash
+aws cloudformation describe-stacks \
+  --stack-name esp32-pqc-iot \
+  --query 'Stacks[0].Outputs' \
+  --output table
+```
+
+This shows all the topics, ARNs, and log groups created.
+
+#### Cleanup
+
+To remove all AWS resources:
+```bash
+aws cloudformation delete-stack --stack-name esp32-pqc-iot
+```
+
+---
+
+### Option B: Manual Setup via AWS Console
+
+#### Step 1: Create a Thing
 
 1. Open the [AWS IoT Console](https://console.aws.amazon.com/iot/)
 2. In the left navigation, go to **Manage > All devices > Things**
@@ -282,11 +387,11 @@ After editing, do a **clean build**: in the Arduino IDE, hold Shift and click th
 4. Enter the Thing name: `my-esp32-pqc-thing` (must match `THINGNAME` in `secrets.h`)
 5. Leave other settings as default and click **Next**
 
-### Step 2: Generate Certificates
+#### Step 2: Generate Certificates
 
 1. On the certificate page, select **Auto-generate a new certificate**
 2. Click **Next**
-3. You will be prompted to download three files. **Download all three now** (you cannot download the private key again later):
+3. **Download all three files now** (you cannot download the private key again later):
 
 | File | Description | Used in `secrets.h` as |
 |------|-------------|----------------------|
@@ -299,7 +404,7 @@ After editing, do a **clean build**: in the Arduino IDE, hold Shift and click th
 
 If you missed the Root CA download, get it from: [https://www.amazontrust.com/repository/AmazonRootCA1.pem](https://www.amazontrust.com/repository/AmazonRootCA1.pem)
 
-### Step 3: Create and Attach an IoT Policy
+#### Step 3: Create and Attach an IoT Policy
 
 1. In the IoT Console, go to **Security > Policies**
 2. Click **Create policy**
@@ -317,18 +422,26 @@ If you missed the Root CA download, get it from: [https://www.amazontrust.com/re
     },
     {
       "Effect": "Allow",
+      "Action": "iot:Publish",
+      "Resource": [
+        "arn:aws:iot:REGION:ACCOUNT_ID:topic/dt/my-esp32-pqc-thing/telemetry",
+        "arn:aws:iot:REGION:ACCOUNT_ID:topic/dt/my-esp32-pqc-thing/lifecycle"
+      ]
+    },
+    {
+      "Effect": "Allow",
+      "Action": "iot:RetainPublish",
+      "Resource": "arn:aws:iot:REGION:ACCOUNT_ID:topic/dt/my-esp32-pqc-thing/lifecycle"
+    },
+    {
+      "Effect": "Allow",
       "Action": "iot:Subscribe",
-      "Resource": "arn:aws:iot:REGION:ACCOUNT_ID:topicfilter/esp32/pqc/sub"
+      "Resource": "arn:aws:iot:REGION:ACCOUNT_ID:topicfilter/cmd/my-esp32-pqc-thing/+"
     },
     {
       "Effect": "Allow",
       "Action": "iot:Receive",
-      "Resource": "arn:aws:iot:REGION:ACCOUNT_ID:topic/esp32/pqc/sub"
-    },
-    {
-      "Effect": "Allow",
-      "Action": "iot:Publish",
-      "Resource": "arn:aws:iot:REGION:ACCOUNT_ID:topic/esp32/pqc/pub"
+      "Resource": "arn:aws:iot:REGION:ACCOUNT_ID:topic/cmd/my-esp32-pqc-thing/*"
     }
   ]
 }
@@ -340,7 +453,7 @@ Replace `REGION` with your AWS region (e.g., `us-east-1`) and `ACCOUNT_ID` with 
 6. Go to **Security > Certificates**, find the certificate you created, click on it
 7. Click **Actions > Attach policy** and select `esp32-pqc-policy`
 
-### Step 4: Find Your IoT Endpoint
+#### Step 4: Find Your IoT Endpoint
 
 1. In the IoT Console, go to **Settings** (bottom of the left navigation)
 2. Copy the **Device data endpoint** (looks like `xxxxxxxxxxxxxx-ats.iot.us-east-1.amazonaws.com`)
@@ -363,6 +476,14 @@ Open `secrets.h` and fill in your values:
 #define WIFI_PASSWORD "MyWiFiPassword123"
 ```
 
+### Log Level
+
+```c
+#define LOG_LEVEL  3   // 0=NONE, 1=ERROR, 2=WARN, 3=INFO, 4=DEBUG, 5=VERBOSE
+```
+
+Set to `4` (DEBUG) during initial setup to see detailed diagnostics. Switch to `3` (INFO) for normal operation.
+
 ### AWS IoT Configuration
 
 ```c
@@ -371,13 +492,18 @@ Open `secrets.h` and fill in your values:
 #define THINGNAME        "my-esp32-pqc-thing"
 ```
 
+The Thing name is used to construct MQTT topics automatically:
+- Telemetry: `dt/my-esp32-pqc-thing/telemetry`
+- Lifecycle: `dt/my-esp32-pqc-thing/lifecycle`
+- Commands: `cmd/my-esp32-pqc-thing/+`
+
 ### Certificates
 
 Open each downloaded `.pem` file in a text editor and paste the full contents (including the `-----BEGIN` and `-----END` lines) into the corresponding variable in `secrets.h`:
 
-- `AWS_CERT_CA` - paste the contents of `AmazonRootCA1.pem`
-- `AWS_CERT_CRT` - paste the contents of your device certificate file
-- `AWS_CERT_PRIVATE` - paste the contents of your private key file
+- `AWS_CERT_CA` — paste the contents of `AmazonRootCA1.pem`
+- `AWS_CERT_CRT` — paste the contents of your device certificate file
+- `AWS_CERT_PRIVATE` — paste the contents of your private key file
 
 Example (abbreviated):
 ```c
@@ -389,16 +515,6 @@ ADA5MQswCQYDVQQGEwJVUzEPMA0GA1UEChMGQW1hem9uMRkwFwYDVQQDExBBbWF6
 -----END CERTIFICATE-----
 )EOF";
 ```
-
-### MQTT Topics (Optional)
-
-The default topics are:
-```c
-#define AWS_IOT_PUBLISH_TOPIC   "esp32/pqc/pub"    // Device publishes here
-#define AWS_IOT_SUBSCRIBE_TOPIC "esp32/pqc/sub"     // Device listens here
-```
-
-Change these if needed, but remember to update your IoT policy to match.
 
 ---
 
@@ -425,71 +541,109 @@ The first compilation will take several minutes because wolfSSL with PQC is a la
 
 ## Expected Serial Output
 
+With `LOG_LEVEL` set to 3 (INFO):
+
 ```
-╔══════════════════════════════════════════════════╗
-║  ESP32 AWS IoT Core - Post-Quantum Cryptography ║
-║  TLS 1.3 + Hybrid Kyber/ML-KEM Key Exchange     ║
-╚══════════════════════════════════════════════════╝
+I (main) ══════════════════════════════════════════════════
+I (main)   ESP32 AWS IoT Core - Post-Quantum Cryptography
+I (main)   TLS 1.3 + Hybrid Kyber/ML-KEM Key Exchange
+I (main) ══════════════════════════════════════════════════
 
-Chip:       ESP32-S3 Rev 0
-CPU Freq:   240 MHz
-Flash:      8 MB
-Free Heap:  275432 bytes
-PSRAM:      8388608 bytes
-
-[Setup] All tasks created. System running.
-[WiFi] Task started
-[WiFi] Connecting...
-......
-[WiFi] Connected! IP: 192.168.1.42, RSSI: -45 dBm
-[MQTT] Task started, waiting for WiFi...
-[MQTT] WiFi is up, initializing wolfSSL...
-[wolfSSL] Library initialized
-[wolfSSL] CA certificate loaded
-[wolfSSL] Device certificate loaded
-[wolfSSL] Private key loaded
-[wolfSSL] TLS 1.3 PQC context ready
-[MQTT] Connecting to AWS IoT Core with PQC TLS...
-[wolfSSL] TCP connected to a1b2c3d4e5f6g7-ats.iot.us-east-1.amazonaws.com:8883
-[wolfSSL] Using PQC key exchange: P-521 + Kyber Level 5
-[wolfSSL] Starting TLS 1.3 PQC handshake...
-[wolfSSL] TLS handshake complete in 2847 ms
-[wolfSSL] Protocol: TLSv1.3
-[wolfSSL] Cipher:   TLS_AES_128_GCM_SHA256
-[MQTT] Connected to AWS IoT Core!
-[MQTT] Subscribed to: esp32/pqc/sub
-[MQTT] Published message #1 to esp32/pqc/pub
---- System Status ---------------------------------------------
-  Uptime:     60 sec
-  WiFi:       Connected (RSSI: -45 dBm)
-  MQTT:       Connected
-  Free Heap:  198432 bytes
-  Min Heap:   142108 bytes
----------------------------------------------------------------
-[MQTT] Published message #2 to esp32/pqc/pub
+I (main) Chip:       ESP32-S3 Rev 0
+I (main) CPU Freq:   240 MHz
+I (main) Flash:      8 MB
+I (main) Free Heap:  275432 bytes
+I (main) PSRAM:      8388608 bytes
+I (main) Log Level:  3
+I (main) All tasks created. System running.
+I (wifi) Task started on core 0
+I (wifi) Connecting to SSID 'MyNetwork' (attempt 1)...
+I (wifi) Connected! IP: 192.168.1.42, RSSI: -45 dBm, Channel: 6
+I (mqtt) Task started on core 1, waiting for WiFi...
+I (mqtt) WiFi is up, initializing wolfSSL...
+I (wolfssl) Initializing wolfSSL library...
+I (wolfssl) CA certificate loaded
+I (wolfssl) Device certificate loaded
+I (wolfssl) Private key loaded
+I (wolfssl) TLS 1.3 PQC context ready (heap free: 215000 bytes)
+I (mqtt) Connecting to AWS IoT Core (thing='my-esp32-pqc-thing', attempt=1)...
+I (tls) TCP connected to a1b2c3d4e5-ats.iot.us-east-1.amazonaws.com:8883
+I (tls) Using PQC key exchange: P-521 + Kyber Level 5
+I (tls) Starting TLS 1.3 PQC handshake...
+I (tls) TLS handshake complete in 2847 ms
+I (tls) Protocol: TLSv1.3, Cipher: TLS_AES_128_GCM_SHA256
+I (mqtt) Connected to AWS IoT Core!
+I (mqtt) Published lifecycle: online → dt/my-esp32-pqc-thing/lifecycle
+I (mqtt) Subscribed to commands: cmd/my-esp32-pqc-thing/+ (QoS 1)
+I (mqtt) Published telemetry #1 → dt/my-esp32-pqc-thing/telemetry
+I (main) ─── System Status ─────────────────────────────
+I (main)   Uptime:     60 sec
+I (main)   WiFi:       Connected (RSSI: -45 dBm)
+I (main)   MQTT:       Connected
+I (main)   Free Heap:  198432 bytes
+I (main)   Min Heap:   142108 bytes
+I (main) ───────────────────────────────────────────────
+I (mqtt) Published telemetry #2 → dt/my-esp32-pqc-thing/telemetry
 ```
 
 ### Verifying the Connection in AWS
 
+#### Using the MQTT Test Client
+
 1. In the AWS IoT Console, go to **Test > MQTT test client**
-2. Subscribe to `esp32/pqc/pub`
-3. You should see JSON messages arriving every 30 seconds:
+2. Subscribe to `dt/my-esp32-pqc-thing/#` (wildcard for all device topics)
+3. You should see telemetry messages arriving every 30 seconds:
 
 ```json
 {
   "device": "my-esp32-pqc-thing",
   "message_id": 1,
+  "timestamp": 45,
   "uptime_sec": 45,
   "wifi_rssi": -45,
   "free_heap": 198432,
+  "min_heap": 142108,
+  "chip_temp_c": 48.3,
   "pqc_algorithm": "P521_KYBER_LEVEL5",
   "tls_version": "TLS 1.3"
 }
 ```
 
-4. To send a message to the device, publish to `esp32/pqc/sub`:
+4. You should also see the lifecycle event (published once on connect):
+
 ```json
-{"command": "hello from the cloud"}
+{
+  "status": "online",
+  "device": "my-esp32-pqc-thing",
+  "firmware_version": "1.0.0",
+  "pqc_algorithm": "P521_KYBER_LEVEL5",
+  "ip": "192.168.1.42",
+  "uptime_sec": 15
+}
+```
+
+5. To send a command to the device, publish to `cmd/my-esp32-pqc-thing/request`:
+```json
+{"action": "reboot", "delay_sec": 5}
+```
+
+#### Using CloudWatch Logs (if IoT Rules are enabled)
+
+```bash
+# Stream telemetry logs in real time
+aws logs tail /aws/iot/my-esp32-pqc-thing/telemetry --follow
+
+# Stream lifecycle events
+aws logs tail /aws/iot/my-esp32-pqc-thing/lifecycle --follow
+```
+
+#### Testing the LWT (Last Will)
+
+1. Subscribe to `dt/my-esp32-pqc-thing/lifecycle` in the MQTT test client
+2. Power off the ESP32 abruptly (pull the USB cable)
+3. After the keepalive timeout (60 seconds), the broker publishes:
+```json
+{"status": "offline", "reason": "unexpected"}
 ```
 
 ---
@@ -551,6 +705,133 @@ wolfSSL does not know about Arduino's `WiFiClient`. The `wolfssl_send_cb` and `w
 ### Main Loop
 
 `loop()` prints a status report every 60 seconds showing uptime, WiFi/MQTT state, and heap usage. All real work happens in the FreeRTOS tasks.
+
+---
+
+## MQTT Best Practices
+
+This sketch implements several IoT MQTT best practices that are essential for production-quality device firmware.
+
+### Topic Structure
+
+Topics follow a structured hierarchy for clean IoT policy rules and Rules Engine routing:
+
+| Topic | Direction | Purpose | QoS |
+|-------|-----------|---------|-----|
+| `dt/<thingName>/telemetry` | Device → Cloud | Periodic sensor/status data | 0 |
+| `dt/<thingName>/lifecycle` | Device → Cloud | Online/offline presence | 1 (retained) |
+| `cmd/<thingName>/+` | Cloud → Device | Commands (wildcard subscribe) | 1 |
+
+The `dt/` prefix means "device telemetry" (outbound data). The `cmd/` prefix means "command" (inbound instructions). This separation enables IoT policies like:
+
+```json
+{
+  "Effect": "Allow",
+  "Action": "iot:Publish",
+  "Resource": "arn:aws:iot:*:*:topic/dt/my-esp32-pqc-thing/*"
+}
+```
+
+Topics are built dynamically from `THINGNAME` at runtime, so changing the Thing name in `secrets.h` automatically updates all topics.
+
+### Last Will and Testament (LWT)
+
+The MQTT LWT is a message the broker holds and publishes automatically if the device disconnects unexpectedly (network loss, crash, keepalive timeout). This sketch configures:
+
+- **LWT Topic:** `dt/<thingName>/lifecycle`
+- **LWT Payload:** `{"status":"offline","reason":"unexpected"}`
+- **LWT QoS:** 1 (at least once delivery)
+- **LWT Retain:** true (persists so new subscribers see the last state)
+
+This means cloud services always know when a device goes offline, even if the device cannot send a graceful disconnect message.
+
+### Lifecycle Events
+
+On successful MQTT connection, the device publishes a retained "online" event:
+
+```json
+{
+  "status": "online",
+  "device": "my-esp32-pqc-thing",
+  "firmware_version": "1.0.0",
+  "pqc_algorithm": "P521_KYBER_LEVEL5",
+  "ip": "192.168.1.42",
+  "uptime_sec": 15
+}
+```
+
+Combined with the LWT, this creates a complete presence system:
+- **Device connects** → publishes `{"status":"online",...}` (retained)
+- **Device disconnects gracefully** → could publish `{"status":"offline","reason":"shutdown"}` (not yet implemented)
+- **Device disconnects unexpectedly** → broker publishes LWT `{"status":"offline","reason":"unexpected"}`
+
+New subscribers to the lifecycle topic immediately receive the retained message showing the current device state.
+
+### Exponential Backoff with Jitter
+
+When a connection attempt fails, the sketch does not retry immediately or at a fixed interval. Instead, it uses exponential backoff with full jitter to prevent the "thundering herd" problem (many devices reconnecting simultaneously after an outage).
+
+**Algorithm:**
+```
+expDelay = min(base * 2^attempt, maxDelay)
+actualDelay = random(0, expDelay)    // Full jitter
+```
+
+**Configuration (in the sketch):**
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `BACKOFF_BASE_MS` | 1000 | Initial retry delay (1 second) |
+| `BACKOFF_MAX_MS` | 120000 | Maximum retry delay (2 minutes) |
+| `BACKOFF_MULTIPLIER` | 2 | Doubles each attempt |
+
+**Example progression:**
+- Attempt 1: random(0, 1000) → e.g., 743 ms
+- Attempt 2: random(0, 2000) → e.g., 1521 ms
+- Attempt 3: random(0, 4000) → e.g., 2847 ms
+- Attempt 4: random(0, 8000) → e.g., 5102 ms
+- ...capped at random(0, 120000)
+
+The backoff counter resets to zero on successful connection. Both WiFi and MQTT reconnection use this pattern.
+
+The random number generator is seeded with hardware entropy (analog pin noise XOR'd with the chip's eFuse MAC address) to ensure different devices produce different jitter values even if they power on simultaneously.
+
+For more detail on this pattern, see the [AWS Architecture Blog: Exponential Backoff and Jitter](https://aws.amazon.com/blogs/architecture/exponential-backoff-and-jitter/).
+
+### Updated IoT Policy
+
+With the new topic structure, your IoT policy should be:
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": "iot:Connect",
+      "Resource": "arn:aws:iot:REGION:ACCOUNT_ID:client/my-esp32-pqc-thing"
+    },
+    {
+      "Effect": "Allow",
+      "Action": "iot:Publish",
+      "Resource": [
+        "arn:aws:iot:REGION:ACCOUNT_ID:topic/dt/my-esp32-pqc-thing/telemetry",
+        "arn:aws:iot:REGION:ACCOUNT_ID:topic/dt/my-esp32-pqc-thing/lifecycle"
+      ]
+    },
+    {
+      "Effect": "Allow",
+      "Action": "iot:Subscribe",
+      "Resource": "arn:aws:iot:REGION:ACCOUNT_ID:topicfilter/cmd/my-esp32-pqc-thing/+"
+    },
+    {
+      "Effect": "Allow",
+      "Action": "iot:Receive",
+      "Resource": "arn:aws:iot:REGION:ACCOUNT_ID:topic/cmd/my-esp32-pqc-thing/*"
+    }
+  ]
+}
+```
 
 ---
 
@@ -675,7 +956,7 @@ If you are tight on memory:
 
 2. **Monitor heap usage**: The status report in `loop()` shows free and minimum heap. If minimum heap drops below 20 KB, you are at risk of crashes.
 
-3. **Test with the MQTT test client**: In the AWS IoT Console, use **Test > MQTT test client** to subscribe to `esp32/pqc/pub` and verify messages are arriving.
+3. **Test with the MQTT test client**: In the AWS IoT Console, use **Test > MQTT test client** to subscribe to `dt/my-esp32-pqc-thing/#` and verify messages are arriving.
 
 4. **Check CloudWatch logs**: If the device connects via TCP but the TLS handshake fails, check the AWS IoT Core logs in CloudWatch for server-side error details.
 
