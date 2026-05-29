@@ -19,9 +19,11 @@ WiFi and MQTT run as independent FreeRTOS tasks with automatic failure recovery.
 - [Expected Serial Output](#expected-serial-output)
 - [Code Walkthrough](#code-walkthrough)
 - [MQTT Best Practices](#mqtt-best-practices)
+- [PQC Migration Techniques](#pqc-migration-techniques)
 - [PQC Key Exchange Details](#pqc-key-exchange-details)
 - [Memory and Performance](#memory-and-performance)
 - [Troubleshooting](#troubleshooting)
+- [Automatic Registration and Certificate Provisioning](#automatic-registration-and-certificate-provisioning)
 - [Security Considerations](#security-considerations)
 - [References](#references)
 - [License](#license)
@@ -835,7 +837,122 @@ With the new topic structure, your IoT policy should be:
 
 ---
 
-## PQC Key Exchange Details
+## PQC Migration Techniques
+
+This section describes three approaches for migrating an IoT device from classical TLS to post-quantum TLS via over-the-air (OTA) firmware update. The project includes a pre-PQC firmware (v1.0) and the PQC firmware (v2.0) to demonstrate the migration live.
+
+### Overview
+
+The migration demonstrates a real-world scenario: devices already deployed in the field running classical TLS need to be upgraded to PQC without physical access. The telemetry payload includes `pqc_algorithm` and `tls_version` fields, making the transition visible in real time on a dashboard.
+
+```
+Before (v1.0):  {"pqc_algorithm":"none", "tls_version":"TLS 1.2", "firmware_version":"1.0.0"}
+After  (v2.0):  {"pqc_algorithm":"P521_KYBER_LEVEL5", "tls_version":"TLS 1.3", "firmware_version":"2.0.0"}
+```
+
+### Option A: HTTPS OTA Pull (Simple)
+
+The device listens for an OTA command on its MQTT command topic, then downloads the new firmware binary from an HTTPS URL (e.g., S3 bucket).
+
+**Flow:**
+1. Device runs v1.0 (classical TLS), publishes telemetry normally
+2. Cloud publishes `{"url":"https://s3.amazonaws.com/bucket/firmware-v2.bin"}` to `cmd/<thing>/ota`
+3. Device downloads the binary using `httpUpdate`, writes to OTA partition
+4. Device reboots into v2.0 (PQC TLS)
+5. Telemetry now shows PQC algorithm and TLS 1.3
+
+**Pros:**
+- Simple implementation (~50 lines of OTA code)
+- No extra AWS services beyond S3
+- Works with Arduino Cloud IDE
+- Realistic production scenario
+
+**Cons:**
+- Requires network download during demo (risk of conference WiFi issues)
+- Download takes 10-30 seconds depending on binary size and network speed
+- No built-in rollback or fleet tracking
+
+**Best for:** Demos where showing the actual download process is important.
+
+### Option B: AWS IoT Jobs (Production-Grade)
+
+AWS IoT Jobs provides a managed OTA framework with status tracking, rollback, and fleet-wide deployment.
+
+**Flow:**
+1. Device runs v1.0 with an IoT Jobs agent polling `$aws/things/<thing>/jobs/notify-next`
+2. Operator creates a Job targeting the Thing with a Job Document containing the S3 firmware URL
+3. Device receives the job, downloads firmware, writes to OTA partition
+4. Device reboots into v2.0, reports job completion to `$aws/things/<thing>/jobs/<jobId>/update`
+5. IoT Jobs dashboard shows successful migration
+
+**Pros:**
+- Production-ready fleet management
+- Tracks success/failure per device
+- Supports staged rollout (percentage-based)
+- Built-in timeout and retry
+- Audit trail
+
+**Cons:**
+- More setup (IAM roles, Job Document, S3 presigned URLs, Jobs agent code)
+- Still requires network download during demo
+- More complex to explain in a short session
+
+**Best for:** Showing the production architecture in slides/diagrams, or longer workshops.
+
+### Option C: Dual-Partition Switch (Instant Demo) ← Used in Builders Session
+
+Both firmware versions are pre-flashed to the ESP32's two OTA partitions before the demo. A command on the MQTT topic triggers an instant boot partition switch — no download needed.
+
+**Flow:**
+1. Pre-flash v1.0 to OTA_0 and v2.0 to OTA_1 using `esptool.py`
+2. Device boots into v1.0 (OTA_0), connects with classical TLS
+3. Presenter publishes `{"action":"migrate-pqc"}` to `cmd/<thing>/ota`
+4. Device calls `esp_ota_set_boot_partition(ota_1)` and reboots (~3 seconds)
+5. Device boots into v2.0 (OTA_1), connects with PQC TLS
+6. Dashboard instantly shows the PQC fields change
+
+**Pros:**
+- Instant switch (~3 seconds total)
+- No network download — zero risk of WiFi failure on stage
+- Deterministic timing for live demos
+- Visually identical to a real OTA from the audience perspective
+
+**Cons:**
+- Requires pre-staging both images before the demo
+- Not a "real" OTA download (but the mechanism is the same as post-download)
+- Requires `esptool.py` for initial dual-flash setup
+
+**Best for:** Live stage demos where reliability and speed are critical.
+
+### Pre-Flashing for Option C
+
+```bash
+# Build both sketches and export their binaries from Arduino IDE
+# (Sketch > Export Compiled Binary)
+
+# Flash v1.0 to OTA_0 partition and v2.0 to OTA_1 partition
+esptool.py --chip esp32s3 --port /dev/ttyUSB0 \
+  write_flash 0x10000 firmware_v1_classical.bin \
+               0x200000 firmware_v2_pqc.bin
+
+# The device boots from OTA_0 (v1.0) by default
+```
+
+The exact partition offsets depend on your partition table. The default ESP32 Arduino partition scheme with OTA uses:
+- `0x10000` — OTA_0 (primary)
+- `0x200000` — OTA_1 (secondary)
+
+Verify with: `esptool.py --chip esp32s3 read_flash_status`
+
+### Project Structure for Migration Demo
+
+```
+aws_iot_pqc_esp32/              ← v2.0 (PQC) - the main sketch
+aws_iot_pqc_esp32_v1_classical/ ← v1.0 (Classical TLS) - pre-PQC baseline
+cloudformation/                 ← AWS IoT Core infrastructure
+```
+
+---
 
 The sketch uses **hybrid key exchange**, combining a classical and a post-quantum algorithm in a single TLS 1.3 handshake:
 
@@ -961,6 +1078,343 @@ If you are tight on memory:
 4. **Check CloudWatch logs**: If the device connects via TCP but the TLS handshake fails, check the AWS IoT Core logs in CloudWatch for server-side error details.
 
 5. **Simplify first**: If you cannot get PQC working, temporarily comment out the `wolfSSL_UseKeyShare()` call. The connection will use classical key exchange, which confirms your certificates and network are correct. Then re-enable PQC.
+
+---
+
+## Automatic Registration and Certificate Provisioning
+
+This project uses manually-created certificates for simplicity (appropriate for a 60-minute builders session). However, for production deployments or larger workshops, AWS IoT supports **Fleet Provisioning by Claim** — a mechanism where devices automatically register themselves and obtain unique certificates on first boot.
+
+### How Fleet Provisioning Works
+
+Instead of creating a certificate per device in the AWS Console, you bake a shared "claim certificate" into the firmware. On first boot, the device uses this claim cert to connect with limited permissions, requests its own unique certificate, registers as a Thing, and then reconnects with its permanent identity.
+
+```
+First Boot (one-time, ~5-10 seconds):
+┌──────────┐                              ┌─────────────────┐
+│  Device   │── Connect with claim cert ──▶│  AWS IoT Core   │
+│           │                              │                 │
+│           │── CreateCertificate ────────▶│  Returns new    │
+│           │◀── cert + private key ───────│  device cert    │
+│           │                              │                 │
+│           │── RegisterThing ───────────▶│  Creates Thing,  │
+│           │◀── thing name ───────────────│  attaches policy│
+│           │                              │                 │
+│           │── Save cert to NVS ──────────│                 │
+│           │── Reconnect with device cert─│                 │
+└──────────┘                              └─────────────────┘
+
+Subsequent Boots:
+┌──────────┐                              ┌─────────────────┐
+│  Device   │── Load cert from NVS ────────│                 │
+│           │── Connect directly ─────────▶│  AWS IoT Core   │
+└──────────┘                              └─────────────────┘
+```
+
+### When to Use Fleet Provisioning
+
+| Scenario | Approach | Reason |
+|----------|----------|--------|
+| Builders session (60 min) | Manual certs | Simpler, fewer failure points, focus stays on PQC |
+| Workshop (2+ hours) | Fleet Provisioning | "Just flash and go" experience, no cert copy/paste |
+| Production (100+ devices) | Fleet Provisioning | Scales without per-device manual steps |
+| Manufacturing line | Fleet Provisioning | Same firmware image for all units |
+
+### AWS Resources Required
+
+To enable Fleet Provisioning, you would add these to the CloudFormation template:
+
+```yaml
+# Provisioning Template — defines what to create for each new device
+IoTProvisioningTemplate:
+  Type: AWS::IoT::ProvisioningTemplate
+  Properties:
+    TemplateName: esp32-pqc-provisioning
+    Description: Auto-provisions ESP32 PQC devices on first connection
+    Enabled: true
+    ProvisioningRoleArn: !GetAtt ProvisioningRole.Arn
+    TemplateBody: |
+      {
+        "Parameters": {
+          "SerialNumber": {"Type": "String"},
+          "AWS::IoT::Certificate::Id": {"Type": "String"}
+        },
+        "Resources": {
+          "thing": {
+            "Type": "AWS::IoT::Thing",
+            "Properties": {
+              "ThingName": {"Fn::Join": ["-", ["esp32-pqc", {"Ref": "SerialNumber"}]]},
+              "ThingTypeName": "esp32-pqc-device",
+              "AttributePayload": {
+                "Attributes": {
+                  "pqc_algorithm": "P521_KYBER_LEVEL5",
+                  "provisioned_by": "fleet-provisioning"
+                }
+              }
+            }
+          },
+          "certificate": {
+            "Type": "AWS::IoT::Certificate",
+            "Properties": {
+              "CertificateId": {"Ref": "AWS::IoT::Certificate::Id"},
+              "Status": "ACTIVE"
+            }
+          },
+          "policy": {
+            "Type": "AWS::IoT::Policy",
+            "Properties": {
+              "PolicyName": "esp32-pqc-device-policy"
+            }
+          }
+        }
+      }
+
+# Claim Certificate Policy — very restrictive, only allows provisioning topics
+ClaimPolicy:
+  Type: AWS::IoT::Policy
+  Properties:
+    PolicyName: esp32-pqc-claim-policy
+    PolicyDocument:
+      Version: '2012-10-17'
+      Statement:
+        - Effect: Allow
+          Action: iot:Connect
+          Resource: '*'
+        - Effect: Allow
+          Action:
+            - iot:Publish
+            - iot:Receive
+          Resource:
+            - !Sub 'arn:aws:iot:${AWS::Region}:${AWS::AccountId}:topic/$aws/certificates/create/*'
+            - !Sub 'arn:aws:iot:${AWS::Region}:${AWS::AccountId}:topic/$aws/provisioning-templates/esp32-pqc-provisioning/provision/*'
+        - Effect: Allow
+          Action: iot:Subscribe
+          Resource:
+            - !Sub 'arn:aws:iot:${AWS::Region}:${AWS::AccountId}:topicfilter/$aws/certificates/create/*'
+            - !Sub 'arn:aws:iot:${AWS::Region}:${AWS::AccountId}:topicfilter/$aws/provisioning-templates/esp32-pqc-provisioning/provision/*'
+
+# IAM Role for the provisioning template
+ProvisioningRole:
+  Type: AWS::IAM::Role
+  Properties:
+    AssumeRolePolicyDocument:
+      Version: '2012-10-17'
+      Statement:
+        - Effect: Allow
+          Principal:
+            Service: iot.amazonaws.com
+          Action: sts:AssumeRole
+    ManagedPolicyArns:
+      - arn:aws:iam::aws:policy/service-role/AWSIoTThingsRegistration
+```
+
+### Device Firmware Changes (Sample Code)
+
+Below is a reference implementation of the provisioning flow for the ESP32. This would run once on first boot, before the normal MQTT task starts.
+
+```cpp
+#include <Preferences.h>  // ESP32 NVS (Non-Volatile Storage)
+
+// NVS namespace for storing provisioned credentials
+#define NVS_NAMESPACE    "iot_creds"
+#define NVS_KEY_CERT     "device_cert"
+#define NVS_KEY_KEY      "device_key"
+#define NVS_KEY_THING    "thing_name"
+#define NVS_KEY_PROVISIONED "provisioned"
+
+// Fleet Provisioning MQTT topics
+#define FP_CREATE_CERT_TOPIC     "$aws/certificates/create/json"
+#define FP_CREATE_CERT_ACCEPTED  "$aws/certificates/create/json/accepted"
+#define FP_CREATE_CERT_REJECTED  "$aws/certificates/create/json/rejected"
+#define FP_REGISTER_TOPIC        "$aws/provisioning-templates/esp32-pqc-provisioning/provision/json"
+#define FP_REGISTER_ACCEPTED     "$aws/provisioning-templates/esp32-pqc-provisioning/provision/json/accepted"
+#define FP_REGISTER_REJECTED     "$aws/provisioning-templates/esp32-pqc-provisioning/provision/json/rejected"
+
+Preferences nvs;
+
+// State machine for provisioning
+enum ProvisionState {
+    PROV_CHECK_NVS,
+    PROV_CONNECT_CLAIM,
+    PROV_CREATE_CERT,
+    PROV_WAIT_CERT,
+    PROV_REGISTER_THING,
+    PROV_WAIT_REGISTER,
+    PROV_SAVE_AND_RECONNECT,
+    PROV_DONE
+};
+
+static ProvisionState g_provState = PROV_CHECK_NVS;
+static String g_newCertPem;
+static String g_newKeyPem;
+static String g_certOwnershipToken;
+static String g_thingName;
+
+// Check if device is already provisioned
+bool isProvisioned() {
+    nvs.begin(NVS_NAMESPACE, true);  // Read-only
+    bool provisioned = nvs.getBool(NVS_KEY_PROVISIONED, false);
+    nvs.end();
+    return provisioned;
+}
+
+// Load provisioned credentials from NVS
+bool loadProvisionedCredentials(String& cert, String& key, String& thingName) {
+    nvs.begin(NVS_NAMESPACE, true);
+    cert = nvs.getString(NVS_KEY_CERT, "");
+    key = nvs.getString(NVS_KEY_KEY, "");
+    thingName = nvs.getString(NVS_KEY_THING, "");
+    nvs.end();
+    return (cert.length() > 0 && key.length() > 0 && thingName.length() > 0);
+}
+
+// Save new credentials to NVS
+void saveProvisionedCredentials(const String& cert, const String& key,
+                                 const String& thingName) {
+    nvs.begin(NVS_NAMESPACE, false);  // Read-write
+    nvs.putString(NVS_KEY_CERT, cert);
+    nvs.putString(NVS_KEY_KEY, key);
+    nvs.putString(NVS_KEY_THING, thingName);
+    nvs.putBool(NVS_KEY_PROVISIONED, true);
+    nvs.end();
+    ESP_LOGI("provision", "Credentials saved to NVS (cert=%d bytes, key=%d bytes, thing='%s')",
+             cert.length(), key.length(), thingName.c_str());
+}
+
+// Callback for provisioning MQTT messages
+void provisioningCallback(char* topic, byte* payload, unsigned int length) {
+    char buf[4096];
+    unsigned int copyLen = (length < sizeof(buf) - 1) ? length : sizeof(buf) - 1;
+    memcpy(buf, payload, copyLen);
+    buf[copyLen] = '\0';
+
+    if (strstr(topic, "certificates/create/json/accepted")) {
+        ESP_LOGI("provision", "Certificate created successfully");
+        // Parse JSON response to extract:
+        //   certificatePem, privateKey, certificateOwnershipToken
+        // (Use ArduinoJson or simple string parsing)
+        //
+        // Example response structure:
+        // {
+        //   "certificateId": "...",
+        //   "certificatePem": "-----BEGIN CERTIFICATE-----\n...",
+        //   "privateKey": "-----BEGIN RSA PRIVATE KEY-----\n...",
+        //   "certificateOwnershipToken": "..."
+        // }
+        //
+        // Store in g_newCertPem, g_newKeyPem, g_certOwnershipToken
+        g_provState = PROV_REGISTER_THING;
+
+    } else if (strstr(topic, "certificates/create/json/rejected")) {
+        ESP_LOGE("provision", "Certificate creation REJECTED: %s", buf);
+        g_provState = PROV_CONNECT_CLAIM;  // Retry
+
+    } else if (strstr(topic, "provision/json/accepted")) {
+        ESP_LOGI("provision", "Thing registered successfully");
+        // Parse response to extract thingName
+        // Example: {"deviceConfiguration":{"thingName":"esp32-pqc-ABC123"}}
+        // Store in g_thingName
+        g_provState = PROV_SAVE_AND_RECONNECT;
+
+    } else if (strstr(topic, "provision/json/rejected")) {
+        ESP_LOGE("provision", "Thing registration REJECTED: %s", buf);
+    }
+}
+
+// Run the provisioning flow (call from mqttTask before normal operation)
+void runProvisioningFlow(PubSubClient& mqttClient) {
+    switch (g_provState) {
+        case PROV_CREATE_CERT:
+            // Request a new certificate
+            ESP_LOGI("provision", "Requesting new device certificate...");
+            mqttClient.subscribe(FP_CREATE_CERT_ACCEPTED);
+            mqttClient.subscribe(FP_CREATE_CERT_REJECTED);
+            mqttClient.publish(FP_CREATE_CERT_TOPIC, "{}");
+            g_provState = PROV_WAIT_CERT;
+            break;
+
+        case PROV_REGISTER_THING: {
+            // Register the thing with the new certificate
+            ESP_LOGI("provision", "Registering thing...");
+            mqttClient.subscribe(FP_REGISTER_ACCEPTED);
+            mqttClient.subscribe(FP_REGISTER_REJECTED);
+
+            // Build registration payload with device serial number
+            String serialNumber = String((uint32_t)(ESP.getEfuseMac() >> 16), HEX);
+            char regPayload[512];
+            snprintf(regPayload, sizeof(regPayload),
+                     "{\"certificateOwnershipToken\":\"%s\","
+                     "\"parameters\":{\"SerialNumber\":\"%s\"}}",
+                     g_certOwnershipToken.c_str(),
+                     serialNumber.c_str());
+            mqttClient.publish(FP_REGISTER_TOPIC, regPayload);
+            g_provState = PROV_WAIT_REGISTER;
+            break;
+        }
+
+        case PROV_SAVE_AND_RECONNECT:
+            // Save credentials and reconnect with permanent identity
+            saveProvisionedCredentials(g_newCertPem, g_newKeyPem, g_thingName);
+            ESP_LOGI("provision", "Provisioning complete! Restarting with permanent cert...");
+            vTaskDelay(pdMS_TO_TICKS(1000));
+            esp_restart();
+            break;
+
+        default:
+            // PROV_WAIT_CERT, PROV_WAIT_REGISTER — just call mqttClient.loop()
+            break;
+    }
+}
+```
+
+### Integration with the Main Sketch
+
+The provisioning flow would be integrated into the MQTT task like this:
+
+```cpp
+void mqttTask(void* pvParameters) {
+    // ... wait for WiFi ...
+
+    if (isProvisioned()) {
+        // Normal path: load cert from NVS, connect with wolfSSL + PQC
+        String cert, key, thingName;
+        loadProvisionedCredentials(cert, key, thingName);
+        // Use cert/key for wolfSSL context...
+        // Use thingName for MQTT client ID and topics...
+    } else {
+        // First boot: connect with claim cert (classical TLS),
+        // run provisioning flow, then restart
+        ESP_LOGI("provision", "First boot — starting Fleet Provisioning...");
+        // Connect with WiFiClientSecure using CLAIM_CERT from PROGMEM
+        // Set callback to provisioningCallback
+        // Run provisioning state machine
+        // Device will restart after provisioning completes
+    }
+
+    // ... normal MQTT loop (only reached after provisioning) ...
+}
+```
+
+### Attendee Experience with Fleet Provisioning
+
+If implemented, the builders session flow would simplify to:
+
+1. Attendee opens Arduino Cloud IDE
+2. Flashes the firmware (identical binary for everyone — contains claim cert + WiFi creds)
+3. Device powers on, auto-provisions in ~5-10 seconds
+4. Telemetry appears on the dashboard — no certificate copy/paste needed
+
+### Why We Don't Use It in This Session
+
+For a 60-minute builders session, manual certificate provisioning is preferred because:
+
+- Fewer moving parts to debug in a room of attendees
+- Attendees learn the certificate model explicitly (educational value)
+- The PQC migration story stays front and center
+- Fleet Provisioning adds ~200 lines of code unrelated to PQC
+- If provisioning fails for one attendee, it's harder to troubleshoot than a cert paste error
+
+Fleet Provisioning is the right choice for production deployments or workshops longer than 2 hours where the "just flash and go" experience justifies the additional infrastructure setup.
 
 ---
 

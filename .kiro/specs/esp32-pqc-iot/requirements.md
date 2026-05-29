@@ -188,3 +188,24 @@ This project is an Arduino sketch sample that demonstrates connecting an ESP32 m
 3. Commands are received on `cmd/<thingName>/+` (cloud-to-device, wildcard subscribe).
 4. Topics are constructed dynamically from the configured Thing name at runtime.
 5. The topic structure enables per-thing, per-action IoT policy rules.
+
+### Requirement 22: PQC Migration via OTA Partition Switch
+**User Story:** As a builders session presenter, I want to demonstrate a live migration from classical TLS to post-quantum TLS by switching the ESP32's boot partition via an MQTT command, so that attendees can see the PQC upgrade happen in real time without network download risk.
+
+#### Acceptance Criteria
+1. A v1.0 firmware (classical TLS using WiFiClientSecure/mbedTLS) is provided as a separate sketch.
+2. The v1.0 firmware reports `pqc_algorithm: "none"` and `tls_version: "TLS 1.2"` in telemetry.
+3. The v1.0 firmware listens for a `migrate-pqc` command on `cmd/<thingName>/ota`.
+4. On receiving the migration command, the device switches the boot partition to OTA_1 and reboots.
+5. The device boots into v2.0 (PQC firmware) and telemetry immediately shows `pqc_algorithm: "P521_KYBER_LEVEL5"` and `tls_version: "TLS 1.3"`.
+6. The partition switch validates that the target partition contains valid firmware before rebooting.
+7. The total migration time (command received to PQC telemetry published) is under 10 seconds.
+
+### Requirement 23: PQC Migration Documentation
+**User Story:** As an IoT developer evaluating PQC migration strategies, I want documentation covering multiple OTA approaches (HTTPS pull, AWS IoT Jobs, partition switch), so that I can choose the right approach for my deployment scenario.
+
+#### Acceptance Criteria
+1. Documentation describes three migration approaches: HTTPS OTA pull, AWS IoT Jobs, and dual-partition switch.
+2. Each approach includes a flow description, pros/cons, and best-fit use case.
+3. The dual-partition approach includes pre-flashing instructions using `esptool.py`.
+4. The documentation explains what changes in the telemetry payload before and after migration.

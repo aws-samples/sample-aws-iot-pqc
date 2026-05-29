@@ -125,6 +125,29 @@ This plan covers the full implementation of an Arduino sketch connecting an ESP3
   - [x] 13.10 Subscribe to command wildcard topic `cmd/<thing>/+` with QoS 1
   **Requirements:** 18, 19, 20, 21
 
+- [x] 14. Create v1.0 classical TLS firmware for PQC migration demo
+  - [x] 14.1 Create `aws_iot_pqc_esp32_v1_classical/` sketch folder with `secrets.h`
+  - [x] 14.2 Implement WiFi task with exponential backoff (same pattern as v2.0)
+  - [x] 14.3 Implement MQTT task using `WiFiClientSecure` (mbedTLS, classical TLS 1.2)
+  - [x] 14.4 Report `pqc_algorithm: "none"` and `tls_version: "TLS 1.2"` in telemetry
+  - [x] 14.5 Include `firmware_version: "1.0.0"` in telemetry and lifecycle events
+  - [x] 14.6 Implement LWT and lifecycle events (same topic structure as v2.0)
+  - [x] 14.7 Subscribe to `cmd/<thing>/+` for command handling
+  - [x] 14.8 Implement `handleOtaMigration()` — validates next OTA partition has valid firmware
+  - [x] 14.9 On `migrate-pqc` command, call `esp_ota_set_boot_partition()` and `esp_restart()`
+  - [x] 14.10 Print current boot partition info at startup for debugging
+  **Requirements:** 22
+
+- [x] 15. Document PQC migration techniques
+  - [x] 15.1 Add "PQC Migration Techniques" section to README with overview
+  - [x] 15.2 Document Option A: HTTPS OTA pull (flow, pros, cons, best-fit)
+  - [x] 15.3 Document Option B: AWS IoT Jobs (flow, pros, cons, best-fit)
+  - [x] 15.4 Document Option C: Dual-partition switch (flow, pros, cons, best-fit)
+  - [x] 15.5 Include pre-flashing instructions with `esptool.py` commands
+  - [x] 15.6 Show before/after telemetry payload comparison
+  - [x] 15.7 Add project structure showing both firmware folders
+  **Requirements:** 23
+
 ## Notes
 
 - All tasks are complete. The sketch is a single `.ino` file for Arduino Cloud IDE compatibility.
@@ -145,6 +168,8 @@ This plan covers the full implementation of an Arduino sketch connecting an ESP3
     [8],
     [12],
     [13],
+    [14],
+    [15],
     [10],
     [11]
   ]
