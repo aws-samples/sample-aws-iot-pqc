@@ -57,9 +57,7 @@ Resources:
     Properties:
       ThingTypeName: !Ref ThingTypeName
       ThingTypeProperties:
-        ThingTypeDescription: >
-          ESP32 devices using post-quantum cryptography (PQC) with wolfSSL
-          TLS 1.3 and hybrid Kyber/ML-KEM key exchange.
+        ThingTypeDescription: 'ESP32 devices using post-quantum cryptography (PQC) with wolfSSL TLS 1.3 and hybrid Kyber/ML-KEM key exchange.'
         SearchableAttributes:
           - firmware_version
           - pqc_algorithm
@@ -69,13 +67,75 @@ Resources:
     Type: AWS::IoT::Thing
     Properties:
       ThingName: !Ref ThingName
-      ThingTypeName: !Ref ThingTypeName
       AttributePayload:
         Attributes:
           firmware_version: '1.0.0'
           pqc_algorithm: P521_KYBER_LEVEL5
           chip_family: ESP32
     DependsOn: IoTThingType
+
+  # ─── Associate Thing with Thing Type (Custom Resource) ──────────────────
+  # AWS::IoT::Thing does not support ThingTypeName natively in CloudFormation.
+  # This custom resource uses a Lambda to call UpdateThing after creation.
+  ThingTypeAssociationRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ThingName}-thing-type-assoc-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: IoTUpdateThing
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - iot:UpdateThing
+                Resource: !Sub 'arn:aws:iot:${AWS::Region}:${AWS::AccountId}:thing/${ThingName}'
+
+  ThingTypeAssociationFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${ThingName}-thing-type-assoc'
+      Runtime: python3.12
+      Handler: index.handler
+      Timeout: 30
+      Role: !GetAtt ThingTypeAssociationRole.Arn
+      Code:
+        ZipFile: |
+          import boto3
+          import cfnresponse
+          def handler(event, context):
+              try:
+                  iot = boto3.client('iot')
+                  thing_name = event['ResourceProperties']['ThingName']
+                  thing_type = event['ResourceProperties']['ThingTypeName']
+                  if event['RequestType'] in ['Create', 'Update']:
+                      iot.update_thing(thingName=thing_name, thingTypeName=thing_type)
+                  elif event['RequestType'] == 'Delete':
+                      # Remove thing type association on stack deletion
+                      iot.update_thing(thingName=thing_name, removeThingType=True)
+                  cfnresponse.send(event, context, cfnresponse.SUCCESS, {})
+              except Exception as e:
+                  print(f"Error: {e}")
+                  cfnresponse.send(event, context, cfnresponse.FAILED, {'Error': str(e)})
+
+  ThingTypeAssociation:
+    Type: Custom::ThingTypeAssociation
+    Properties:
+      ServiceToken: !GetAtt ThingTypeAssociationFunction.Arn
+      ThingName: !Ref ThingName
+      ThingTypeName: !Ref ThingTypeName
+    DependsOn:
+      - IoTThing
+      - IoTThingType
 
   # ─── IoT Policy ─────────────────────────────────────────────────────────
   # Grants the device permission to connect, publish telemetry/lifecycle,
@@ -117,30 +177,157 @@ Resources:
             Resource:
               - !Sub 'arn:aws:iot:${AWS::Region}:${AWS::AccountId}:topic/dt/${ThingName}/lifecycle'
 
-  # ─── Certificate ────────────────────────────────────────────────────────
-  # Creates a new certificate and key pair. The certificate ARN and ID are
-  # exported for use in attaching to the Thing and downloading credentials.
-  # NOTE: The private key is only available at creation time via the console
-  # or CLI. CloudFormation cannot output it directly.
-  IoTCertificate:
-    Type: AWS::IoT::Certificate
+  # ─── Certificate (Custom Resource) ───────────────────────────────────────
+  # AWS::IoT::Certificate with CertificateMode=DEFAULT cannot auto-generate
+  # key pairs in CloudFormation. This Custom Resource calls the IoT
+  # create-keys-and-certificate API and stores the private key in
+  # Secrets Manager so you can retrieve it after deployment.
+  CertificateProvisionerRole:
+    Type: AWS::IAM::Role
     Properties:
-      Status: ACTIVE
-      CertificateMode: DEFAULT
+      RoleName: !Sub '${ThingName}-cert-provisioner-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: IoTCertAndSecrets
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - iot:CreateKeysAndCertificate
+                  - iot:UpdateCertificate
+                  - iot:DeleteCertificate
+                  - iot:DetachThingPrincipal
+                  - iot:DetachPolicy
+                  - iot:ListTargetsForPolicy
+                  - iot:ListThingPrincipals
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - secretsmanager:CreateSecret
+                  - secretsmanager:DeleteSecret
+                  - secretsmanager:PutSecretValue
+                  - secretsmanager:TagResource
+                Resource: !Sub 'arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:iot/${ThingName}/*'
+              - Effect: Allow
+                Action:
+                  - ssm:PutParameter
+                  - ssm:DeleteParameter
+                  - ssm:AddTagsToResource
+                Resource:
+                  - !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/iot/${ThingName}/*'
+
+  CertificateProvisionerFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${ThingName}-cert-provisioner'
+      Runtime: python3.12
+      Handler: index.handler
+      Timeout: 60
+      Role: !GetAtt CertificateProvisionerRole.Arn
+      Environment:
+        Variables:
+          THING_NAME: !Ref ThingName
+      Code:
+        ZipFile: |
+          import boto3
+          import cfnresponse
+          import os
+          import json
+
+          def handler(event, context):
+              iot = boto3.client('iot')
+              sm = boto3.client('secretsmanager')
+              thing_name = os.environ['THING_NAME']
+              try:
+                  if event['RequestType'] == 'Create':
+                      # Create certificate and keys
+                      resp = iot.create_keys_and_certificate(setAsActive=True)
+                      cert_arn = resp['certificateArn']
+                      cert_id = resp['certificateId']
+                      cert_pem = resp['certificatePem']
+                      key_pem = resp['keyPair']['PrivateKey']
+
+                      # Store private key and cert in Secrets Manager
+                      secret_value = json.dumps({
+                          'certificatePem': cert_pem,
+                          'privateKey': key_pem,
+                          'certificateArn': cert_arn,
+                          'certificateId': cert_id
+                      })
+                      sm.create_secret(
+                          Name=f'iot/{thing_name}/device-credentials',
+                          Description=f'IoT device certificate and private key for {thing_name}',
+                          SecretString=secret_value,
+                          Tags=[
+                              {'Key': 'Thing', 'Value': thing_name},
+                              {'Key': 'ManagedBy', 'Value': 'CloudFormation'}
+                          ]
+                      )
+
+                      cfnresponse.send(event, context, cfnresponse.SUCCESS, {
+                          'CertificateArn': cert_arn,
+                          'CertificateId': cert_id,
+                          'SecretName': f'iot/{thing_name}/device-credentials'
+                      }, physicalResourceId=cert_id)
+
+                  elif event['RequestType'] == 'Delete':
+                      cert_id = event.get('PhysicalResourceId', '')
+                      if cert_id and len(cert_id) == 64:
+                          # Deactivate and delete certificate
+                          try:
+                              iot.update_certificate(certificateId=cert_id, newStatus='INACTIVE')
+                          except Exception:
+                              pass
+                          try:
+                              iot.delete_certificate(certificateId=cert_id, forceDelete=True)
+                          except Exception:
+                              pass
+                      # Delete the secret
+                      try:
+                          sm.delete_secret(
+                              SecretId=f'iot/{thing_name}/device-credentials',
+                              ForceDeleteWithoutRecovery=True
+                          )
+                      except Exception:
+                          pass
+                      cfnresponse.send(event, context, cfnresponse.SUCCESS, {})
+
+                  else:
+                      # Update - no-op, return existing
+                      cfnresponse.send(event, context, cfnresponse.SUCCESS, {},
+                                       physicalResourceId=event.get('PhysicalResourceId', ''))
+              except Exception as e:
+                  print(f"Error: {e}")
+                  cfnresponse.send(event, context, cfnresponse.FAILED, {'Error': str(e)})
+
+  IoTCertificate:
+    Type: Custom::IoTCertificate
+    Properties:
+      ServiceToken: !GetAtt CertificateProvisionerFunction.Arn
+    DependsOn: CertificateProvisionerRole
 
   # ─── Attach Policy to Certificate ───────────────────────────────────────
   IoTPolicyAttachment:
     Type: AWS::IoT::PolicyPrincipalAttachment
     Properties:
       PolicyName: !Ref IoTPolicy
-      Principal: !GetAtt IoTCertificate.Arn
+      Principal: !GetAtt IoTCertificate.CertificateArn
 
   # ─── Attach Certificate to Thing ────────────────────────────────────────
   IoTThingCertAttachment:
     Type: AWS::IoT::ThingPrincipalAttachment
     Properties:
       ThingName: !Ref IoTThing
-      Principal: !GetAtt IoTCertificate.Arn
+      Principal: !GetAtt IoTCertificate.CertificateArn
 
   # ─── CloudWatch Log Group for Telemetry ─────────────────────────────────
   TelemetryLogGroup:
@@ -189,7 +376,7 @@ Resources:
     Type: AWS::IoT::TopicRule
     Condition: CreateTelemetryRule
     Properties:
-      RuleName: !Sub '${AWS::StackName}_telemetry'
+      RuleName: 'esp32_pqc_telemetry_rule'
       TopicRulePayload:
         Description: >
           Routes device telemetry from dt/<thingName>/telemetry to CloudWatch Logs
@@ -208,7 +395,7 @@ Resources:
     Type: AWS::IoT::TopicRule
     Condition: CreateLifecycleRule
     Properties:
-      RuleName: !Sub '${AWS::StackName}_lifecycle'
+      RuleName: 'esp32_pqc_lifecycle_rule'
       TopicRulePayload:
         Description: >
           Routes device lifecycle events (online/offline) from
@@ -230,6 +417,10 @@ Outputs:
     Description: IoT Thing name (use this as THINGNAME in secrets.h)
     Value: !Ref IoTThing
 
+  ThingTypeName:
+    Description: IoT Thing Type name for device grouping
+    Value: !Ref IoTThingType
+
   ThingArn:
     Description: IoT Thing ARN
     Value: !Sub 'arn:aws:iot:${AWS::Region}:${AWS::AccountId}:thing/${ThingName}'
@@ -243,13 +434,19 @@ Outputs:
 
   CertificateArn:
     Description: >
-      Certificate ARN. Download the certificate and private key from the
-      IoT Console (Security > Certificates) or use the AWS CLI.
-    Value: !GetAtt IoTCertificate.Arn
+      Certificate ARN. The certificate PEM and private key are stored in
+      AWS Secrets Manager (see SecretName output).
+    Value: !GetAtt IoTCertificate.CertificateArn
 
   CertificateId:
     Description: Certificate ID for CLI operations
-    Value: !Ref IoTCertificate
+    Value: !GetAtt IoTCertificate.CertificateId
+
+  DeviceCredentialsSecret:
+    Description: >
+      Secrets Manager secret containing the device certificate and private key.
+      Retrieve with: aws secretsmanager get-secret-value --secret-id <this-value>
+    Value: !GetAtt IoTCertificate.SecretName
 
   PolicyName:
     Description: IoT Policy name attached to the certificate

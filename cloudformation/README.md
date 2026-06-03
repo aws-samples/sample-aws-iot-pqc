@@ -8,7 +8,8 @@ This CloudFormation template provisions all the AWS IoT Core infrastructure need
 |----------|------|---------|
 | IoT Thing | `AWS::IoT::Thing` | Represents the ESP32 device in AWS IoT |
 | IoT Thing Type | `AWS::IoT::ThingType` | Groups PQC-capable ESP32 devices |
-| IoT Certificate | `AWS::IoT::Certificate` | X.509 certificate for mTLS authentication |
+| Thing Type Association | `Custom::ThingTypeAssociation` | Associates Thing with Thing Type (via Lambda) |
+| IoT Certificate | `Custom::IoTCertificate` | X.509 certificate for mTLS (created via Lambda, stored in Secrets Manager) |
 | IoT Policy | `AWS::IoT::Policy` | Least-privilege permissions for the device |
 | Policy Attachment | `AWS::IoT::PolicyPrincipalAttachment` | Links policy to certificate |
 | Thing Attachment | `AWS::IoT::ThingPrincipalAttachment` | Links certificate to Thing |
@@ -16,7 +17,13 @@ This CloudFormation template provisions all the AWS IoT Core infrastructure need
 | Lifecycle Log Group | `AWS::Logs::LogGroup` | Stores online/offline events |
 | IoT Rule (Telemetry) | `AWS::IoT::TopicRule` | Routes telemetry to CloudWatch |
 | IoT Rule (Lifecycle) | `AWS::IoT::TopicRule` | Routes lifecycle events to CloudWatch |
-| IAM Role | `AWS::IAM::Role` | Allows IoT Rules to write to CloudWatch |
+| IAM Role (Rules) | `AWS::IAM::Role` | Allows IoT Rules to write to CloudWatch |
+| IAM Role (Lambda) | `AWS::IAM::Role` | Allows Lambdas to call IoT and Secrets Manager APIs |
+| Lambda (Thing Type) | `AWS::Lambda::Function` | Associates Thing with Thing Type |
+| Lambda (Certificate) | `AWS::Lambda::Function` | Creates certificate, stores key in Secrets Manager |
+| Secrets Manager Secret | Created by Lambda | Stores device certificate PEM and private key |
+
+**Note:** `AWS::IoT::Thing` does not natively support the `ThingTypeName` property, and `AWS::IoT::Certificate` cannot auto-generate key pairs in CloudFormation. Custom Resources (small inline Lambdas) handle both: one associates the Thing with its Type, and another creates the certificate and stores the private key in Secrets Manager for easy retrieval after deployment.
 
 ## Prerequisites
 
@@ -70,42 +77,47 @@ aws iot describe-endpoint --endpoint-type iot:Data-ATS --query 'endpointAddress'
 
 Copy this value into `AWS_IOT_ENDPOINT` in your device's `secrets.h`.
 
-### 2. Download the Certificate and Private Key
+### 2. Retrieve the Device Certificate and Private Key
 
-The CloudFormation stack creates a certificate, but the private key is only available at creation time. Retrieve it using the certificate ID from the stack outputs:
+The stack automatically creates a certificate and stores both the certificate PEM and private key in AWS Secrets Manager. Retrieve them with:
 
 ```bash
-# Get the certificate ID
-CERT_ID=$(aws cloudformation describe-stacks \
+# Get the secret name from stack outputs
+SECRET_NAME=$(aws cloudformation describe-stacks \
   --stack-name esp32-pqc-iot \
-  --query 'Stacks[0].Outputs[?OutputKey==`CertificateId`].OutputValue' \
+  --query 'Stacks[0].Outputs[?OutputKey==`DeviceCredentialsSecret`].OutputValue' \
   --output text)
 
-# Download the certificate PEM
-aws iot describe-certificate \
-  --certificate-id $CERT_ID \
-  --query 'certificateDescription.certificatePem' \
-  --output text > device-certificate.pem.crt
-
-echo "Certificate saved to device-certificate.pem.crt"
-echo ""
-echo "IMPORTANT: The private key was generated at stack creation time."
-echo "If you did not capture it, you must delete this certificate and"
-echo "create a new one manually in the IoT Console."
+# Retrieve the credentials
+aws secretsmanager get-secret-value \
+  --secret-id $SECRET_NAME \
+  --query 'SecretString' \
+  --output text | python3 -c "
+import json, sys
+creds = json.load(sys.stdin)
+with open('device-certificate.pem.crt', 'w') as f:
+    f.write(creds['certificatePem'])
+with open('device-private-key.pem', 'w') as f:
+    f.write(creds['privateKey'])
+print('Files written:')
+print('  device-certificate.pem.crt')
+print('  device-private-key.pem')
+"
 ```
 
-**Note:** CloudFormation's `AWS::IoT::Certificate` resource generates the private key internally. To retrieve it, you have two options:
+Or retrieve them individually:
 
-1. **Use the IoT Console** — Go to Security > Certificates, find the certificate, and download the key pair (only available immediately after creation).
-2. **Create manually** — If you missed the key, delete the stack's certificate and create one manually:
-   ```bash
-   aws iot create-keys-and-certificate \
-     --set-as-active \
-     --certificate-pem-outfile device-cert.pem \
-     --private-key-outfile device-private-key.pem \
-     --public-key-outfile device-public-key.pem
-   ```
-   Then attach the new certificate to the Thing and policy manually.
+```bash
+# Just the certificate
+aws secretsmanager get-secret-value --secret-id $SECRET_NAME \
+  --query 'SecretString' --output text | python3 -c "
+import json,sys; print(json.load(sys.stdin)['certificatePem'])" > device-certificate.pem.crt
+
+# Just the private key
+aws secretsmanager get-secret-value --secret-id $SECRET_NAME \
+  --query 'SecretString' --output text | python3 -c "
+import json,sys; print(json.load(sys.stdin)['privateKey'])" > device-private-key.pem
+```
 
 ### 3. Download Amazon Root CA 1
 
@@ -155,10 +167,12 @@ Or use the MQTT test client in the IoT Console:
 | Output | Description |
 |--------|-------------|
 | `ThingName` | The created Thing name |
+| `ThingTypeName` | The Thing Type name for device grouping |
 | `ThingArn` | Full ARN of the Thing |
 | `IoTEndpoint` | Approximate IoT endpoint (use CLI for exact value) |
 | `CertificateArn` | ARN of the created certificate |
 | `CertificateId` | ID for CLI certificate operations |
+| `DeviceCredentialsSecret` | Secrets Manager secret containing cert + private key |
 | `PolicyName` | Name of the attached IoT policy |
 | `TelemetryTopic` | Topic where device publishes telemetry |
 | `LifecycleTopic` | Topic for online/offline lifecycle events |
