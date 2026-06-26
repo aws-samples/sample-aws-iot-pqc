@@ -18,18 +18,29 @@
 #define LOG_LEVEL  3
 
 // ─── AWS IoT Core Configuration ─────────────────────────────────────────────
+// For the workshop, the ESP32 connects to the local Mosquitto broker
+// on the Raspberry Pi. The classical firmware uses standard TLS 1.2.
+#define MQTT_BROKER_ENDPOINT "RASPBERRY_PI_IP_ADDRESS"
+#define MQTT_BROKER_PORT     8883
+
+// Device identity is derived at runtime from the ESP32's MAC address.
+// Format: "esp32-XXYYZZ" (last 3 bytes of MAC). No static THINGNAME needed.
+
+// AWS IoT Core endpoint (used by the Mosquitto bridge, not by this device)
 #define AWS_IOT_ENDPOINT "xxxxxxxxxxxxxx-ats.iot.us-east-1.amazonaws.com"
 #define AWS_IOT_PORT     8883
-#define THINGNAME        "my-esp32-pqc-thing"
 
-// ─── Amazon Root CA 1 ───────────────────────────────────────────────────────
+// ─── Broker CA Certificate ───────────────────────────────────────────────────
+// Workshop CA certificate (signs the Mosquitto broker server cert).
+// For direct IoT Core connections, replace with AmazonRootCA1.pem.
 static const char AWS_CERT_CA[] PROGMEM = R"EOF(
 -----BEGIN CERTIFICATE-----
-REPLACE_WITH_YOUR_AMAZON_ROOT_CA_1
+REPLACE_WITH_WORKSHOP_CA_CERTIFICATE
 -----END CERTIFICATE-----
 )EOF";
 
-// ─── Device Certificate ─────────────────────────────────────────────────────
+// ─── Fleet Device Certificate (shared by all workshop devices) ──────────────
+// All devices share this cert. Identity comes from MAC-derived client ID.
 static const char AWS_CERT_CRT[] PROGMEM = R"KEY(
 -----BEGIN CERTIFICATE-----
 REPLACE_WITH_YOUR_DEVICE_CERTIFICATE

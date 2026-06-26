@@ -70,7 +70,7 @@ Resources:
       AttributePayload:
         Attributes:
           firmware_version: '1.0.0'
-          pqc_algorithm: P521_KYBER_LEVEL5
+          pqc_algorithm: SECP256R1_MLKEM768
           chip_family: ESP32
     DependsOn: IoTThingType
 

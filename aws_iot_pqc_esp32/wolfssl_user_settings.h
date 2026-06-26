@@ -43,13 +43,21 @@
 #define HAVE_FFDHE_2048             // Finite-field DH for TLS 1.3
 #define HAVE_HKDF                   // Required for TLS 1.3 key derivation
 
-// ─── Post-Quantum Cryptography (Kyber / ML-KEM) ────────────────────────────
-// These enables are per the wolfSSL blog post:
-//   https://www.wolfssl.com/post-quantum-key-share-on-the-espressif-esp32/
-#define WOLFSSL_EXPERIMENTAL_SETTINGS
-#define WOLFSSL_HAVE_KYBER          // Enable Kyber / ML-KEM support
-#define WOLFSSL_WC_KYBER            // Use wolfSSL's native Kyber implementation
-#define WOLFSSL_SHA3                // Required by Kyber
+// ─── Post-Quantum Cryptography (ML-KEM / FIPS 203) ─────────────────────────
+// Uses the IANA-standardized ML-KEM hybrid key exchange groups for
+// interoperability with OpenSSL 3.5+ (e.g., Mosquitto PQC broker).
+//
+// Available hybrids (code points):
+//   SecP256r1MLKEM768  (4587) — P-256 + ML-KEM-768 [recommended]
+//   X25519MLKEM768     (4588) — X25519 + ML-KEM-768
+//   SecP384r1MLKEM1024 (4589) — P-384 + ML-KEM-1024
+//
+// Reference: wolfSSL appendix G (Key Exchange Groups, section B-8)
+#define WOLFSSL_HAVE_MLKEM          // Enable ML-KEM (FIPS 203) support
+#define HAVE_PQC                    // General PQC flag
+#define WOLFSSL_PQC_HYBRIDS         // Enable hybrid key exchange groups
+#define WOLFSSL_WC_KYBER            // Use wolfSSL's native ML-KEM implementation
+#define WOLFSSL_SHA3                // Required by ML-KEM
 
 // ─── ECC (for hybrid PQC key exchange) ──────────────────────────────────────
 #define HAVE_ECC
@@ -59,9 +67,8 @@
 #define HAVE_ECC_DHE
 #define ECC_SHAMIR
 
-// P-256 and P-521 curves for hybrid key exchange
-#define HAVE_ECC256                 // NIST P-256 (for P256_KYBER_LEVEL1)
-#define HAVE_ECC521                 // NIST P-521 (for P521_KYBER_LEVEL5)
+// P-256 curve for hybrid key exchange (SecP256r1MLKEM768)
+#define HAVE_ECC256                 // NIST P-256 (for SecP256r1MLKEM768)
 
 // ─── RSA (for certificate verification) ─────────────────────────────────────
 #define RSA_LOW_MEM

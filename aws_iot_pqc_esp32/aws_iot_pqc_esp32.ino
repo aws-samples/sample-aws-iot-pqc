@@ -62,8 +62,8 @@ static const char* TAG_WOLFSSL = "wolfssl";
 #ifndef WOLFSSL_TLS13
   #error "wolfSSL TLS 1.3 support is required. Enable WOLFSSL_TLS13 in user_settings.h"
 #endif
-#ifndef WOLFSSL_HAVE_KYBER
-  #error "wolfSSL Kyber/ML-KEM support is required. Enable WOLFSSL_HAVE_KYBER in user_settings.h"
+#ifndef WOLFSSL_HAVE_MLKEM
+  #error "wolfSSL ML-KEM support is required. Enable WOLFSSL_HAVE_MLKEM in user_settings.h"
 #endif
 
 // ─── FreeRTOS Task Configuration ────────────────────────────────────────────
@@ -101,11 +101,14 @@ static const char* TAG_WOLFSSL = "wolfssl";
 #define TOPIC_PREFIX_DT    "dt/"
 #define TOPIC_PREFIX_CMD   "cmd/"
 
-// These are built at runtime using THINGNAME from secrets.h
+// These are built at runtime using the MAC-derived device identity
 static char g_topicTelemetry[128];   // dt/<thing>/telemetry
 static char g_topicLifecycle[128];   // dt/<thing>/lifecycle
 static char g_topicCmdAll[128];      // cmd/<thing>/+  (subscribe wildcard)
 static char g_topicCmdReq[128];      // cmd/<thing>/request
+
+// ─── Device Identity (derived from MAC address at runtime) ──────────────────
+static char g_thingName[32];  // "esp32-XXYYZZ" format
 
 // ─── Global State ───────────────────────────────────────────────────────────
 static volatile bool g_wifiConnected = false;
@@ -125,6 +128,19 @@ void mqttTask(void* pvParameters);
 void mqttCallback(char* topic, byte* payload, unsigned int length);
 bool setupWolfSSLContext();
 WiFiClient* createPQCTLSClient();
+static void initDeviceIdentity();
+
+// ─── Device Identity from MAC Address ───────────────────────────────────────
+// Derives a unique Thing name from the ESP32's factory-burned MAC address.
+// Format: "esp32-XXYYZZ" where XXYYZZ are the last 3 bytes of the MAC.
+// This allows a single firmware binary to run on any device.
+static void initDeviceIdentity() {
+    uint64_t mac = ESP.getEfuseMac();
+    uint8_t* macBytes = (uint8_t*)&mac;
+    snprintf(g_thingName, sizeof(g_thingName), "esp32-%02X%02X%02X",
+             macBytes[3], macBytes[4], macBytes[5]);
+    ESP_LOGI(TAG_MAIN, "Device identity: %s (MAC-derived)", g_thingName);
+}
 
 // ═══════════════════════════════════════════════════════════════════════════
 //  Exponential Backoff with Jitter
@@ -158,13 +174,13 @@ static unsigned long calculateBackoff(int attempt) {
 
 static void initTopics() {
     snprintf(g_topicTelemetry, sizeof(g_topicTelemetry),
-             "%s%s/telemetry", TOPIC_PREFIX_DT, THINGNAME);
+             "%s%s/telemetry", TOPIC_PREFIX_DT, g_thingName);
     snprintf(g_topicLifecycle, sizeof(g_topicLifecycle),
-             "%s%s/lifecycle", TOPIC_PREFIX_DT, THINGNAME);
+             "%s%s/lifecycle", TOPIC_PREFIX_DT, g_thingName);
     snprintf(g_topicCmdAll, sizeof(g_topicCmdAll),
-             "%s%s/+", TOPIC_PREFIX_CMD, THINGNAME);
+             "%s%s/+", TOPIC_PREFIX_CMD, g_thingName);
     snprintf(g_topicCmdReq, sizeof(g_topicCmdReq),
-             "%s%s/request", TOPIC_PREFIX_CMD, THINGNAME);
+             "%s%s/request", TOPIC_PREFIX_CMD, g_thingName);
 
     ESP_LOGD(TAG_MQTT, "Topics initialized:");
     ESP_LOGD(TAG_MQTT, "  Telemetry: %s", g_topicTelemetry);
@@ -269,25 +285,27 @@ public:
         wolfSSL_SetIOWriteCtx(_ssl, &_ioCtx);
         ESP_LOGD(TAG_TLS, "I/O callbacks registered");
 
-        // Step 4: Enable hybrid PQC key exchange (P-521 + Kyber Level 5)
+        // Step 4: Enable hybrid PQC key exchange (P-256 + ML-KEM-768)
         // This is the core PQC configuration. The TLS 1.3 handshake will
-        // negotiate a hybrid key exchange combining classical ECDHE P-521
-        // with the post-quantum ML-KEM (Kyber) algorithm.
-        int ret = wolfSSL_UseKeyShare(_ssl, WOLFSSL_P521_KYBER_LEVEL5);
+        // negotiate a hybrid key exchange combining classical ECDHE P-256
+        // with the post-quantum ML-KEM-768 algorithm.
+        // Uses IANA code point 4587 (SecP256r1MLKEM768) for interoperability
+        // with OpenSSL 3.5+ based servers (e.g., Mosquitto PQC broker).
+        int ret = wolfSSL_UseKeyShare(_ssl, WOLFSSL_SECP256R1_MLKEM768);
         if (ret != WOLFSSL_SUCCESS) {
-            ESP_LOGW(TAG_TLS, "P-521 + Kyber Level 5 key share failed (rc=%d), trying fallback", ret);
-            // Fall back to trying P-256 + Kyber Level 1 (smaller, faster)
-            ret = wolfSSL_UseKeyShare(_ssl, WOLFSSL_P256_KYBER_LEVEL1);
+            ESP_LOGW(TAG_TLS, "P-256 + ML-KEM-768 key share failed (rc=%d), trying fallback", ret);
+            // Fall back to X25519 + ML-KEM-768 (also IANA-standard, code point 4588)
+            ret = wolfSSL_UseKeyShare(_ssl, WOLFSSL_X25519_MLKEM768);
             if (ret != WOLFSSL_SUCCESS) {
-                ESP_LOGE(TAG_TLS, "PQC key share fallback (P-256 + Kyber Level 1) also failed (rc=%d)", ret);
+                ESP_LOGE(TAG_TLS, "PQC key share fallback (X25519 + ML-KEM-768) also failed (rc=%d)", ret);
                 wolfSSL_free(_ssl);
                 _ssl = NULL;
                 _tcpClient.stop();
                 return 0;
             }
-            ESP_LOGI(TAG_TLS, "Using fallback PQC: P-256 + Kyber Level 1");
+            ESP_LOGI(TAG_TLS, "Using fallback PQC: X25519 + ML-KEM-768");
         } else {
-            ESP_LOGI(TAG_TLS, "Using PQC key exchange: P-521 + Kyber Level 5");
+            ESP_LOGI(TAG_TLS, "Using PQC key exchange: P-256 + ML-KEM-768 (SecP256r1MLKEM768)");
         }
 
         // Step 5: Set SNI (Server Name Indication) for AWS IoT
@@ -637,12 +655,12 @@ void mqttTask(void* pvParameters) {
     static WolfSSLClient tlsClient;
     static PubSubClient mqttClient(tlsClient);
 
-    mqttClient.setServer(AWS_IOT_ENDPOINT, AWS_IOT_PORT);
+    mqttClient.setServer(MQTT_BROKER_ENDPOINT, MQTT_BROKER_PORT);
     mqttClient.setCallback(mqttCallback);
     mqttClient.setKeepAlive(MQTT_KEEPALIVE_SEC);
     mqttClient.setBufferSize(1024); // Increase for larger messages
     ESP_LOGD(TAG_MQTT, "PubSubClient configured: endpoint=%s, port=%d, keepalive=%ds, buffer=1024",
-             AWS_IOT_ENDPOINT, AWS_IOT_PORT, MQTT_KEEPALIVE_SEC);
+             MQTT_BROKER_ENDPOINT, MQTT_BROKER_PORT, MQTT_KEEPALIVE_SEC);
 
     // ─── Last Will and Testament (LWT) ──────────────────────────────────────
     // The LWT message is published by the broker if the device disconnects
@@ -670,15 +688,15 @@ void mqttTask(void* pvParameters) {
         // Connect or reconnect to MQTT
         if (!mqttClient.connected()) {
             g_mqttConnected = false;
-            ESP_LOGI(TAG_MQTT, "Connecting to AWS IoT Core (thing='%s', attempt=%d)...",
-                     THINGNAME, connectAttempts + 1);
+            ESP_LOGI(TAG_MQTT, "Connecting to PQC Mosquitto broker (thing='%s', attempt=%d)...",
+                     g_thingName, connectAttempts + 1);
             ESP_LOGD(TAG_MQTT, "Free heap before connect: %u bytes", ESP.getFreeHeap());
 
             // Connect with Last Will and Testament (LWT)
             // If the device disconnects unexpectedly, the broker publishes
             // the LWT message to the lifecycle topic automatically.
             bool connected = mqttClient.connect(
-                THINGNAME,                  // Client ID (must match Thing name)
+                g_thingName,                // Client ID (MAC-derived Thing name)
                 NULL,                       // Username (not used with mTLS)
                 NULL,                       // Password (not used with mTLS)
                 g_topicLifecycle,           // LWT topic
@@ -690,7 +708,7 @@ void mqttTask(void* pvParameters) {
             if (connected) {
                 g_mqttConnected = true;
                 connectAttempts = 0; // Reset backoff on success
-                ESP_LOGI(TAG_MQTT, "Connected to AWS IoT Core!");
+                ESP_LOGI(TAG_MQTT, "Connected to PQC Mosquitto broker!");
 
                 // ─── Publish Online Lifecycle Event ──────────────────────────
                 // Announce that the device is online. This is the counterpart
@@ -701,12 +719,12 @@ void mqttTask(void* pvParameters) {
                          "{"
                          "\"status\":\"online\","
                          "\"device\":\"%s\","
-                         "\"firmware_version\":\"1.0.0\","
-                         "\"pqc_algorithm\":\"P521_KYBER_LEVEL5\","
+                         "\"firmware_version\":\"2.0.0\","
+                         "\"pqc_algorithm\":\"SECP256R1_MLKEM768\","
                          "\"ip\":\"%s\","
                          "\"uptime_sec\":%lu"
                          "}",
-                         THINGNAME,
+                         g_thingName,
                          WiFi.localIP().toString().c_str(),
                          millis() / 1000);
 
@@ -755,10 +773,10 @@ void mqttTask(void* pvParameters) {
                      "\"free_heap\":%u,"
                      "\"min_heap\":%u,"
                      "\"chip_temp_c\":%.1f,"
-                     "\"pqc_algorithm\":\"P521_KYBER_LEVEL5\","
+                     "\"pqc_algorithm\":\"SECP256R1_MLKEM768\","
                      "\"tls_version\":\"TLS 1.3\""
                      "}",
-                     THINGNAME,
+                     g_thingName,
                      messageCount,
                      (unsigned long)(millis() / 1000), // Approximate epoch placeholder
                      millis() / 1000,
@@ -806,11 +824,28 @@ void setup() {
     // esp_log_level_set(TAG_MQTT, ESP_LOG_INFO);
     // esp_log_level_set(TAG_WOLFSSL, ESP_LOG_DEBUG);
 
+    // Create synchronization primitives
+    g_wifiMutex = xSemaphoreCreateMutex();
+    if (!g_wifiMutex) {
+        ESP_LOGE(TAG_MAIN, "FATAL: Failed to create WiFi mutex");
+        while (1) { delay(1000); }
+    }
+
+    // Seed random number generator for backoff jitter
+    randomSeed(analogRead(0) ^ (uint32_t)(ESP.getEfuseMac() >> 16));
+
+    // Derive device identity from MAC address FIRST (needed for banner)
+    initDeviceIdentity();
+
     ESP_LOGI(TAG_MAIN, "");
     ESP_LOGI(TAG_MAIN, "══════════════════════════════════════════════════");
     ESP_LOGI(TAG_MAIN, "  ESP32 AWS IoT Core - Post-Quantum Cryptography");
-    ESP_LOGI(TAG_MAIN, "  TLS 1.3 + Hybrid Kyber/ML-KEM Key Exchange");
+    ESP_LOGI(TAG_MAIN, "  TLS 1.3 + Hybrid ML-KEM Key Exchange");
     ESP_LOGI(TAG_MAIN, "══════════════════════════════════════════════════");
+    ESP_LOGI(TAG_MAIN, "");
+    ESP_LOGI(TAG_MAIN, "┌──────────────────────────────────────────────┐");
+    ESP_LOGI(TAG_MAIN, "│  YOUR DEVICE NAME:  %-24s │", g_thingName);
+    ESP_LOGI(TAG_MAIN, "└──────────────────────────────────────────────┘");
     ESP_LOGI(TAG_MAIN, "");
 
     // Print chip info
@@ -820,18 +855,6 @@ void setup() {
     ESP_LOGI(TAG_MAIN, "Free Heap:  %u bytes", ESP.getFreeHeap());
     ESP_LOGI(TAG_MAIN, "PSRAM:      %u bytes", ESP.getPsramSize());
     ESP_LOGI(TAG_MAIN, "Log Level:  %d", LOG_LEVEL);
-
-    // Create synchronization primitives
-    g_wifiMutex = xSemaphoreCreateMutex();
-    if (!g_wifiMutex) {
-        ESP_LOGE(TAG_MAIN, "FATAL: Failed to create WiFi mutex");
-        while (1) { delay(1000); }
-    }
-    ESP_LOGD(TAG_MAIN, "WiFi mutex created");
-
-    // Seed random number generator for backoff jitter
-    // Uses analog noise + chip ID for entropy
-    randomSeed(analogRead(0) ^ (uint32_t)(ESP.getEfuseMac() >> 16));
 
     // Determine number of cores for task pinning
     // Single-core ESP32 variants (C3, S2) use core 0 for everything
