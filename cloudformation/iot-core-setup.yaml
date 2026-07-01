@@ -242,11 +242,19 @@ Resources:
           import cfnresponse
           import os
           import json
+          import urllib.request
+
+          AMAZON_ROOT_CA_URL = 'https://www.amazontrust.com/repository/AmazonRootCA1.pem'
 
           def handler(event, context):
               iot = boto3.client('iot')
               sm = boto3.client('secretsmanager')
+              ssm = boto3.client('ssm')
               thing_name = os.environ['THING_NAME']
+
+              param_root_ca = f'/iot/{thing_name}/root-ca-pem'
+              param_cert = f'/iot/{thing_name}/certificate-pem'
+
               try:
                   if event['RequestType'] == 'Create':
                       # Create certificate and keys
@@ -256,7 +264,10 @@ Resources:
                       cert_pem = resp['certificatePem']
                       key_pem = resp['keyPair']['PrivateKey']
 
-                      # Store private key and cert in Secrets Manager
+                      # Download Amazon Root CA 1
+                      root_ca_pem = urllib.request.urlopen(AMAZON_ROOT_CA_URL).read().decode('utf-8')
+
+                      # Store private key in Secrets Manager (sensitive)
                       secret_value = json.dumps({
                           'certificatePem': cert_pem,
                           'privateKey': key_pem,
@@ -273,16 +284,41 @@ Resources:
                           ]
                       )
 
+                      # Store Root CA in SSM Parameter Store (not sensitive)
+                      ssm.put_parameter(
+                          Name=param_root_ca,
+                          Description=f'Amazon Root CA 1 PEM for {thing_name}',
+                          Value=root_ca_pem,
+                          Type='String',
+                          Tags=[
+                              {'Key': 'Thing', 'Value': thing_name},
+                              {'Key': 'ManagedBy', 'Value': 'CloudFormation'}
+                          ]
+                      )
+
+                      # Store device certificate PEM in SSM Parameter Store (not sensitive)
+                      ssm.put_parameter(
+                          Name=param_cert,
+                          Description=f'IoT device certificate PEM for {thing_name}',
+                          Value=cert_pem,
+                          Type='String',
+                          Tags=[
+                              {'Key': 'Thing', 'Value': thing_name},
+                              {'Key': 'ManagedBy', 'Value': 'CloudFormation'}
+                          ]
+                      )
+
                       cfnresponse.send(event, context, cfnresponse.SUCCESS, {
                           'CertificateArn': cert_arn,
                           'CertificateId': cert_id,
-                          'SecretName': f'iot/{thing_name}/device-credentials'
+                          'SecretName': f'iot/{thing_name}/device-credentials',
+                          'RootCaParameterName': param_root_ca,
+                          'CertificateParameterName': param_cert
                       }, physicalResourceId=cert_id)
 
                   elif event['RequestType'] == 'Delete':
                       cert_id = event.get('PhysicalResourceId', '')
                       if cert_id and len(cert_id) == 64:
-                          # Deactivate and delete certificate
                           try:
                               iot.update_certificate(certificateId=cert_id, newStatus='INACTIVE')
                           except Exception:
@@ -299,6 +335,12 @@ Resources:
                           )
                       except Exception:
                           pass
+                      # Delete SSM parameters
+                      for param in [param_root_ca, param_cert]:
+                          try:
+                              ssm.delete_parameter(Name=param)
+                          except Exception:
+                              pass
                       cfnresponse.send(event, context, cfnresponse.SUCCESS, {})
 
                   else:
@@ -447,6 +489,18 @@ Outputs:
       Secrets Manager secret containing the device certificate and private key.
       Retrieve with: aws secretsmanager get-secret-value --secret-id <this-value>
     Value: !GetAtt IoTCertificate.SecretName
+
+  RootCaParameter:
+    Description: >
+      SSM Parameter Store name containing the Amazon Root CA 1 PEM.
+      Retrieve with: aws ssm get-parameter --name <this-value> --query Parameter.Value --output text
+    Value: !GetAtt IoTCertificate.RootCaParameterName
+
+  CertificatePemParameter:
+    Description: >
+      SSM Parameter Store name containing the device certificate PEM.
+      Retrieve with: aws ssm get-parameter --name <this-value> --query Parameter.Value --output text
+    Value: !GetAtt IoTCertificate.CertificateParameterName
 
   PolicyName:
     Description: IoT Policy name attached to the certificate

@@ -121,8 +121,29 @@ import json,sys; print(json.load(sys.stdin)['privateKey'])" > device-private-key
 
 ### 3. Download Amazon Root CA 1
 
+The Root CA is also stored in SSM Parameter Store automatically. Retrieve it with:
+
+```bash
+# From SSM Parameter Store (created by the stack)
+aws ssm get-parameter \
+  --name /iot/my-esp32-pqc-thing/root-ca-pem \
+  --query 'Parameter.Value' \
+  --output text > AmazonRootCA1.pem
+```
+
+Or download it directly:
+
 ```bash
 curl -o AmazonRootCA1.pem https://www.amazontrust.com/repository/AmazonRootCA1.pem
+```
+
+You can also retrieve just the device certificate PEM from SSM (without the private key):
+
+```bash
+aws ssm get-parameter \
+  --name /iot/my-esp32-pqc-thing/certificate-pem \
+  --query 'Parameter.Value' \
+  --output text > device-certificate.pem.crt
 ```
 
 ### 4. Update secrets.h
@@ -173,6 +194,8 @@ Or use the MQTT test client in the IoT Console:
 | `CertificateArn` | ARN of the created certificate |
 | `CertificateId` | ID for CLI certificate operations |
 | `DeviceCredentialsSecret` | Secrets Manager secret containing cert + private key |
+| `RootCaParameter` | SSM Parameter Store name for Amazon Root CA 1 PEM |
+| `CertificatePemParameter` | SSM Parameter Store name for device certificate PEM |
 | `PolicyName` | Name of the attached IoT policy |
 | `TelemetryTopic` | Topic where device publishes telemetry |
 | `LifecycleTopic` | Topic for online/offline lifecycle events |
