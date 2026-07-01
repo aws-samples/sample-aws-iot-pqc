@@ -1,0 +1,28 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": "iot:Connect",
+      "Resource": "arn:aws:iot:*:*:client/pqc-workshop-greengrass-core"
+    },
+    {
+      "Effect": "Allow",
+      "Action": [
+        "iot:Publish",
+        "iot:RetainPublish"
+      ],
+      "Resource": "arn:aws:iot:*:*:topic/dt/*"
+    },
+    {
+      "Effect": "Allow",
+      "Action": "iot:Subscribe",
+      "Resource": "arn:aws:iot:*:*:topicfilter/cmd/*"
+    },
+    {
+      "Effect": "Allow",
+      "Action": "iot:Receive",
+      "Resource": "arn:aws:iot:*:*:topic/cmd/*"
+    }
+  ]
+}

@@ -1,0 +1,18 @@
+# ESP32-S3 Partition Table for PQC Workshop (8MB Flash)
+#
+# Dual OTA layout: partition 0 = classical TLS, partition 1 = PQC TLS
+# Both partitions are 3.5MB — enough for wolfSSL with ML-KEM (~2.5MB)
+#
+# Flash this partition table with:
+#   esptool.py write_flash 0x8000 partitions_pqc_workshop.bin
+#
+# Generate .bin from .csv with:
+#   python gen_esp32part.py partitions_pqc_workshop.csv partitions_pqc_workshop.bin
+#
+# Name,       Type, SubType,  Offset,    Size,     Flags
+nvs,          data, nvs,      0x9000,    0x5000,
+otadata,      data, ota,      0xe000,    0x2000,
+ota_0,        app,  ota_0,    0x10000,   0x380000,
+ota_1,        app,  ota_1,    0x390000,  0x380000,
+nvs_key,      data, nvs_keys, 0x710000,  0x1000,
+coredump,     data, coredump, 0x711000,  0x10000,

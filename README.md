@@ -8,6 +8,7 @@ WiFi and MQTT run as independent FreeRTOS tasks with automatic failure recovery.
 
 - [Why Post-Quantum Cryptography?](#why-post-quantum-cryptography)
 - [How It Works](#how-it-works)
+- [Workshop Architecture (Greengrass + Mosquitto)](#workshop-architecture-greengrass--mosquitto)
 - [Project Structure](#project-structure)
 - [Supported Hardware](#supported-hardware)
 - [Prerequisites](#prerequisites)
@@ -65,11 +66,57 @@ ESP32 Device                                    AWS Cloud
 
 1. The **WiFi task** manages the wireless connection on FreeRTOS core 0. It connects to the configured network, monitors the link, and automatically reconnects on failure.
 
-2. The **MQTT task** waits for WiFi, initializes wolfSSL with your device certificates, then opens a TLS 1.3 connection to AWS IoT Core. During the TLS handshake, it requests a hybrid PQC key exchange (P-521 + Kyber Level 5). Once connected, it publishes JSON telemetry every 30 seconds and subscribes to a topic for inbound commands.
+2. The **MQTT task** waits for WiFi, initializes wolfSSL with your device certificates, then opens a TLS 1.3 connection to the Mosquitto PQC broker. During the TLS handshake, it requests a hybrid PQC key exchange (P-256 + ML-KEM-768). Once connected, it publishes JSON telemetry every 30 seconds and subscribes to a topic for inbound commands.
 
 3. The **main loop** prints a system status report every 60 seconds (uptime, WiFi RSSI, MQTT state, free heap).
 
 If WiFi drops, the WiFi task reconnects automatically. The MQTT task detects the loss, waits for WiFi to return, then re-establishes the TLS and MQTT connection from scratch.
+
+---
+
+## Workshop Architecture (Greengrass + Mosquitto)
+
+For the re:Invent builders session, the system uses a Raspberry Pi as an edge gateway running AWS IoT Greengrass v2 with a standalone PQC-enabled Mosquitto broker. This creates an end-to-end PQC demonstration path:
+
+```
+ESP32 Devices (x8)               Raspberry Pi (Edge Gateway)              AWS Cloud
++-------------------+            +----------------------------------+     +-------------------+
+|                   |            |                                  |     |                   |
+| [Partition 0]     |  TLS 1.3  |  Mosquitto MQTT Broker           |     |  AWS IoT Core     |
+|  Classical FW     |  Classical |    - OpenSSL 3.5                 |     |    - MQTT Broker  |
+|  (mbedTLS)        |---------->|    - Port 8883, mTLS             |     |    - Rules Engine |
+|                   |            |    - ACL per device              |     |    - CloudWatch   |
+| [Partition 1]     |  TLS 1.3  |                                  |     |                   |
+|  PQC FW           |  + ML-KEM |  Mosquitto Bridge                | TLS |                   |
+|  (wolfSSL)        |---------->|    - Classical TLS to IoT Core   |---->|                   |
+|                   |            |    - Topic forwarding (dt/, cmd/)|1.2  |                   |
++-------------------+            |                                  |     |                   |
+                                 |  Greengrass Nucleus              |     |  IoT Greengrass   |
+                                 |    - Manages Mosquitto lifecycle |---->|    - Deployments  |
+                                 |    - Dashboard component         |     |    - Components   |
+                                 |    - OTA command relay           |     |                   |
+                                 +----------------------------------+     +-------------------+
+```
+
+### PQC Key Exchange: SecP256r1MLKEM768
+
+Both the ESP32 and Mosquitto negotiate the **IANA-standardized** hybrid key exchange `SecP256r1MLKEM768` (code point 4587). This combines classical ECDHE P-256 with quantum-resistant ML-KEM-768 in a single TLS 1.3 handshake.
+
+| Component | TLS Library | Named Group | Code Point |
+|-----------|-------------|-------------|-----------|
+| ESP32 (PQC firmware) | wolfSSL 5.7+ | SecP256r1MLKEM768 | 4587 |
+| Mosquitto broker | OpenSSL 3.5+ | SecP256r1MLKEM768 | 4587 |
+| Mosquitto → IoT Core bridge | OpenSSL 3.5 | secp256r1 (classical) | 23 |
+
+### Workshop Flow
+
+1. **Pre-session:** Facilitator deploys CloudFormation stack, pre-flashes ESP32 devices with dual-boot firmware
+2. **Attendee plugs in ESP32:** Device boots partition 0 (classical TLS), connects to Mosquitto, appears on dashboard
+3. **Code walkthrough:** Facilitator explains PQC firmware differences
+4. **Firmware migration:** Attendee clicks dashboard button → sends `migrate-pqc` command → device reboots to partition 1 (PQC firmware)
+5. **Verification:** Dashboard shows device now using `SecP256r1MLKEM768` and TLS 1.3
+
+See [`greengrass/README.md`](greengrass/README.md) for detailed setup instructions.
 
 ---
 
@@ -78,21 +125,39 @@ If WiFi drops, the WiFi task reconnects automatically. The MQTT task detects the
 ```
 Sample-aws-iot-pqc/
 +-- README.md                              This file
++-- attendee_experience.md                 Workshop attendee flow document
 +-- aws_iot_pqc_esp32/
-|   +-- aws_iot_pqc_esp32.ino              Main sketch
-|   +-- secrets.h                          WiFi + AWS IoT credentials (you edit this)
+|   +-- aws_iot_pqc_esp32.ino              PQC firmware (partition 1)
+|   +-- secrets.h                          WiFi + credentials (you edit this)
 |   +-- wolfssl_user_settings.h            Reference wolfSSL PQC configuration
++-- aws_iot_pqc_esp32_v1_classical/
+|   +-- aws_iot_pqc_esp32_v1_classical.ino Classical firmware (partition 0)
+|   +-- secrets.h                          WiFi + credentials
++-- greengrass/
+|   +-- README.md                          Greengrass + Mosquitto architecture docs
+|   +-- setup-mosquitto-pqc.sh             Build script: OpenSSL 3.5 + Mosquitto
+|   +-- mosquitto/
+|   |   +-- mosquitto-pqc.conf            Broker config with PQC TLS
+|   |   +-- bridge-iotcore.conf           Bridge to AWS IoT Core
+|   |   +-- acl.conf                      Device access control
+|   +-- certs/
+|   |   +-- generate-broker-certs.sh      CA + broker + device cert generator
+|   +-- greengrass-component/
+|       +-- recipe.yaml                   Greengrass component recipe
+|       +-- deploy.sh                     Local deployment script
 +-- cloudformation/
     +-- iot-core-setup.yaml                CloudFormation template for AWS IoT Core
-    +-- README.md                          Deployment instructions for the template
+    +-- README.md                          Deployment instructions
 ```
 
 | File | Description |
 |------|-------------|
-| `aws_iot_pqc_esp32.ino` | Main Arduino sketch containing the WolfSSLClient class, FreeRTOS tasks, wolfSSL context setup, and MQTT logic. |
-| `secrets.h` | Placeholder file for WiFi SSID/password, AWS IoT endpoint, Thing name, log level, and PEM-encoded certificates. |
-| `wolfssl_user_settings.h` | Reference `#define` values that must be copied into the wolfSSL library's own `user_settings.h` to enable TLS 1.3 and Kyber/ML-KEM on ESP32. |
-| `cloudformation/iot-core-setup.yaml` | CloudFormation template that creates the IoT Thing, certificate, policy, and IoT Rules for telemetry/lifecycle routing to CloudWatch. |
+| `aws_iot_pqc_esp32.ino` | PQC Arduino sketch (partition 1) with wolfSSL TLS 1.3, FreeRTOS tasks, and MQTT logic. |
+| `aws_iot_pqc_esp32_v1_classical.ino` | Classical TLS sketch (partition 0) with OTA migration handler. |
+| `secrets.h` | Placeholder for WiFi SSID/password, broker endpoint, Thing name, and PEM certificates. |
+| `wolfssl_user_settings.h` | Reference `#define` values for wolfSSL with ML-KEM PQC on ESP32. |
+| `greengrass/` | All artifacts for the Raspberry Pi edge gateway: Mosquitto build scripts, configs, certs, and Greengrass component. |
+| `cloudformation/iot-core-setup.yaml` | CloudFormation template for IoT Thing, certificate, policy, and IoT Rules. |
 
 ---
 
@@ -570,7 +635,7 @@ I (wolfssl) Private key loaded
 I (wolfssl) TLS 1.3 PQC context ready (heap free: 215000 bytes)
 I (mqtt) Connecting to AWS IoT Core (thing='my-esp32-pqc-thing', attempt=1)...
 I (tls) TCP connected to a1b2c3d4e5-ats.iot.us-east-1.amazonaws.com:8883
-I (tls) Using PQC key exchange: P-521 + Kyber Level 5
+I (tls) Using PQC key exchange: P-256 + ML-KEM-768 (SecP256r1MLKEM768)
 I (tls) Starting TLS 1.3 PQC handshake...
 I (tls) TLS handshake complete in 2847 ms
 I (tls) Protocol: TLSv1.3, Cipher: TLS_AES_128_GCM_SHA256
@@ -606,7 +671,7 @@ I (mqtt) Published telemetry #2 → dt/my-esp32-pqc-thing/telemetry
   "free_heap": 198432,
   "min_heap": 142108,
   "chip_temp_c": 48.3,
-  "pqc_algorithm": "P521_KYBER_LEVEL5",
+  "pqc_algorithm": "SECP256R1_MLKEM768",
   "tls_version": "TLS 1.3"
 }
 ```
@@ -617,8 +682,8 @@ I (mqtt) Published telemetry #2 → dt/my-esp32-pqc-thing/telemetry
 {
   "status": "online",
   "device": "my-esp32-pqc-thing",
-  "firmware_version": "1.0.0",
-  "pqc_algorithm": "P521_KYBER_LEVEL5",
+  "firmware_version": "2.0.0",
+  "pqc_algorithm": "SECP256R1_MLKEM768",
   "ip": "192.168.1.42",
   "uptime_sec": 15
 }
@@ -661,7 +726,7 @@ The core of this sketch is the `WolfSSLClient` class, which wraps a plain Arduin
 1. **TCP connect** - `WiFiClient::connect()` opens a raw TCP socket to the AWS IoT endpoint on port 8883
 2. **Create SSL session** - `wolfSSL_new()` creates a new TLS session from the shared context
 3. **Set I/O callbacks** - Custom send/receive callbacks bridge wolfSSL to the Arduino `WiFiClient`
-4. **Request PQC key share** - `wolfSSL_UseKeyShare(ssl, WOLFSSL_P521_KYBER_LEVEL5)` tells wolfSSL to offer a hybrid P-521 + Kyber Level 5 key exchange during the TLS handshake. If this fails, it falls back to P-256 + Kyber Level 1.
+4. **Request PQC key share** - `wolfSSL_UseKeyShare(ssl, WOLFSSL_SECP256R1_MLKEM768)` tells wolfSSL to offer a hybrid P-256 + ML-KEM-768 key exchange during the TLS handshake. If this fails, it falls back to X25519 + ML-KEM-768.
 5. **Set SNI** - Server Name Indication is required for AWS IoT to route to the correct endpoint
 6. **TLS handshake** - `wolfSSL_connect()` performs the full TLS 1.3 handshake with a 30-second timeout. The handshake loop handles non-blocking I/O (`WANT_READ`/`WANT_WRITE`) by yielding to FreeRTOS.
 7. **Verify** - On success, the protocol version and cipher suite are printed to Serial
@@ -755,8 +820,8 @@ On successful MQTT connection, the device publishes a retained "online" event:
 {
   "status": "online",
   "device": "my-esp32-pqc-thing",
-  "firmware_version": "1.0.0",
-  "pqc_algorithm": "P521_KYBER_LEVEL5",
+  "firmware_version": "2.0.0",
+  "pqc_algorithm": "SECP256R1_MLKEM768",
   "ip": "192.168.1.42",
   "uptime_sec": 15
 }
@@ -847,7 +912,7 @@ The migration demonstrates a real-world scenario: devices already deployed in th
 
 ```
 Before (v1.0):  {"pqc_algorithm":"none", "tls_version":"TLS 1.2", "firmware_version":"1.0.0"}
-After  (v2.0):  {"pqc_algorithm":"P521_KYBER_LEVEL5", "tls_version":"TLS 1.3", "firmware_version":"2.0.0"}
+After  (v2.0):  {"pqc_algorithm":"SECP256R1_MLKEM768", "tls_version":"TLS 1.3", "firmware_version":"2.0.0"}
 ```
 
 ### Option A: HTTPS OTA Pull (Simple)
@@ -958,8 +1023,8 @@ The sketch uses **hybrid key exchange**, combining a classical and a post-quantu
 
 | Component | Algorithm | NIST Security Level | Key Size | Purpose |
 |-----------|-----------|-------------------|----------|---------|
-| Classical | ECDHE P-521 | ~256-bit equivalent | 132 bytes | Protection against classical attacks |
-| Post-Quantum | Kyber Level 5 (ML-KEM-1024) | Level 5 (highest) | 1568 bytes public key | Protection against quantum attacks |
+| Classical | ECDHE P-256 | ~128-bit equivalent | 65 bytes | Protection against classical attacks |
+| Post-Quantum | ML-KEM-768 (FIPS 203) | Level 3 | 1184 bytes public key | Protection against quantum attacks |
 
 ### Why Hybrid?
 
@@ -972,18 +1037,22 @@ The hybrid approach provides defense in depth:
 
 The sketch tries two PQC key exchange options in order:
 
-1. **P-521 + Kyber Level 5** (strongest, larger keys, slower handshake)
-2. **P-256 + Kyber Level 1** (smaller keys, faster handshake, still quantum-resistant)
+1. **P-256 + ML-KEM-768** (SecP256r1MLKEM768, IANA code point 4587, recommended)
+2. **X25519 + ML-KEM-768** (X25519MLKEM768, IANA code point 4588, fallback)
 
 If the server does not support either hybrid option, the TLS 1.3 handshake will still succeed using classical key exchange only (the server selects the best mutually-supported option). The device is "PQC-ready" regardless.
 
 ### wolfSSL Key Share Constants
 
-| Constant | Classical Curve | Kyber Level | ML-KEM Variant |
-|----------|----------------|-------------|----------------|
-| `WOLFSSL_P256_KYBER_LEVEL1` | NIST P-256 | Level 1 | ML-KEM-512 |
-| `WOLFSSL_P384_KYBER_LEVEL3` | NIST P-384 | Level 3 | ML-KEM-768 |
-| `WOLFSSL_P521_KYBER_LEVEL5` | NIST P-521 | Level 5 | ML-KEM-1024 |
+This project uses the **IANA-standardized ML-KEM hybrid groups** (section B-8 of the wolfSSL manual). These are interoperable with OpenSSL 3.5+.
+
+| Constant | Classical Curve | ML-KEM Variant | IANA Code Point |
+|----------|----------------|----------------|-----------------|
+| `WOLFSSL_SECP256R1_MLKEM768` | NIST P-256 | ML-KEM-768 | 4587 |
+| `WOLFSSL_X25519_MLKEM768` | X25519 | ML-KEM-768 | 4588 |
+| `WOLFSSL_SECP384R1_MLKEM1024` | NIST P-384 | ML-KEM-1024 | 4589 |
+
+The legacy Kyber Round 3 constants (`WOLFSSL_P521_KYBER_LEVEL5` etc.) use experimental code points (120xx) that are not interoperable with OpenSSL. They are deprecated in favor of the standard groups above.
 
 ---
 
@@ -1020,8 +1089,8 @@ Most ESP32 boards have 4 MB flash, so this fits comfortably.
 | Key Exchange | Typical Handshake Time |
 |-------------|----------------------|
 | Classical ECDHE P-256 only | ~800-1200 ms |
-| Hybrid P-256 + Kyber Level 1 | ~1500-2500 ms |
-| Hybrid P-521 + Kyber Level 5 | ~2500-4000 ms |
+| Hybrid P-256 + ML-KEM-768 | ~1500-2500 ms |
+| Hybrid X25519 + ML-KEM-768 | ~1500-2500 ms |
 
 Times depend on WiFi latency, server load, and ESP32 clock speed (240 MHz recommended).
 
@@ -1029,7 +1098,7 @@ Times depend on WiFi latency, server load, and ESP32 clock speed (240 MHz recomm
 
 If you are tight on memory:
 
-1. Use `WOLFSSL_P256_KYBER_LEVEL1` instead of Level 5 (saves ~20 KB during handshake)
+1. Use `WOLFSSL_X25519_MLKEM768` as a lighter alternative (slightly smaller key shares)
 2. Add `#define WOLFSSL_NO_TLS12` to disable TLS 1.2 support (saves ~30 KB flash)
 3. Reduce `MQTT_TASK_STACK_SIZE` to 12288 if stable
 4. Reduce `mqttClient.setBufferSize()` from 1024 to 512
@@ -1047,7 +1116,7 @@ If you are tight on memory:
 | `#error "wolfSSL Kyber/ML-KEM support is required"` | PQC not enabled in wolfSSL | Add `#define WOLFSSL_HAVE_KYBER` and related defines |
 | `wolfssl.h: No such file or directory` | wolfSSL library not installed | Install wolfSSL via Library Manager |
 | `PubSubClient.h: No such file or directory` | PubSubClient not installed | Install PubSubClient via Library Manager |
-| `WOLFSSL_P521_KYBER_LEVEL5 was not declared` | wolfSSL version too old or Kyber not enabled | Update wolfSSL to 5.7.0+ and verify `user_settings.h` |
+| `WOLFSSL_SECP256R1_MLKEM768 was not declared` | wolfSSL version too old or ML-KEM not enabled | Update wolfSSL to 5.7.0+ and verify `user_settings.h` |
 | Compilation takes very long (5+ minutes) | Normal for first build with wolfSSL PQC | Subsequent builds use cache and are faster |
 
 ### Runtime Errors
@@ -1147,7 +1216,7 @@ IoTProvisioningTemplate:
               "ThingTypeName": "esp32-pqc-device",
               "AttributePayload": {
                 "Attributes": {
-                  "pqc_algorithm": "P521_KYBER_LEVEL5",
+                  "pqc_algorithm": "SECP256R1_MLKEM768",
                   "provisioned_by": "fleet-provisioning"
                 }
               }

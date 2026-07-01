@@ -1,0 +1,19 @@
+# Build artifacts
+.build/
+*.zip
+
+# Secrets (never commit real credentials)
+**/secrets.h
+!**/secrets.h.template
+
+# Node modules
+node_modules/
+dashboard/frontend/build/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+!.vscode/settings.json

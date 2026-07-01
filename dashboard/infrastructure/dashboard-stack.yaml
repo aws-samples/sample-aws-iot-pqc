@@ -1,0 +1,717 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  PQC Workshop Dashboard infrastructure. Creates DynamoDB, AppSync API,
+  Lambdas for telemetry processing and command publishing, IoT Rules,
+  Cognito for unauthenticated access, and S3/CloudFront for hosting.
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Parameters
+# ─────────────────────────────────────────────────────────────────────────────
+Parameters:
+  DeviceCount:
+    Type: Number
+    Default: 100
+    Description: Number of ESP32 devices to pre-provision (1-100)
+    MinValue: 1
+    MaxValue: 100
+
+  DeviceNamePrefix:
+    Type: String
+    Default: esp32-pqc-device
+    Description: Prefix for device Thing names (e.g., esp32-pqc-device-001)
+
+  GreengrassThingName:
+    Type: String
+    Default: pqc-workshop-greengrass-core
+    Description: Thing name for the Greengrass core device (Raspberry Pi)
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Resources
+# ─────────────────────────────────────────────────────────────────────────────
+Resources:
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # DynamoDB — Device State Table
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  DeviceTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: pqc-workshop-devices
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: thingName
+          AttributeType: S
+      KeySchema:
+        - AttributeName: thingName
+          KeyType: HASH
+      TimeToLiveSpecification:
+        AttributeName: ttl
+        Enabled: true
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # Cognito — Unauthenticated Access for Dashboard
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  CognitoIdentityPool:
+    Type: AWS::Cognito::IdentityPool
+    Properties:
+      IdentityPoolName: pqc_workshop_dashboard
+      AllowUnauthenticatedIdentities: true
+
+  CognitoUnauthRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: pqc-workshop-cognito-unauth
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: cognito-identity.amazonaws.com
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                cognito-identity.amazonaws.com:aud: !Ref CognitoIdentityPool
+              ForAnyValue:StringLike:
+                cognito-identity.amazonaws.com:amr: unauthenticated
+      Policies:
+        - PolicyName: AppSyncAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - appsync:GraphQL
+                Resource:
+                  - !Sub '${DeviceApi.Arn}/*'
+
+  CognitoRoleAttachment:
+    Type: AWS::Cognito::IdentityPoolRoleAttachment
+    Properties:
+      IdentityPoolId: !Ref CognitoIdentityPool
+      Roles:
+        unauthenticated: !GetAtt CognitoUnauthRole.Arn
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # AppSync — GraphQL API
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  DeviceApi:
+    Type: AWS::AppSync::GraphQLApi
+    Properties:
+      Name: pqc-workshop-device-api
+      AuthenticationType: AWS_IAM
+      XrayEnabled: false
+
+  DeviceApiSchema:
+    Type: AWS::AppSync::GraphQLSchema
+    Properties:
+      ApiId: !GetAtt DeviceApi.ApiId
+      Definition: |
+        type Device {
+          thingName: String!
+          status: String
+          firmwareVersion: String
+          pqcAlgorithm: String
+          tlsVersion: String
+          wifiRssi: Int
+          freeHeap: Int
+          minHeap: Int
+          chipTempC: Float
+          ipAddress: String
+          uptimeSec: Int
+          messageId: Int
+          lastSeen: String
+        }
+
+        type Query {
+          listDevices: [Device]
+          getDevice(thingName: String!): Device
+        }
+
+        type Mutation {
+          updateDevice(input: UpdateDeviceInput!): Device
+          migrateFirmware(thingName: String!): MigrateResult
+        }
+
+        type MigrateResult {
+          success: Boolean!
+          message: String
+          thingName: String!
+        }
+
+        input UpdateDeviceInput {
+          thingName: String!
+          status: String
+          firmwareVersion: String
+          pqcAlgorithm: String
+          tlsVersion: String
+          wifiRssi: Int
+          freeHeap: Int
+          minHeap: Int
+          chipTempC: Float
+          ipAddress: String
+          uptimeSec: Int
+          messageId: Int
+          lastSeen: String
+        }
+
+        type Subscription {
+          onDeviceUpdate(thingName: String): Device
+            @aws_subscribe(mutations: ["updateDevice"])
+        }
+
+        schema {
+          query: Query
+          mutation: Mutation
+          subscription: Subscription
+        }
+
+  # ─── AppSync Data Source: DynamoDB ─────────────────────────────────────────
+
+  AppSyncDynamoRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: pqc-workshop-appsync-dynamo
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: appsync.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: DynamoDBAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:PutItem
+                  - dynamodb:UpdateItem
+                  - dynamodb:Scan
+                  - dynamodb:Query
+                Resource:
+                  - !GetAtt DeviceTable.Arn
+
+  DynamoDataSource:
+    Type: AWS::AppSync::DataSource
+    Properties:
+      ApiId: !GetAtt DeviceApi.ApiId
+      Name: DeviceTableSource
+      Type: AMAZON_DYNAMODB
+      ServiceRoleArn: !GetAtt AppSyncDynamoRole.Arn
+      DynamoDBConfig:
+        AwsRegion: !Ref AWS::Region
+        TableName: !Ref DeviceTable
+
+  # ─── AppSync Data Source: Lambda (for migrate command) ─────────────────────
+
+  AppSyncLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: pqc-workshop-appsync-lambda
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: appsync.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: LambdaInvoke
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - lambda:InvokeFunction
+                Resource:
+                  - !GetAtt CommandPublisherFunction.Arn
+
+  LambdaDataSource:
+    Type: AWS::AppSync::DataSource
+    Properties:
+      ApiId: !GetAtt DeviceApi.ApiId
+      Name: CommandPublisherSource
+      Type: AWS_LAMBDA
+      ServiceRoleArn: !GetAtt AppSyncLambdaRole.Arn
+      LambdaConfig:
+        LambdaFunctionArn: !GetAtt CommandPublisherFunction.Arn
+
+  # ─── AppSync Resolvers ─────────────────────────────────────────────────────
+
+  ListDevicesResolver:
+    Type: AWS::AppSync::Resolver
+    Properties:
+      ApiId: !GetAtt DeviceApi.ApiId
+      TypeName: Query
+      FieldName: listDevices
+      DataSourceName: !GetAtt DynamoDataSource.Name
+      Runtime:
+        Name: APPSYNC_JS
+        RuntimeVersion: 1.0.0
+      Code: |
+        export function request(ctx) {
+          return { operation: 'Scan' };
+        }
+        export function response(ctx) {
+          return ctx.result.items;
+        }
+    DependsOn: DeviceApiSchema
+
+  GetDeviceResolver:
+    Type: AWS::AppSync::Resolver
+    Properties:
+      ApiId: !GetAtt DeviceApi.ApiId
+      TypeName: Query
+      FieldName: getDevice
+      DataSourceName: !GetAtt DynamoDataSource.Name
+      Runtime:
+        Name: APPSYNC_JS
+        RuntimeVersion: 1.0.0
+      Code: |
+        export function request(ctx) {
+          return {
+            operation: 'GetItem',
+            key: util.dynamodb.toMapValues({ thingName: ctx.args.thingName })
+          };
+        }
+        export function response(ctx) {
+          return ctx.result;
+        }
+    DependsOn: DeviceApiSchema
+
+  UpdateDeviceResolver:
+    Type: AWS::AppSync::Resolver
+    Properties:
+      ApiId: !GetAtt DeviceApi.ApiId
+      TypeName: Mutation
+      FieldName: updateDevice
+      DataSourceName: !GetAtt DynamoDataSource.Name
+      Runtime:
+        Name: APPSYNC_JS
+        RuntimeVersion: 1.0.0
+      Code: |
+        export function request(ctx) {
+          const input = ctx.args.input;
+          const expNames = {};
+          const expValues = {};
+          const expParts = [];
+          Object.keys(input).forEach((key) => {
+            if (key !== 'thingName') {
+              expNames[`#${key}`] = key;
+              expValues[`:${key}`] = util.dynamodb.toDynamoDB(input[key]);
+              expParts.push(`#${key} = :${key}`);
+            }
+          });
+          return {
+            operation: 'UpdateItem',
+            key: util.dynamodb.toMapValues({ thingName: input.thingName }),
+            update: {
+              expression: `SET ${expParts.join(', ')}`,
+              expressionNames: expNames,
+              expressionValues: expValues
+            }
+          };
+        }
+        export function response(ctx) {
+          return ctx.result;
+        }
+    DependsOn: DeviceApiSchema
+
+  MigrateFirmwareResolver:
+    Type: AWS::AppSync::Resolver
+    Properties:
+      ApiId: !GetAtt DeviceApi.ApiId
+      TypeName: Mutation
+      FieldName: migrateFirmware
+      DataSourceName: !GetAtt LambdaDataSource.Name
+      Runtime:
+        Name: APPSYNC_JS
+        RuntimeVersion: 1.0.0
+      Code: |
+        export function request(ctx) {
+          return {
+            operation: 'Invoke',
+            payload: { thingName: ctx.args.thingName }
+          };
+        }
+        export function response(ctx) {
+          return ctx.result;
+        }
+    DependsOn: DeviceApiSchema
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # Lambda — Telemetry Processor (IoT Rule → DynamoDB → AppSync)
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  TelemetryProcessorRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: pqc-workshop-telemetry-processor
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: DynamoDBAndAppSync
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:PutItem
+                  - dynamodb:UpdateItem
+                Resource: !GetAtt DeviceTable.Arn
+              - Effect: Allow
+                Action:
+                  - appsync:GraphQL
+                Resource:
+                  - !Sub '${DeviceApi.Arn}/*'
+
+  TelemetryProcessorFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: pqc-workshop-telemetry-processor
+      Runtime: python3.12
+      Handler: index.handler
+      Timeout: 10
+      Role: !GetAtt TelemetryProcessorRole.Arn
+      Environment:
+        Variables:
+          TABLE_NAME: !Ref DeviceTable
+          APPSYNC_ENDPOINT: !GetAtt DeviceApi.GraphQLUrl
+      Code:
+        ZipFile: |
+          import boto3
+          import os
+          import json
+          import time
+          from datetime import datetime
+
+          dynamodb = boto3.resource('dynamodb')
+          table = dynamodb.Table(os.environ['TABLE_NAME'])
+
+          def handler(event, context):
+              """Process telemetry/lifecycle from IoT Rule and store in DynamoDB."""
+              print(f"Event: {json.dumps(event)}")
+
+              thing_name = event.get('device', event.get('thingName', 'unknown'))
+              now = datetime.utcnow().isoformat() + 'Z'
+
+              # Build item from telemetry or lifecycle event
+              item = {
+                  'thingName': thing_name,
+                  'lastSeen': now,
+                  'ttl': int(time.time()) + 86400  # 24h TTL
+              }
+
+              # Telemetry fields
+              if 'message_id' in event:
+                  item['messageId'] = event.get('message_id')
+                  item['uptimeSec'] = event.get('uptime_sec')
+                  item['wifiRssi'] = event.get('wifi_rssi')
+                  item['freeHeap'] = event.get('free_heap')
+                  item['minHeap'] = event.get('min_heap')
+                  item['chipTempC'] = str(event.get('chip_temp_c', 0))
+                  item['pqcAlgorithm'] = event.get('pqc_algorithm', 'unknown')
+                  item['tlsVersion'] = event.get('tls_version', 'unknown')
+                  item['firmwareVersion'] = event.get('firmware_version', 'unknown')
+
+              # Lifecycle fields
+              if 'status' in event:
+                  item['status'] = event['status']
+                  if 'ip' in event:
+                      item['ipAddress'] = event['ip']
+                  if 'firmware_version' in event:
+                      item['firmwareVersion'] = event['firmware_version']
+                  if 'pqc_algorithm' in event:
+                      item['pqcAlgorithm'] = event['pqc_algorithm']
+
+              # Write to DynamoDB
+              table.put_item(Item=item)
+              print(f"Updated device: {thing_name}")
+
+              return {'statusCode': 200, 'body': f'Updated {thing_name}'}
+
+  TelemetryProcessorPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref TelemetryProcessorFunction
+      Action: lambda:InvokeFunction
+      Principal: iot.amazonaws.com
+      SourceArn: !Sub 'arn:aws:iot:${AWS::Region}:${AWS::AccountId}:rule/*'
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # Lambda — Command Publisher (Dashboard → IoT Core MQTT)
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  CommandPublisherRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: pqc-workshop-command-publisher
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: IoTPublish
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - iot:Publish
+                Resource:
+                  - !Sub 'arn:aws:iot:${AWS::Region}:${AWS::AccountId}:topic/cmd/*/ota'
+
+  CommandPublisherFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: pqc-workshop-command-publisher
+      Runtime: python3.12
+      Handler: index.handler
+      Timeout: 10
+      Role: !GetAtt CommandPublisherRole.Arn
+      Environment:
+        Variables:
+          IOT_ENDPOINT: !Sub '${AWS::AccountId}-ats.iot.${AWS::Region}.amazonaws.com'
+      Code:
+        ZipFile: |
+          import boto3
+          import json
+          import os
+
+          iot_data = boto3.client('iot-data',
+              endpoint_url=f"https://{os.environ['IOT_ENDPOINT']}")
+
+          def handler(event, context):
+              """Publish migrate-pqc command to a device via IoT Core."""
+              print(f"Event: {json.dumps(event)}")
+
+              thing_name = event.get('thingName')
+              if not thing_name:
+                  return {'success': False, 'message': 'Missing thingName', 'thingName': ''}
+
+              topic = f'cmd/{thing_name}/ota'
+              payload = json.dumps({'action': 'migrate-pqc'})
+
+              try:
+                  iot_data.publish(
+                      topic=topic,
+                      qos=1,
+                      payload=payload
+                  )
+                  print(f"Published migrate-pqc to {topic}")
+                  return {
+                      'success': True,
+                      'message': f'Migration command sent to {thing_name}',
+                      'thingName': thing_name
+                  }
+              except Exception as e:
+                  print(f"Error publishing: {e}")
+                  return {
+                      'success': False,
+                      'message': str(e),
+                      'thingName': thing_name
+                  }
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # IoT Rules — Route Telemetry and Lifecycle to Lambda
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  IoTRuleRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: pqc-workshop-iot-rule
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: iot.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: InvokeLambda
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - lambda:InvokeFunction
+                Resource:
+                  - !GetAtt TelemetryProcessorFunction.Arn
+
+  TelemetryIoTRule:
+    Type: AWS::IoT::TopicRule
+    Properties:
+      RuleName: pqc_workshop_telemetry
+      TopicRulePayload:
+        Description: Routes all device telemetry to the dashboard Lambda
+        Sql: "SELECT * FROM 'dt/+/telemetry'"
+        AwsIotSqlVersion: '2016-03-23'
+        RuleDisabled: false
+        Actions:
+          - Lambda:
+              FunctionArn: !GetAtt TelemetryProcessorFunction.Arn
+
+  LifecycleIoTRule:
+    Type: AWS::IoT::TopicRule
+    Properties:
+      RuleName: pqc_workshop_lifecycle
+      TopicRulePayload:
+        Description: Routes all device lifecycle events to the dashboard Lambda
+        Sql: "SELECT * FROM 'dt/+/lifecycle'"
+        AwsIotSqlVersion: '2016-03-23'
+        RuleDisabled: false
+        Actions:
+          - Lambda:
+              FunctionArn: !GetAtt TelemetryProcessorFunction.Arn
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # IoT Policy — For Greengrass Bridge (allows bridging all device topics)
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  GreengrassBridgePolicy:
+    Type: AWS::IoT::Policy
+    Properties:
+      PolicyName: pqc-workshop-greengrass-bridge
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Action: iot:Connect
+            Resource: !Sub 'arn:aws:iot:${AWS::Region}:${AWS::AccountId}:client/${GreengrassThingName}'
+          - Effect: Allow
+            Action:
+              - iot:Publish
+              - iot:RetainPublish
+            Resource:
+              - !Sub 'arn:aws:iot:${AWS::Region}:${AWS::AccountId}:topic/dt/*'
+          - Effect: Allow
+            Action: iot:Subscribe
+            Resource:
+              - !Sub 'arn:aws:iot:${AWS::Region}:${AWS::AccountId}:topicfilter/cmd/*'
+          - Effect: Allow
+            Action: iot:Receive
+            Resource:
+              - !Sub 'arn:aws:iot:${AWS::Region}:${AWS::AccountId}:topic/cmd/*'
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # S3 + CloudFront — Dashboard Hosting
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  DashboardBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub 'pqc-workshop-dashboard-${AWS::AccountId}'
+      WebsiteConfiguration:
+        IndexDocument: index.html
+        ErrorDocument: index.html
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+  DashboardBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref DashboardBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AllowCloudFront
+            Effect: Allow
+            Principal:
+              Service: cloudfront.amazonaws.com
+            Action: s3:GetObject
+            Resource: !Sub '${DashboardBucket.Arn}/*'
+            Condition:
+              StringEquals:
+                AWS:SourceArn: !Sub 'arn:aws:cloudfront::${AWS::AccountId}:distribution/${DashboardDistribution}'
+
+  DashboardOAC:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+        Name: pqc-workshop-dashboard-oac
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
+
+  DashboardDistribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        DefaultRootObject: index.html
+        Origins:
+          - Id: S3Origin
+            DomainName: !GetAtt DashboardBucket.RegionalDomainName
+            OriginAccessControlId: !GetAtt DashboardOAC.Id
+            S3OriginConfig:
+              OriginAccessIdentity: ''
+        DefaultCacheBehavior:
+          TargetOriginId: S3Origin
+          ViewerProtocolPolicy: redirect-to-https
+          AllowedMethods: [GET, HEAD]
+          CachedMethods: [GET, HEAD]
+          ForwardedValues:
+            QueryString: false
+        CustomErrorResponses:
+          - ErrorCode: 403
+            ResponseCode: 200
+            ResponsePagePath: /index.html
+          - ErrorCode: 404
+            ResponseCode: 200
+            ResponsePagePath: /index.html
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Outputs
+# ─────────────────────────────────────────────────────────────────────────────
+Outputs:
+  DashboardURL:
+    Description: Dashboard URL (CloudFront)
+    Value: !Sub 'https://${DashboardDistribution.DomainName}'
+
+  DashboardBucketName:
+    Description: S3 bucket for dashboard static files
+    Value: !Ref DashboardBucket
+
+  AppSyncEndpoint:
+    Description: AppSync GraphQL endpoint
+    Value: !GetAtt DeviceApi.GraphQLUrl
+
+  AppSyncApiId:
+    Description: AppSync API ID
+    Value: !GetAtt DeviceApi.ApiId
+
+  CognitoIdentityPoolId:
+    Description: Cognito Identity Pool ID for unauthenticated dashboard access
+    Value: !Ref CognitoIdentityPool
+
+  DeviceTableName:
+    Description: DynamoDB table storing device state
+    Value: !Ref DeviceTable
+
+  GreengrassBridgePolicyName:
+    Description: IoT Policy to attach to the Greengrass device certificate
+    Value: !Ref GreengrassBridgePolicy
+
+  Region:
+    Description: AWS Region
+    Value: !Ref AWS::Region

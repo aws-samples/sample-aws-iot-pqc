@@ -1,0 +1,292 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  Provisions the Greengrass v2 core device (Raspberry Pi) in IoT Core.
+  Creates the Thing, certificate, policies, and IAM Token Exchange Role.
+
+Parameters:
+  GreengrassThingName:
+    Type: String
+    Default: pqc-workshop-greengrass-core
+    Description: Thing name for the Greengrass core device
+
+Resources:
+
+  # ─── IoT Thing for Greengrass Core ─────────────────────────────────────────
+  GreengrassThing:
+    Type: AWS::IoT::Thing
+    Properties:
+      ThingName: !Ref GreengrassThingName
+      AttributePayload:
+        Attributes:
+          device_type: greengrass-core
+          workshop: pqc-reinvent
+          role: mqtt-bridge
+
+  # ─── IoT Policy for Greengrass Core ────────────────────────────────────────
+  # Allows Greengrass system operations + bridging device topics
+  GreengrassPolicy:
+    Type: AWS::IoT::Policy
+    Properties:
+      PolicyName: !Sub '${GreengrassThingName}-policy'
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          # Connect as the Greengrass core device
+          - Effect: Allow
+            Action: iot:Connect
+            Resource: !Sub 'arn:aws:iot:${AWS::Region}:${AWS::AccountId}:client/${GreengrassThingName}'
+          # Greengrass system topics
+          - Effect: Allow
+            Action:
+              - iot:Publish
+              - iot:Receive
+            Resource:
+              - !Sub 'arn:aws:iot:${AWS::Region}:${AWS::AccountId}:topic/$aws/things/${GreengrassThingName}/*'
+              - !Sub 'arn:aws:iot:${AWS::Region}:${AWS::AccountId}:topic/$aws/greengrass/*'
+          - Effect: Allow
+            Action: iot:Subscribe
+            Resource:
+              - !Sub 'arn:aws:iot:${AWS::Region}:${AWS::AccountId}:topicfilter/$aws/things/${GreengrassThingName}/*'
+              - !Sub 'arn:aws:iot:${AWS::Region}:${AWS::AccountId}:topicfilter/$aws/greengrass/*'
+          # Bridge: publish device telemetry/lifecycle to IoT Core
+          - Effect: Allow
+            Action:
+              - iot:Publish
+              - iot:RetainPublish
+            Resource:
+              - !Sub 'arn:aws:iot:${AWS::Region}:${AWS::AccountId}:topic/dt/*'
+          # Bridge: receive commands from IoT Core for devices
+          - Effect: Allow
+            Action: iot:Subscribe
+            Resource:
+              - !Sub 'arn:aws:iot:${AWS::Region}:${AWS::AccountId}:topicfilter/cmd/*'
+          - Effect: Allow
+            Action: iot:Receive
+            Resource:
+              - !Sub 'arn:aws:iot:${AWS::Region}:${AWS::AccountId}:topic/cmd/*'
+          # Allow shadow operations for Greengrass
+          - Effect: Allow
+            Action:
+              - iot:GetThingShadow
+              - iot:UpdateThingShadow
+              - iot:DeleteThingShadow
+            Resource:
+              - !Sub 'arn:aws:iot:${AWS::Region}:${AWS::AccountId}:thing/${GreengrassThingName}'
+
+  # ─── Certificate (Custom Resource — generates keys, stores in Secrets Manager)
+  CertProvisionerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${GreengrassThingName}-cert-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: IoTCertAndSecrets
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - iot:CreateKeysAndCertificate
+                  - iot:UpdateCertificate
+                  - iot:DeleteCertificate
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - secretsmanager:CreateSecret
+                  - secretsmanager:DeleteSecret
+                  - secretsmanager:PutSecretValue
+                  - secretsmanager:TagResource
+                Resource: !Sub 'arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:iot/${GreengrassThingName}/*'
+
+  CertProvisionerFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${GreengrassThingName}-cert-provisioner'
+      Runtime: python3.12
+      Handler: index.handler
+      Timeout: 60
+      Role: !GetAtt CertProvisionerRole.Arn
+      Environment:
+        Variables:
+          THING_NAME: !Ref GreengrassThingName
+      Code:
+        ZipFile: |
+          import boto3
+          import cfnresponse
+          import os
+          import json
+
+          def handler(event, context):
+              iot = boto3.client('iot')
+              sm = boto3.client('secretsmanager')
+              thing_name = os.environ['THING_NAME']
+              try:
+                  if event['RequestType'] == 'Create':
+                      resp = iot.create_keys_and_certificate(setAsActive=True)
+                      cert_arn = resp['certificateArn']
+                      cert_id = resp['certificateId']
+                      cert_pem = resp['certificatePem']
+                      key_pem = resp['keyPair']['PrivateKey']
+
+                      secret_value = json.dumps({
+                          'certificatePem': cert_pem,
+                          'privateKey': key_pem,
+                          'certificateArn': cert_arn,
+                          'certificateId': cert_id
+                      })
+                      sm.create_secret(
+                          Name=f'iot/{thing_name}/greengrass-credentials',
+                          Description=f'Greengrass core device credentials for {thing_name}',
+                          SecretString=secret_value,
+                          Tags=[
+                              {'Key': 'Thing', 'Value': thing_name},
+                              {'Key': 'ManagedBy', 'Value': 'CloudFormation'},
+                              {'Key': 'Workshop', 'Value': 'pqc-reinvent'}
+                          ]
+                      )
+                      cfnresponse.send(event, context, cfnresponse.SUCCESS, {
+                          'CertificateArn': cert_arn,
+                          'CertificateId': cert_id,
+                          'SecretName': f'iot/{thing_name}/greengrass-credentials'
+                      }, physicalResourceId=cert_id)
+
+                  elif event['RequestType'] == 'Delete':
+                      cert_id = event.get('PhysicalResourceId', '')
+                      if cert_id and len(cert_id) == 64:
+                          try:
+                              iot.update_certificate(certificateId=cert_id, newStatus='INACTIVE')
+                          except Exception:
+                              pass
+                          try:
+                              iot.delete_certificate(certificateId=cert_id, forceDelete=True)
+                          except Exception:
+                              pass
+                      try:
+                          sm.delete_secret(
+                              SecretId=f'iot/{thing_name}/greengrass-credentials',
+                              ForceDeleteWithoutRecovery=True
+                          )
+                      except Exception:
+                          pass
+                      cfnresponse.send(event, context, cfnresponse.SUCCESS, {})
+                  else:
+                      cfnresponse.send(event, context, cfnresponse.SUCCESS, {},
+                                       physicalResourceId=event.get('PhysicalResourceId', ''))
+              except Exception as e:
+                  print(f"Error: {e}")
+                  cfnresponse.send(event, context, cfnresponse.FAILED, {'Error': str(e)})
+
+  GreengrassCertificate:
+    Type: Custom::GreengrassCert
+    Properties:
+      ServiceToken: !GetAtt CertProvisionerFunction.Arn
+    DependsOn: CertProvisionerRole
+
+  # ─── Attach Policy to Certificate ──────────────────────────────────────────
+  PolicyAttachment:
+    Type: AWS::IoT::PolicyPrincipalAttachment
+    Properties:
+      PolicyName: !Ref GreengrassPolicy
+      Principal: !GetAtt GreengrassCertificate.CertificateArn
+
+  # ─── Attach Certificate to Thing ───────────────────────────────────────────
+  ThingAttachment:
+    Type: AWS::IoT::ThingPrincipalAttachment
+    Properties:
+      ThingName: !Ref GreengrassThing
+      Principal: !GetAtt GreengrassCertificate.CertificateArn
+
+  # ─── IAM Token Exchange Role (Greengrass needs this to call AWS APIs) ──────
+  TokenExchangeRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${GreengrassThingName}-TES-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: credentials.iot.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: GreengrassV2TokenExchange
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                  - logs:DescribeLogStreams
+                Resource: 'arn:aws:logs:*:*:*'
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                Resource: 'arn:aws:s3:::*'
+              - Effect: Allow
+                Action:
+                  - iot:DescribeCertificate
+                  - iot:Connect
+                  - iot:Publish
+                  - iot:Subscribe
+                  - iot:Receive
+                Resource: '*'
+
+  # ─── IoT Role Alias (maps IoT cert auth to IAM role) ──────────────────────
+  TokenExchangeRoleAlias:
+    Type: AWS::IoT::RoleAlias
+    Properties:
+      RoleAlias: !Sub '${GreengrassThingName}-TES-alias'
+      RoleArn: !GetAtt TokenExchangeRole.Arn
+
+  # ─── IoT Policy for Token Exchange ────────────────────────────────────────
+  TokenExchangePolicy:
+    Type: AWS::IoT::Policy
+    Properties:
+      PolicyName: !Sub '${GreengrassThingName}-TES-policy'
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Action: iot:AssumeRoleWithCertificate
+            Resource: !Sub 'arn:aws:iot:${AWS::Region}:${AWS::AccountId}:rolealias/${GreengrassThingName}-TES-alias'
+
+  TokenExchangePolicyAttachment:
+    Type: AWS::IoT::PolicyPrincipalAttachment
+    Properties:
+      PolicyName: !Ref TokenExchangePolicy
+      Principal: !GetAtt GreengrassCertificate.CertificateArn
+
+Outputs:
+  GreengrassThingName:
+    Description: Greengrass core Thing name
+    Value: !Ref GreengrassThing
+
+  CertificateArn:
+    Description: Greengrass device certificate ARN
+    Value: !GetAtt GreengrassCertificate.CertificateArn
+
+  CredentialsSecretName:
+    Description: Secrets Manager secret with core device cert + private key
+    Value: !GetAtt GreengrassCertificate.SecretName
+
+  TokenExchangeRoleArn:
+    Description: IAM Token Exchange Role ARN
+    Value: !GetAtt TokenExchangeRole.Arn
+
+  TokenExchangeRoleAliasName:
+    Description: IoT Role Alias name for Greengrass TES
+    Value: !Sub '${GreengrassThingName}-TES-alias'
+
+  PolicyName:
+    Description: IoT Policy attached to the core device
+    Value: !Ref GreengrassPolicy

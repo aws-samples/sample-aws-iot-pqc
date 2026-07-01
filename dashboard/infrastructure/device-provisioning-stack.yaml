@@ -1,0 +1,193 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  Just-In-Time device registration for the PQC workshop.
+  When the Mosquitto bridge forwards telemetry from a new device
+  (MAC-derived name like "esp32-AABBCC"), an IoT Rule triggers a
+  Lambda that auto-creates the IoT Thing.
+
+Parameters:
+  DeviceNamePrefix:
+    Type: String
+    Default: esp32-
+    Description: Prefix that device client IDs start with (for matching)
+
+  GreengrassThingName:
+    Type: String
+    Default: pqc-workshop-greengrass-core
+    Description: Greengrass core device Thing name (excluded from auto-registration)
+
+Resources:
+
+  # ─── Thing Group for auto-registered devices ─────────────────────────────
+  WorkshopThingGroup:
+    Type: AWS::IoT::ThingGroup
+    Properties:
+      ThingGroupName: pqc-workshop-devices
+      ThingGroupProperties:
+        ThingGroupDescription: Auto-registered ESP32 devices for PQC workshop
+
+  # ─── IoT Policy for all ESP32 devices ────────────────────────────────────
+  # Uses policy variables so any device connecting through the bridge
+  # can publish/subscribe to its own topics based on client ID.
+  DevicePolicy:
+    Type: AWS::IoT::Policy
+    Properties:
+      PolicyName: pqc-workshop-device-policy
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Action: iot:Connect
+            Resource: !Sub 'arn:aws:iot:${AWS::Region}:${AWS::AccountId}:client/esp32-*'
+          - Effect: Allow
+            Action: iot:Publish
+            Resource:
+              - !Sub 'arn:aws:iot:${AWS::Region}:${AWS::AccountId}:topic/dt/esp32-*/telemetry'
+              - !Sub 'arn:aws:iot:${AWS::Region}:${AWS::AccountId}:topic/dt/esp32-*/lifecycle'
+          - Effect: Allow
+            Action: iot:RetainPublish
+            Resource:
+              - !Sub 'arn:aws:iot:${AWS::Region}:${AWS::AccountId}:topic/dt/esp32-*/lifecycle'
+          - Effect: Allow
+            Action: iot:Subscribe
+            Resource:
+              - !Sub 'arn:aws:iot:${AWS::Region}:${AWS::AccountId}:topicfilter/cmd/esp32-*/+'
+          - Effect: Allow
+            Action: iot:Receive
+            Resource:
+              - !Sub 'arn:aws:iot:${AWS::Region}:${AWS::AccountId}:topic/cmd/esp32-*/*'
+
+  # ─── Lambda: Auto-Register Device ─────────────────────────────────────────
+  # Triggered by IoT Rule when a lifecycle "online" event arrives from
+  # an unknown device. Creates the Thing and adds it to the group.
+  AutoRegisterRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: pqc-workshop-auto-register
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: IoTThingManagement
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - iot:CreateThing
+                  - iot:DescribeThing
+                  - iot:AddThingToThingGroup
+                  - iot:UpdateThing
+                Resource: '*'
+
+  AutoRegisterFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: pqc-workshop-auto-register
+      Runtime: python3.12
+      Handler: index.handler
+      Timeout: 10
+      Role: !GetAtt AutoRegisterRole.Arn
+      Code:
+        ZipFile: |
+          import boto3
+          import json
+
+          iot = boto3.client('iot')
+
+          def handler(event, context):
+              """Auto-register a device when its first lifecycle event arrives."""
+              print(f"Event: {json.dumps(event)}")
+
+              thing_name = event.get('device', '')
+              if not thing_name or not thing_name.startswith('esp32-'):
+                  print(f"Ignoring non-device message: {thing_name}")
+                  return
+
+              # Check if Thing already exists
+              try:
+                  iot.describe_thing(thingName=thing_name)
+                  print(f"Thing {thing_name} already exists")
+                  return
+              except iot.exceptions.ResourceNotFoundException:
+                  pass
+
+              # Create the Thing
+              print(f"Auto-registering new device: {thing_name}")
+              iot.create_thing(
+                  thingName=thing_name,
+                  thingTypeName='esp32-pqc-device',
+                  attributePayload={
+                      'attributes': {
+                          'workshop': 'pqc-reinvent',
+                          'registered_by': 'auto-registration',
+                          'pqc_algorithm': event.get('pqc_algorithm', 'unknown'),
+                          'firmware_version': event.get('firmware_version', 'unknown')
+                      }
+                  }
+              )
+
+              # Add to workshop group
+              try:
+                  iot.add_thing_to_thing_group(
+                      thingGroupName='pqc-workshop-devices',
+                      thingName=thing_name
+                  )
+              except Exception as e:
+                  print(f"Could not add to group: {e}")
+
+              print(f"Device {thing_name} registered successfully")
+
+  AutoRegisterPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref AutoRegisterFunction
+      Action: lambda:InvokeFunction
+      Principal: iot.amazonaws.com
+      SourceArn: !Sub 'arn:aws:iot:${AWS::Region}:${AWS::AccountId}:rule/pqc_workshop_auto_register'
+
+  # ─── Thing Type ──────────────────────────────────────────────────────────
+  DeviceThingType:
+    Type: AWS::IoT::ThingType
+    Properties:
+      ThingTypeName: esp32-pqc-device
+      ThingTypeProperties:
+        ThingTypeDescription: ESP32 devices for PQC workshop (auto-registered)
+        SearchableAttributes:
+          - firmware_version
+          - pqc_algorithm
+
+  # ─── IoT Rule: Trigger auto-registration on lifecycle events ──────────────
+  AutoRegisterRule:
+    Type: AWS::IoT::TopicRule
+    Properties:
+      RuleName: pqc_workshop_auto_register
+      TopicRulePayload:
+        Description: >
+          Auto-registers new ESP32 devices when their first lifecycle
+          event arrives via the Mosquitto bridge.
+        Sql: "SELECT * FROM 'dt/+/lifecycle' WHERE status = 'online'"
+        AwsIotSqlVersion: '2016-03-23'
+        RuleDisabled: false
+        Actions:
+          - Lambda:
+              FunctionArn: !GetAtt AutoRegisterFunction.Arn
+
+Outputs:
+  DevicePolicyName:
+    Description: Shared IoT Policy for all ESP32 devices
+    Value: !Ref DevicePolicy
+
+  ThingGroupName:
+    Description: Thing group for auto-registered devices
+    Value: pqc-workshop-devices
+
+  AutoRegisterFunctionName:
+    Description: Lambda that auto-registers devices
+    Value: !Ref AutoRegisterFunction

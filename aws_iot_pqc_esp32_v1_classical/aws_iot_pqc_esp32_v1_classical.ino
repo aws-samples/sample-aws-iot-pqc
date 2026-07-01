@@ -71,6 +71,9 @@ static char g_topicTelemetry[128];
 static char g_topicLifecycle[128];
 static char g_topicCmdAll[128];
 
+// ─── Device Identity (derived from MAC address at runtime) ──────────────────
+static char g_thingName[32];  // "esp32-XXYYZZ" format
+
 // ─── Global State ───────────────────────────────────────────────────────────
 static volatile bool g_wifiConnected = false;
 static volatile bool g_mqttConnected = false;
@@ -83,6 +86,19 @@ void wifiTask(void* pvParameters);
 void mqttTask(void* pvParameters);
 void mqttCallback(char* topic, byte* payload, unsigned int length);
 void handleOtaMigration();
+static void initDeviceIdentity();
+
+// ─── Device Identity from MAC Address ───────────────────────────────────────
+// Derives a unique Thing name from the ESP32's factory-burned MAC address.
+// Format: "esp32-XXYYZZ" where XXYYZZ are the last 3 bytes of the MAC.
+// This allows a single firmware binary to run on any device.
+static void initDeviceIdentity() {
+    uint64_t mac = ESP.getEfuseMac();
+    uint8_t* macBytes = (uint8_t*)&mac;
+    snprintf(g_thingName, sizeof(g_thingName), "esp32-%02X%02X%02X",
+             macBytes[3], macBytes[4], macBytes[5]);
+    ESP_LOGI(TAG_MAIN, "Device identity: %s (MAC-derived)", g_thingName);
+}
 
 // ─── Backoff Calculation ────────────────────────────────────────────────────
 static unsigned long calculateBackoff(int attempt) {
@@ -96,9 +112,9 @@ static unsigned long calculateBackoff(int attempt) {
 
 // ─── Topic Initialization ───────────────────────────────────────────────────
 static void initTopics() {
-    snprintf(g_topicTelemetry, sizeof(g_topicTelemetry), "dt/%s/telemetry", THINGNAME);
-    snprintf(g_topicLifecycle, sizeof(g_topicLifecycle), "dt/%s/lifecycle", THINGNAME);
-    snprintf(g_topicCmdAll, sizeof(g_topicCmdAll), "cmd/%s/+", THINGNAME);
+    snprintf(g_topicTelemetry, sizeof(g_topicTelemetry), "dt/%s/telemetry", g_thingName);
+    snprintf(g_topicLifecycle, sizeof(g_topicLifecycle), "dt/%s/lifecycle", g_thingName);
+    snprintf(g_topicCmdAll, sizeof(g_topicCmdAll), "cmd/%s/+", g_thingName);
     ESP_LOGD(TAG_MQTT, "Topics: telemetry=%s, lifecycle=%s, cmd=%s",
              g_topicTelemetry, g_topicLifecycle, g_topicCmdAll);
 }
@@ -249,7 +265,7 @@ void mqttTask(void* pvParameters) {
 
     // Create MQTT client
     static PubSubClient mqttClient(tlsClient);
-    mqttClient.setServer(AWS_IOT_ENDPOINT, AWS_IOT_PORT);
+    mqttClient.setServer(MQTT_BROKER_ENDPOINT, MQTT_BROKER_PORT);
     mqttClient.setCallback(mqttCallback);
     mqttClient.setKeepAlive(MQTT_KEEPALIVE_SEC);
     mqttClient.setBufferSize(1024);
@@ -275,18 +291,18 @@ void mqttTask(void* pvParameters) {
         // Connect or reconnect
         if (!mqttClient.connected()) {
             g_mqttConnected = false;
-            ESP_LOGI(TAG_MQTT, "Connecting to AWS IoT Core (classical TLS, attempt %d)...",
+            ESP_LOGI(TAG_MQTT, "Connecting to PQC Mosquitto broker (classical TLS, attempt %d)...",
                      connectAttempts + 1);
 
             bool connected = mqttClient.connect(
-                THINGNAME, NULL, NULL,
+                g_thingName, NULL, NULL,
                 g_topicLifecycle, 1, true, lwtPayload
             );
 
             if (connected) {
                 g_mqttConnected = true;
                 connectAttempts = 0;
-                ESP_LOGI(TAG_MQTT, "Connected to AWS IoT Core (classical TLS 1.2)");
+                ESP_LOGI(TAG_MQTT, "Connected to Mosquitto broker (classical TLS 1.2)");
 
                 // Publish online lifecycle event
                 char onlinePayload[256];
@@ -296,7 +312,7 @@ void mqttTask(void* pvParameters) {
                          "\"pqc_algorithm\":\"none\","
                          "\"tls_version\":\"TLS 1.2\","
                          "\"ip\":\"%s\",\"uptime_sec\":%lu}",
-                         THINGNAME, FIRMWARE_VERSION,
+                         g_thingName, FIRMWARE_VERSION,
                          WiFi.localIP().toString().c_str(), millis() / 1000);
                 mqttClient.publish(g_topicLifecycle, onlinePayload, true);
                 ESP_LOGI(TAG_MQTT, "Published lifecycle: online");
@@ -336,7 +352,7 @@ void mqttTask(void* pvParameters) {
                      "\"chip_temp_c\":%.1f,"
                      "\"pqc_algorithm\":\"none\","
                      "\"tls_version\":\"TLS 1.2\"}",
-                     THINGNAME, FIRMWARE_VERSION,
+                     g_thingName, FIRMWARE_VERSION,
                      messageCount, millis() / 1000, millis() / 1000,
                      WiFi.RSSI(), ESP.getFreeHeap(), ESP.getMinFreeHeap(),
                      chipTempC);
@@ -363,26 +379,32 @@ void setup() {
 
     esp_log_level_set("*", (esp_log_level_t)LOG_LEVEL);
 
+    // Derive device identity from MAC address FIRST (needed for banner)
+    g_wifiMutex = xSemaphoreCreateMutex();
+    randomSeed(analogRead(0) ^ (uint32_t)(ESP.getEfuseMac() >> 16));
+    initDeviceIdentity();
+
     ESP_LOGI(TAG_MAIN, "");
     ESP_LOGI(TAG_MAIN, "══════════════════════════════════════════════════");
     ESP_LOGI(TAG_MAIN, "  ESP32 AWS IoT Core — CLASSICAL TLS (Pre-PQC)");
     ESP_LOGI(TAG_MAIN, "  Firmware v%s — Awaiting PQC Migration", FIRMWARE_VERSION);
     ESP_LOGI(TAG_MAIN, "══════════════════════════════════════════════════");
     ESP_LOGI(TAG_MAIN, "");
+    ESP_LOGI(TAG_MAIN, "┌──────────────────────────────────────────────┐");
+    ESP_LOGI(TAG_MAIN, "│  YOUR DEVICE NAME:  %-24s │", g_thingName);
+    ESP_LOGI(TAG_MAIN, "└──────────────────────────────────────────────┘");
+    ESP_LOGI(TAG_MAIN, "");
     ESP_LOGI(TAG_MAIN, "Chip: %s Rev %d, %d MHz", ESP.getChipModel(),
              ESP.getChipRevision(), ESP.getCpuFreqMHz());
     ESP_LOGI(TAG_MAIN, "Flash: %d MB, Heap: %u bytes, PSRAM: %u bytes",
              ESP.getFlashChipSize() / (1024 * 1024), ESP.getFreeHeap(), ESP.getPsramSize());
     ESP_LOGI(TAG_MAIN, "TLS: Classical (WiFiClientSecure / mbedTLS)");
-    ESP_LOGI(TAG_MAIN, "PQC: NONE — send 'migrate-pqc' to cmd/%s/ota to upgrade", THINGNAME);
+    ESP_LOGI(TAG_MAIN, "PQC: NONE — send 'migrate-pqc' to cmd/%s/ota to upgrade", g_thingName);
 
     // Print current boot partition info
     const esp_partition_t* running = esp_ota_get_running_partition();
     ESP_LOGI(TAG_MAIN, "Running from partition: '%s' (offset 0x%x)",
              running->label, running->address);
-
-    g_wifiMutex = xSemaphoreCreateMutex();
-    randomSeed(analogRead(0) ^ (uint32_t)(ESP.getEfuseMac() >> 16));
 
     int mqttCore = 1;
     #if CONFIG_FREERTOS_UNICORE
