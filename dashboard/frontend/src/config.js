@@ -9,13 +9,13 @@
  */
 const config = {
   // AppSync GraphQL endpoint
-  appSyncEndpoint: 'REPLACE_WITH_APPSYNC_ENDPOINT',
+  appSyncEndpoint: 'https://mpalbkcb6za2hnwibxygktd7ya.appsync-api.us-east-1.amazonaws.com/graphql',
 
   // AWS Region
   region: 'us-east-1',
 
   // Cognito Identity Pool ID (for unauthenticated access)
-  identityPoolId: 'REPLACE_WITH_IDENTITY_POOL_ID',
+  identityPoolId: 'us-east-1:589e1d0a-9a61-4021-a7e9-643cd1899375',
 
   // Polling interval for device list (ms) — fallback if subscriptions fail
   pollInterval: 5000,

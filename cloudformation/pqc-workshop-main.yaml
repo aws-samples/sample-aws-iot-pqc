@@ -108,7 +108,7 @@ Outputs:
   # ─── Devices ──────────────────────────────────────────────────────────────
   DeviceCount:
     Description: Number of ESP32 devices provisioned
-    Value: !GetAtt DeviceStack.Outputs.DeviceCount
+    Value: !Ref DeviceCount
 
   DevicePolicyName:
     Description: Shared IoT Policy for ESP32 devices
@@ -133,6 +133,10 @@ Outputs:
       IoT Core data endpoint. Retrieve exact value with:
       aws iot describe-endpoint --endpoint-type iot:Data-ATS
     Value: !Sub '${AWS::AccountId}-ats.iot.${AWS::Region}.amazonaws.com'
+
+  DashboardBucketName:
+    Description: S3 bucket for dashboard static files
+    Value: !GetAtt DashboardStack.Outputs.DashboardBucketName
 
   GreengrassBridgePolicyName:
     Description: IoT Policy for Mosquitto bridge (attach to Greengrass cert)

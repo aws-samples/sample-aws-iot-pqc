@@ -28,7 +28,7 @@ set -euo pipefail
 AWS_REGION="${1:-us-east-1}"
 DEVICE_COUNT="${2:-100}"
 STACK_NAME="pqc-workshop"
-TEMPLATE_PREFIX="pqc-workshop/templates"
+TEMPLATE_PREFIX="pqc-workshop"
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 DASHBOARD_DIR="$SCRIPT_DIR/../dashboard/infrastructure"
@@ -66,15 +66,15 @@ echo "[2/3] Uploading nested templates to S3..."
 
 # Upload all nested stacks
 aws s3 cp "$SCRIPT_DIR/greengrass-core-stack.yaml" \
-    "s3://$BUCKET_NAME/$TEMPLATE_PREFIX/greengrass-core-stack.yaml" \
+    "s3://$BUCKET_NAME/$TEMPLATE_PREFIX/templates/greengrass-core-stack.yaml" \
     --region "$AWS_REGION"
 
 aws s3 cp "$SCRIPT_DIR/device-provisioning-stack.yaml" \
-    "s3://$BUCKET_NAME/$TEMPLATE_PREFIX/device-provisioning-stack.yaml" \
+    "s3://$BUCKET_NAME/$TEMPLATE_PREFIX/templates/device-provisioning-stack.yaml" \
     --region "$AWS_REGION"
 
 aws s3 cp "$DASHBOARD_DIR/dashboard-stack.yaml" \
-    "s3://$BUCKET_NAME/$TEMPLATE_PREFIX/dashboard-stack.yaml" \
+    "s3://$BUCKET_NAME/$TEMPLATE_PREFIX/templates/dashboard-stack.yaml" \
     --region "$AWS_REGION"
 
 echo "       Templates uploaded"
@@ -93,7 +93,7 @@ aws cloudformation deploy \
         TemplateBucketName="$BUCKET_NAME" \
         TemplateBucketPrefix="$TEMPLATE_PREFIX" \
     --capabilities CAPABILITY_NAMED_IAM CAPABILITY_AUTO_EXPAND \
-    --tags Key=Workshop,Value=pqc-reinvent
+    --tags Workshop=pqc-reinvent
 
 echo ""
 echo "═══════════════════════════════════════════════════════════════"
