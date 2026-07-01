@@ -132,10 +132,6 @@ java -Droot="$GG_ROOT" -Dlog.store=FILE \
     --component-default-user ggc_user:ggc_group \
     --provision false \
     --setup-system-service true \
-    --deploy-dev-tools true \
-    --certificate-file-path "$CERT_DIR/device.pem.crt" \
-    --private-key-file-path "$CERT_DIR/private.pem.key" \
-    --root-ca-file-path "$CERT_DIR/AmazonRootCA1.pem" \
     --init-config - <<INITCONFIG
 ---
 system:

@@ -98,10 +98,10 @@ tar -xzf "openssl-${OPENSSL_VERSION}.tar.gz"
 cd "openssl-${OPENSSL_VERSION}"
 
 # Configure OpenSSL with ML-KEM enabled (it's on by default in 3.5)
-./Configure \
+# Auto-detect platform instead of hardcoding linux-aarch64
+./config \
     --prefix="$OPENSSL_PREFIX" \
     --openssldir="$OPENSSL_PREFIX/ssl" \
-    linux-aarch64 \
     shared \
     no-tests \
     -DOPENSSL_TLS_SECURITY_LEVEL=0
@@ -111,7 +111,17 @@ make -j"$(nproc)"
 make install_sw install_ssldirs
 
 # Create symlinks for library resolution
-echo "$OPENSSL_PREFIX/lib64" > /etc/ld.so.conf.d/openssl-pqc.conf
+if [[ -f "$OPENSSL_PREFIX/lib64/libssl.so" ]]; then
+    OPENSSL_LIB_DIR="$OPENSSL_PREFIX/lib64"
+elif [[ -f "$OPENSSL_PREFIX/lib/libssl.so" ]]; then
+    OPENSSL_LIB_DIR="$OPENSSL_PREFIX/lib"
+else
+    log_error "Cannot find libssl.so in $OPENSSL_PREFIX/lib or lib64"
+    find "$OPENSSL_PREFIX" -name "libssl*"
+    exit 1
+fi
+
+echo "$OPENSSL_LIB_DIR" > /etc/ld.so.conf.d/openssl-pqc.conf
 ldconfig
 
 log_info "OpenSSL ${OPENSSL_VERSION} installed to ${OPENSSL_PREFIX}"
@@ -147,15 +157,15 @@ cmake .. \
     -DCMAKE_INSTALL_PREFIX="$INSTALL_PREFIX" \
     -DOPENSSL_ROOT_DIR="$OPENSSL_PREFIX" \
     -DOPENSSL_INCLUDE_DIR="$OPENSSL_PREFIX/include" \
-    -DOPENSSL_CRYPTO_LIBRARY="$OPENSSL_PREFIX/lib64/libcrypto.so" \
-    -DOPENSSL_SSL_LIBRARY="$OPENSSL_PREFIX/lib64/libssl.so" \
+    -DOPENSSL_CRYPTO_LIBRARY="$OPENSSL_LIB_DIR/libcrypto.so" \
+    -DOPENSSL_SSL_LIBRARY="$OPENSSL_LIB_DIR/libssl.so" \
     -DWITH_TLS=ON \
     -DWITH_TLS_PSK=OFF \
     -DWITH_WEBSOCKETS=OFF \
     -DWITH_DOCS=OFF \
     -DCMAKE_BUILD_TYPE=Release
 
-make -j"$(nproc)"
+LD_LIBRARY_PATH="$OPENSSL_LIB_DIR" make -j"$(nproc)"
 make install
 
 log_info "Mosquitto ${MOSQUITTO_VERSION} installed to ${INSTALL_PREFIX}"
@@ -190,7 +200,7 @@ log_info "Directory structure created."
 # ─── Step 5: Create Systemd Service ─────────────────────────────────────────
 log_info "Step 5/5: Creating systemd service..."
 
-cat > /etc/systemd/system/mosquitto-pqc.service << 'SERVICEEOF'
+cat > /etc/systemd/system/mosquitto-pqc.service << SERVICEEOF
 [Unit]
 Description=Mosquitto MQTT Broker with PQC (Post-Quantum Cryptography)
 Documentation=https://mosquitto.org/documentation/
@@ -198,24 +208,16 @@ After=network-online.target
 Wants=network-online.target
 
 [Service]
-Type=notify
-NotifyAccess=main
+Type=simple
 ExecStart=/opt/mosquitto-pqc/sbin/mosquitto -c /opt/mosquitto-pqc/etc/mosquitto/mosquitto-pqc.conf
-ExecReload=/bin/kill -HUP $MAINPID
+ExecReload=/bin/kill -HUP \$MAINPID
 Restart=on-failure
 RestartSec=5
 User=root
 Group=root
 
-# Security hardening
-ProtectSystem=strict
-ReadWritePaths=/opt/mosquitto-pqc/var/log/mosquitto
-ReadWritePaths=/opt/mosquitto-pqc/var/lib/mosquitto
-PrivateTmp=true
-NoNewPrivileges=false
-
-# Environment for PQC OpenSSL
-Environment="LD_LIBRARY_PATH=/opt/openssl-pqc/lib64"
+# Environment for PQC OpenSSL and Mosquitto libraries
+Environment="LD_LIBRARY_PATH=${OPENSSL_LIB_DIR}:${INSTALL_PREFIX}/lib"
 
 [Install]
 WantedBy=multi-user.target

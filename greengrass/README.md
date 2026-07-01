@@ -55,7 +55,29 @@ ESP32 Device                    Raspberry Pi (Greengrass Core)              AWS 
 - An SSH client to connect to the Pi (or physical keyboard/monitor)
 - The `pqc-workshop` CloudFormation stack already deployed (see `cloudformation/deploy-workshop.sh`)
 
-The Pi does NOT need AWS CLI pre-installed — the setup script will guide you. However, you need temporary AWS credentials (Access Key + Secret Key) that have permissions for Secrets Manager and IoT.
+The Pi does NOT need AWS CLI pre-installed — the setup script will guide you. However, you need temporary AWS credentials (Access Key + Secret Key) with the following IAM permissions:
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": "secretsmanager:GetSecretValue",
+      "Resource": "arn:aws:secretsmanager:*:*:secret:iot/pqc-workshop-greengrass-core/*"
+    },
+    {
+      "Effect": "Allow",
+      "Action": [
+        "iot:DescribeEndpoint",
+        "iot:ListAttachedPolicies",
+        "iot:AttachPolicy"
+      ],
+      "Resource": "*"
+    }
+  ]
+}
+```
 
 ## Raspberry Pi Setup (Facilitator Guide)
 
@@ -96,13 +118,14 @@ aws configure
 This installs Java, downloads the Greengrass nucleus, and provisions the core device using the certificate stored in Secrets Manager by the CloudFormation stack.
 
 ```bash
-sudo ./setup-greengrass-core.sh us-east-1 pqc-workshop-greengrass-core
+sudo -E ./setup-greengrass-core.sh us-east-1 pqc-workshop-greengrass-core
 ```
+
+**Note:** The `-E` flag preserves your AWS credentials environment so the script can access Secrets Manager as root.
 
 Verify Greengrass is running:
 ```bash
 sudo systemctl status greengrass
-sudo /greengrass/v2/bin/greengrass-cli component list
 ```
 
 ### Step 4: Build and install PQC Mosquitto
@@ -118,9 +141,11 @@ sudo ./setup-mosquitto-pqc.sh
 ```bash
 cd certs
 chmod +x generate-broker-certs.sh
-./generate-broker-certs.sh 100
+LD_LIBRARY_PATH=/opt/openssl-pqc/lib ./generate-broker-certs.sh 100
 cd ..
 ```
+
+**Note:** The `LD_LIBRARY_PATH` prefix is required because the PQC OpenSSL binary (`/opt/openssl-pqc/bin/openssl`) needs its own `libssl.so.3` rather than the system default.
 
 This creates `certs/output/` with:
 - `ca.crt` / `ca.key` — Workshop CA
@@ -151,7 +176,7 @@ sed "s|REPLACE_WITH_IOT_ENDPOINT|$IOT_ENDPOINT|g; s|REPLACE_WITH_GREENGRASS_THIN
 # Get Greengrass device cert for the bridge connection to IoT Core
 aws secretsmanager get-secret-value \
   --secret-id "iot/$GG_THING/greengrass-credentials" \
-  --query 'SecretString' --output text | python3 -c "
+  --query 'SecretString' --output text | sudo python3 -c "
 import json, sys
 creds = json.load(sys.stdin)
 open('/opt/mosquitto-pqc/etc/mosquitto/certs/greengrass-device.crt','w').write(creds['certificatePem'])
@@ -200,9 +225,9 @@ sudo tail -f /opt/mosquitto-pqc/var/log/mosquitto/mosquitto.log
 git clone https://gitlab.aws.dev/Sample-aws-iot-pqc.git
 cd Sample-aws-iot-pqc/greengrass
 
-sudo ./setup-greengrass-core.sh us-east-1 pqc-workshop-greengrass-core
+sudo -E ./setup-greengrass-core.sh us-east-1 pqc-workshop-greengrass-core
 sudo ./setup-mosquitto-pqc.sh
-cd certs && ./generate-broker-certs.sh 100 && cd ..
+cd certs && LD_LIBRARY_PATH=/opt/openssl-pqc/lib ./generate-broker-certs.sh 100 && cd ..
 
 sudo cp certs/output/{ca.crt,broker.crt,broker.key} /opt/mosquitto-pqc/etc/mosquitto/certs/
 sudo cp mosquitto/mosquitto-pqc.conf /opt/mosquitto-pqc/etc/mosquitto/
@@ -213,7 +238,7 @@ sed "s|REPLACE_WITH_IOT_ENDPOINT|$IOT_ENDPOINT|g; s|REPLACE_WITH_GREENGRASS_THIN
   mosquitto/bridge-iotcore.conf | sudo tee /opt/mosquitto-pqc/etc/mosquitto/conf.d/bridge-iotcore.conf > /dev/null
 
 aws secretsmanager get-secret-value --secret-id "iot/pqc-workshop-greengrass-core/greengrass-credentials" \
-  --query 'SecretString' --output text | python3 -c "
+  --query 'SecretString' --output text | sudo python3 -c "
 import json,sys; c=json.load(sys.stdin)
 open('/opt/mosquitto-pqc/etc/mosquitto/certs/greengrass-device.crt','w').write(c['certificatePem'])
 open('/opt/mosquitto-pqc/etc/mosquitto/certs/greengrass-device.key','w').write(c['privateKey'])"
