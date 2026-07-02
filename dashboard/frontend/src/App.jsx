@@ -78,7 +78,10 @@ async function appSyncQuery(query, variables = {}) {
 }
 
 function DeviceCard({ device, onMigrate }) {
-  const isPqc = device.pqcAlgorithm && device.pqcAlgorithm !== 'none';
+  const isPqc = device.pqcAlgorithm && 
+    (device.pqcAlgorithm.includes('MLKEM') || 
+     device.pqcAlgorithm.includes('Kyber') || 
+     device.pqcAlgorithm.includes('PQC'));
   // Device is online only if status says so AND lastSeen is within 90 seconds
   const lastSeenDate = device.lastSeen ? new Date(device.lastSeen) : null;
   const staleThreshold = 90 * 1000; // 90 seconds
