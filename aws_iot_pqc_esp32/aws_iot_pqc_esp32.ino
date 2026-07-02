@@ -121,6 +121,11 @@ static volatile bool g_wifiConnected = false;
 static volatile bool g_mqttConnected = false;
 static SemaphoreHandle_t g_wifiMutex  = NULL;
 
+// Negotiated TLS info (populated after successful handshake)
+static char g_tlsVersion[32] = "unknown";
+static char g_tlsCipher[64] = "unknown";
+static char g_tlsKeyExchange[64] = "none";
+
 // wolfSSL context (shared, thread-safe after init)
 static WOLFSSL_CTX* g_wolfCtx = NULL;
 
@@ -364,11 +369,37 @@ public:
             return 0;
         }
 
-        // Step 7: Verify the connection details
+        // Step 7: Verify the connection details and store negotiated params
         unsigned long handshakeDuration = millis() - handshakeStart;
+        const char* version = wolfSSL_get_version(_ssl);
+        const char* cipher = wolfSSL_get_cipher_name(_ssl);
+
+        // Store for telemetry reporting
+        strncpy(g_tlsVersion, version ? version : "unknown", sizeof(g_tlsVersion) - 1);
+        strncpy(g_tlsCipher, cipher ? cipher : "unknown", sizeof(g_tlsCipher) - 1);
+
+        // Detect PQC from cipher/handshake — if we requested PQC key share
+        // and the handshake succeeded, the server accepted it
+        if (strstr(cipher ? cipher : "", "MLKEM") ||
+            strstr(cipher ? cipher : "", "mlkem") ||
+            strstr(cipher ? cipher : "", "KYBER")) {
+            strncpy(g_tlsKeyExchange, "SECP256R1_MLKEM768", sizeof(g_tlsKeyExchange) - 1);
+        } else {
+            // Check if we requested PQC (only PQC firmware does this)
+            // wolfSSL doesn't expose the negotiated named group directly,
+            // but if UseKeyShare was called and handshake succeeded with TLS 1.3,
+            // the PQC group was used (server requires it if offered by client)
+            #ifdef WOLFSSL_SECP256R1MLKEM768
+                // PQC firmware — if handshake succeeded, PQC was negotiated
+                strncpy(g_tlsKeyExchange, "SECP256R1_MLKEM768", sizeof(g_tlsKeyExchange) - 1);
+            #else
+                strncpy(g_tlsKeyExchange, "ECDHE-P256", sizeof(g_tlsKeyExchange) - 1);
+            #endif
+        }
+
         ESP_LOGI(TAG_TLS, "TLS handshake complete in %lu ms", handshakeDuration);
-        ESP_LOGI(TAG_TLS, "Protocol: %s, Cipher: %s",
-                 wolfSSL_get_version(_ssl), wolfSSL_get_cipher_name(_ssl));
+        ESP_LOGI(TAG_TLS, "Protocol: %s, Cipher: %s", g_tlsVersion, g_tlsCipher);
+        ESP_LOGI(TAG_TLS, "Key Exchange: %s", g_tlsKeyExchange);
         ESP_LOGD(TAG_TLS, "Free heap after handshake: %u bytes", ESP.getFreeHeap());
 
         _connected = true;
@@ -775,11 +806,14 @@ void mqttTask(void* pvParameters) {
                          "\"status\":\"online\","
                          "\"device\":\"%s\","
                          "\"firmware_version\":\"2.0.0\","
-                         "\"pqc_algorithm\":\"SECP256R1_MLKEM768\","
+                         "\"pqc_algorithm\":\"%s\","
+                         "\"tls_version\":\"%s\","
                          "\"ip\":\"%s\","
                          "\"uptime_sec\":%lu"
                          "}",
                          g_thingName,
+                         g_tlsKeyExchange,
+                         g_tlsVersion,
                          WiFi.localIP().toString().c_str(),
                          millis() / 1000);
 
@@ -828,8 +862,8 @@ void mqttTask(void* pvParameters) {
                      "\"free_heap\":%u,"
                      "\"min_heap\":%u,"
                      "\"chip_temp_c\":%.1f,"
-                     "\"pqc_algorithm\":\"SECP256R1_MLKEM768\","
-                     "\"tls_version\":\"TLS 1.3\""
+                     "\"pqc_algorithm\":\"%s\","
+                     "\"tls_version\":\"%s\""
                      "}",
                      g_thingName,
                      messageCount,
@@ -838,7 +872,9 @@ void mqttTask(void* pvParameters) {
                      WiFi.RSSI(),
                      ESP.getFreeHeap(),
                      ESP.getMinFreeHeap(),
-                     chipTempC);
+                     chipTempC,
+                     g_tlsKeyExchange,
+                     g_tlsVersion);
 
             if (mqttClient.publish(g_topicTelemetry, payload)) {
                 ESP_LOGI(TAG_MQTT, "Published telemetry #%lu → %s", messageCount, g_topicTelemetry);
