@@ -15,6 +15,7 @@ WiFi and MQTT run as independent FreeRTOS tasks with automatic failure recovery.
 - [Installation: Arduino Cloud IDE](#installation-arduino-cloud-ide)
 - [Installation: Arduino Desktop IDE](#installation-arduino-desktop-ide)
 - [AWS IoT Core Setup](#aws-iot-core-setup)
+- [Validate Environment Readiness](#validate-environment-readiness)
 - [Configure the Sketch](#configure-the-sketch)
 - [Upload and Run](#upload-and-run)
 - [Expected Serial Output](#expected-serial-output)
@@ -126,6 +127,7 @@ See [`greengrass/README.md`](greengrass/README.md) for detailed setup instructio
 Sample-aws-iot-pqc/
 +-- README.md                              This file
 +-- attendee_experience.md                 Workshop attendee flow document
++-- check_setup_status.sh                  Validates AWS environment readiness
 +-- aws_iot_pqc_esp32/
 |   +-- aws_iot_pqc_esp32.ino              PQC firmware (partition 1)
 |   +-- secrets.h                          WiFi + credentials (you edit this)
@@ -529,6 +531,72 @@ Or use the AWS CLI:
 ```bash
 aws iot describe-endpoint --endpoint-type iot:Data-ATS
 ```
+
+---
+
+## Validate Environment Readiness
+
+After deploying the CloudFormation stacks (or at any time before/during the workshop), run the readiness check script to confirm all AWS resources are correctly provisioned:
+
+### Prerequisites
+
+- AWS CLI v2 installed
+- Valid AWS credentials in the session (environment variables or named profile)
+- Read-only access to: IoT, Lambda, DynamoDB, AppSync, CloudFormation, CloudFront, S3, Cognito, Greengrass, SecretsManager
+
+### Run the Check
+
+```bash
+# From the project root
+./check_setup_status.sh
+```
+
+### Options
+
+```bash
+# Specify a different region
+./check_setup_status.sh --region us-west-2
+
+# Specify a custom stack name
+./check_setup_status.sh --stack-name my-pqc-workshop
+
+# Show help
+./check_setup_status.sh --help
+```
+
+### What It Checks
+
+| # | Component | What's Validated |
+|---|-----------|-----------------|
+| 1 | AWS Credentials | Valid session with account access |
+| 2 | CloudFormation | Main + nested stacks deployed successfully |
+| 3 | IoT Core | Endpoint, Thing, device policy (esp32-* wildcard), certificates, Rules |
+| 4 | Lambda Functions | All 4 functions exist and are Active |
+| 5 | DynamoDB | `pqc-workshop-devices` table is ACTIVE |
+| 6 | AppSync API | GraphQL endpoint responding |
+| 7 | Cognito | Identity pool allows unauthenticated dashboard access |
+| 8 | Dashboard | S3 files deployed, CloudFront distribution active |
+| 9 | Secrets Manager | Greengrass core credentials stored |
+| 10 | Greengrass Core | Pi registered and healthy (warning if not yet provisioned) |
+| 11 | ESP32 Devices | Auto-registered devices (warning if none yet — expected pre-workshop) |
+
+### Expected Output (Pre-Workshop)
+
+A fully deployed environment that hasn't yet connected the Raspberry Pi or ESP32 devices will show:
+
+```
+  ✅ Passed:   15
+  ⚠️  Warnings: 2
+  ❌ Failed:   0
+
+  👍 Environment is MOSTLY READY (review warnings above).
+
+  Common warnings before the session:
+    - Greengrass core not registered: Pi not yet provisioned
+    - No ESP32 devices: They auto-register when powered on
+```
+
+Once the Pi is online and devices connect, all checks pass with zero warnings.
 
 ---
 
