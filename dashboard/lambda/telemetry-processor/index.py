@@ -35,40 +35,60 @@ def handler(event, context):
         print(f"Skipping message with no device name: {json.dumps(event)}")
         return {'statusCode': 200, 'body': 'Skipped (no device name)'}
 
-    # Build item from telemetry or lifecycle event
-    item = {
-        'thingName': thing_name,
-        'lastSeen': now,
-        'ttl': int(time.time()) + 86400  # 24h TTL
-    }
+    # Build update expression — only update fields present in the event
+    update_parts = ['#lastSeen = :lastSeen', '#ttl = :ttl']
+    attr_names = {'#lastSeen': 'lastSeen', '#ttl': 'ttl'}
+    attr_values = {':lastSeen': now, ':ttl': int(time.time()) + 86400}
 
     # Telemetry fields
     if 'message_id' in event:
-        item['messageId'] = event.get('message_id')
-        item['uptimeSec'] = event.get('uptime_sec')
-        item['wifiRssi'] = event.get('wifi_rssi')
-        item['freeHeap'] = event.get('free_heap')
-        item['minHeap'] = event.get('min_heap')
-        item['chipTempC'] = str(event.get('chip_temp_c', 0))
-        item['pqcAlgorithm'] = event.get('pqc_algorithm', 'unknown')
-        item['tlsVersion'] = event.get('tls_version', 'unknown')
-        item['firmwareVersion'] = event.get('firmware_version', 'unknown')
-        item['status'] = 'online'  # If sending telemetry, device is online
+        field_map = {
+            'messageId': event.get('message_id'),
+            'uptimeSec': event.get('uptime_sec'),
+            'wifiRssi': event.get('wifi_rssi'),
+            'freeHeap': event.get('free_heap'),
+            'minHeap': event.get('min_heap'),
+            'chipTempC': str(event.get('chip_temp_c', 0)),
+            'pqcAlgorithm': event.get('pqc_algorithm', 'unknown'),
+            'tlsVersion': event.get('tls_version', 'unknown'),
+            'firmwareVersion': event.get('firmware_version', 'unknown'),
+            'status': 'online',
+        }
+        for k, v in field_map.items():
+            if v is not None:
+                update_parts.append(f'#{k} = :{k}')
+                attr_names[f'#{k}'] = k
+                attr_values[f':{k}'] = v
 
     # Lifecycle fields
     if 'status' in event:
-        item['status'] = event['status']
+        update_parts.append('#status = :status')
+        attr_names['#status'] = 'status'
+        attr_values[':status'] = event['status']
         if 'ip' in event:
-            item['ipAddress'] = event['ip']
+            update_parts.append('#ipAddress = :ipAddress')
+            attr_names['#ipAddress'] = 'ipAddress'
+            attr_values[':ipAddress'] = event['ip']
         if 'firmware_version' in event:
-            item['firmwareVersion'] = event['firmware_version']
+            update_parts.append('#firmwareVersion = :firmwareVersion')
+            attr_names['#firmwareVersion'] = 'firmwareVersion'
+            attr_values[':firmwareVersion'] = event['firmware_version']
         if 'pqc_algorithm' in event:
-            item['pqcAlgorithm'] = event['pqc_algorithm']
+            update_parts.append('#pqcAlgorithm = :pqcAlgorithm')
+            attr_names['#pqcAlgorithm'] = 'pqcAlgorithm'
+            attr_values[':pqcAlgorithm'] = event['pqc_algorithm']
         if 'tls_version' in event:
-            item['tlsVersion'] = event['tls_version']
+            update_parts.append('#tlsVersion = :tlsVersion')
+            attr_names['#tlsVersion'] = 'tlsVersion'
+            attr_values[':tlsVersion'] = event['tls_version']
 
-    # Write to DynamoDB
-    table.put_item(Item=item)
+    # Update DynamoDB (only modifies fields present — doesn't clear others)
+    table.update_item(
+        Key={'thingName': thing_name},
+        UpdateExpression='SET ' + ', '.join(update_parts),
+        ExpressionAttributeNames=attr_names,
+        ExpressionAttributeValues=attr_values,
+    )
     print(f"Updated device: {thing_name}")
 
     return {'statusCode': 200, 'body': f'Updated {thing_name}'}
