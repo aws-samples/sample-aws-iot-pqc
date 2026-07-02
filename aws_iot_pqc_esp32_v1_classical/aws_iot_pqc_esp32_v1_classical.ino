@@ -277,6 +277,7 @@ public:
 
     int connect(const char* host, uint16_t port) override {
         stop(); // Clean up any previous connection
+        _pqcRequested = false;
 
         ESP_LOGD(TAG_TLS, "Connecting to %s:%d", host, port);
 
@@ -371,17 +372,11 @@ public:
             strstr(cipher ? cipher : "", "mlkem") ||
             strstr(cipher ? cipher : "", "KYBER")) {
             strncpy(g_tlsKeyExchange, "SECP256R1_MLKEM768", sizeof(g_tlsKeyExchange) - 1);
+        } else if (_pqcRequested) {
+            // We requested PQC and handshake succeeded — PQC was negotiated
+            strncpy(g_tlsKeyExchange, "SECP256R1_MLKEM768", sizeof(g_tlsKeyExchange) - 1);
         } else {
-            // Check if we requested PQC (only PQC firmware does this)
-            // wolfSSL doesn't expose the negotiated named group directly,
-            // but if UseKeyShare was called and handshake succeeded with TLS 1.3,
-            // the PQC group was used (server requires it if offered by client)
-            #ifdef WOLFSSL_SECP256R1MLKEM768
-                // PQC firmware — if handshake succeeded, PQC was negotiated
-                strncpy(g_tlsKeyExchange, "SECP256R1_MLKEM768", sizeof(g_tlsKeyExchange) - 1);
-            #else
-                strncpy(g_tlsKeyExchange, "ECDHE-P256", sizeof(g_tlsKeyExchange) - 1);
-            #endif
+            strncpy(g_tlsKeyExchange, "ECDHE-P256", sizeof(g_tlsKeyExchange) - 1);
         }
 
         ESP_LOGI(TAG_TLS, "TLS handshake complete in %lu ms", handshakeDuration);
@@ -509,6 +504,7 @@ private:
     WOLFSSL*         _ssl;
     wolfssl_io_ctx_t _ioCtx;
     bool             _connected;
+    bool             _pqcRequested;
 };
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -688,31 +684,17 @@ void mqttMessageHandler(String &topic, String &payload) {
     ESP_LOGI(TAG_MQTT, "Message received on topic '%s' (%d bytes)", topic.c_str(), payload.length());
     ESP_LOGD(TAG_MQTT, "Payload: %s", payload.c_str());
 
-    // Check for OTA migration command: {"action":"migrate-pqc"} on cmd/<thing>/ota
+    // Check for OTA migration command
     if (topic.indexOf("/ota") >= 0 && payload.indexOf("migrate-pqc") >= 0) {
         ESP_LOGI(TAG_MQTT, "PQC migration command received!");
-        ESP_LOGI(TAG_MQTT, "Switching boot partition to PQC firmware...");
-
         const esp_partition_t* nextPartition = esp_ota_get_next_update_partition(NULL);
-        if (!nextPartition) {
-            ESP_LOGE(TAG_MQTT, "No next OTA partition found");
-            return;
-        }
-
+        if (!nextPartition) { ESP_LOGE(TAG_MQTT, "No next OTA partition"); return; }
         esp_app_desc_t appDesc;
         if (esp_ota_get_partition_description(nextPartition, &appDesc) != ESP_OK) {
-            ESP_LOGE(TAG_MQTT, "No valid firmware in partition '%s'", nextPartition->label);
-            return;
+            ESP_LOGE(TAG_MQTT, "No firmware in '%s'", nextPartition->label); return;
         }
-        ESP_LOGI(TAG_MQTT, "Found: %s v%s in '%s'", appDesc.project_name, appDesc.version, nextPartition->label);
-
-        esp_err_t err = esp_ota_set_boot_partition(nextPartition);
-        if (err != ESP_OK) {
-            ESP_LOGE(TAG_MQTT, "Failed to set boot partition (err=0x%x)", err);
-            return;
-        }
-
-        ESP_LOGI(TAG_MQTT, "Rebooting to PQC firmware in 2 seconds...");
+        ESP_LOGI(TAG_MQTT, "Switching to %s v%s", appDesc.project_name, appDesc.version);
+        esp_ota_set_boot_partition(nextPartition);
         vTaskDelay(pdMS_TO_TICKS(2000));
         esp_restart();
     }

@@ -274,6 +274,7 @@ public:
 
     int connect(const char* host, uint16_t port) override {
         stop(); // Clean up any previous connection
+        _pqcRequested = false;
 
         ESP_LOGD(TAG_TLS, "Connecting to %s:%d", host, port);
 
@@ -319,8 +320,10 @@ public:
                 return 0;
             }
             ESP_LOGI(TAG_TLS, "Using fallback PQC: X25519 + ML-KEM-768");
+            _pqcRequested = true;
         } else {
             ESP_LOGI(TAG_TLS, "Using PQC key exchange: P-256 + ML-KEM-768 (SecP256r1MLKEM768)");
+            _pqcRequested = true;
         }
 
         // Step 5: Set SNI (Server Name Indication) for AWS IoT
@@ -387,17 +390,11 @@ public:
             strstr(cipher ? cipher : "", "mlkem") ||
             strstr(cipher ? cipher : "", "KYBER")) {
             strncpy(g_tlsKeyExchange, "SECP256R1_MLKEM768", sizeof(g_tlsKeyExchange) - 1);
+        } else if (_pqcRequested) {
+            // We requested PQC and handshake succeeded — PQC was negotiated
+            strncpy(g_tlsKeyExchange, "SECP256R1_MLKEM768", sizeof(g_tlsKeyExchange) - 1);
         } else {
-            // Check if we requested PQC (only PQC firmware does this)
-            // wolfSSL doesn't expose the negotiated named group directly,
-            // but if UseKeyShare was called and handshake succeeded with TLS 1.3,
-            // the PQC group was used (server requires it if offered by client)
-            #ifdef WOLFSSL_SECP256R1MLKEM768
-                // PQC firmware — if handshake succeeded, PQC was negotiated
-                strncpy(g_tlsKeyExchange, "SECP256R1_MLKEM768", sizeof(g_tlsKeyExchange) - 1);
-            #else
-                strncpy(g_tlsKeyExchange, "ECDHE-P256", sizeof(g_tlsKeyExchange) - 1);
-            #endif
+            strncpy(g_tlsKeyExchange, "ECDHE-P256", sizeof(g_tlsKeyExchange) - 1);
         }
 
         ESP_LOGI(TAG_TLS, "TLS handshake complete in %lu ms", handshakeDuration);
@@ -525,6 +522,7 @@ private:
     WOLFSSL*         _ssl;
     wolfssl_io_ctx_t _ioCtx;
     bool             _connected;
+    bool             _pqcRequested;
 };
 
 // ═══════════════════════════════════════════════════════════════════════════
