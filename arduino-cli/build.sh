@@ -26,7 +26,8 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 CONFIG="$SCRIPT_DIR/arduino-cli.yaml"
 BUNDLE="$PROJECT_ROOT/esp32-arduino-bundle"
 
-FQBN="esp32:esp32:XIAO_ESP32S3:USBMode=hwcdc,CDCOnBoot=default,DebugLevel=info"
+FQBN="esp32:esp32:XIAO_ESP32S3:USBMode=hwcdc,CDCOnBoot=default,DebugLevel=info,PartitionScheme=default_8MB"
+CUSTOM_PARTITIONS="$PROJECT_ROOT/esp32-flash/partitions_pqc_workshop.csv"
 CLI="arduino-cli --config-file $CONFIG"
 
 UPLOAD=false
@@ -78,7 +79,7 @@ build_sketch() {
     echo "═══════════════════════════════════════════════════════════════"
     echo ""
 
-    $CLI compile -b "$FQBN" --export-binaries "$sketch_dir" 2>&1
+    $CLI compile -b "$FQBN" --build-property "build.partitions=pqc_workshop" --build-property "upload.maximum_size=3670016" --export-binaries "$sketch_dir" 2>&1
 
     echo ""
     echo "  ✅ Build complete: $sketch_name"
@@ -97,6 +98,7 @@ flash_dual_boot() {
     local port=$(detect_port)
     local classical_bin="$BUNDLE/aws_iot_pqc_esp32_v1_classical/build/esp32.esp32.XIAO_ESP32S3/aws_iot_pqc_esp32_v1_classical.ino.bin"
     local pqc_bin="$BUNDLE/aws_iot_pqc_esp32/build/esp32.esp32.XIAO_ESP32S3/aws_iot_pqc_esp32.ino.bin"
+    local flash_script="$PROJECT_ROOT/esp32-flash/flash-dual-boot.sh"
 
     if [[ ! -f "$classical_bin" ]]; then
         echo "[ERROR] Classical binary not found: $classical_bin"
@@ -109,16 +111,30 @@ flash_dual_boot() {
         exit 1
     fi
 
+    # Ensure partition table binary exists
+    local part_bin="$PROJECT_ROOT/esp32-flash/partitions_pqc_workshop.bin"
+    if [[ ! -f "$part_bin" ]]; then
+        local gen_tool=$(find "$SCRIPT_DIR/data" -name "gen_esp32part.py" 2>/dev/null | head -1)
+        if [[ -n "$gen_tool" ]]; then
+            python3 "$gen_tool" "$PROJECT_ROOT/esp32-flash/partitions_pqc_workshop.csv" "$part_bin"
+        else
+            echo "[ERROR] No partition binary and gen_esp32part.py not found"
+            exit 1
+        fi
+    fi
+    # Copy partition bin to flash script directory so it can find it
+    cp "$part_bin" "$(dirname "$flash_script")/partitions_pqc_workshop.bin" || true
+
     echo "═══════════════════════════════════════════════════════════════"
     echo "  Flashing Dual-Boot (OTA_0=Classical, OTA_1=PQC)"
     echo "═══════════════════════════════════════════════════════════════"
     echo ""
     echo "  Port:        $port"
-    echo "  Classical:   $classical_bin"
-    echo "  PQC:         $pqc_bin"
+    echo "  Classical:   $(basename $classical_bin)"
+    echo "  PQC:         $(basename $pqc_bin)"
     echo ""
 
-    "$BUNDLE/flash/flash-dual-boot.sh" "$port" "$classical_bin" "$pqc_bin"
+    "$flash_script" "$port" "$classical_bin" "$pqc_bin"
 }
 
 if [[ "$DUAL_BOOT" == true ]]; then

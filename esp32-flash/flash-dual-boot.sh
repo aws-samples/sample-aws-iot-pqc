@@ -119,19 +119,18 @@ fi
 echo "[1/4] Generating partition table binary..."
 
 PARTITION_BIN="$SCRIPT_DIR/partitions_pqc_workshop.bin"
-if command -v gen_esp32part.py &>/dev/null; then
+if [[ -f "$PARTITION_BIN" ]]; then
+    echo "       Using pre-built: $PARTITION_BIN"
+elif command -v gen_esp32part.py &>/dev/null; then
     gen_esp32part.py "$PARTITION_CSV" "$PARTITION_BIN"
 elif command -v python3 &>/dev/null; then
-    # Try using the ESP-IDF or Arduino tool
-    PART_TOOL=$(find ~/.arduino15 ~/Library/Arduino15 /usr/local -name "gen_esp32part.py" 2>/dev/null | head -1)
+    PART_TOOL=$(find ~/.arduino15 ~/Library/Arduino15 /usr/local 2>/dev/null -name "gen_esp32part.py" | head -1)
+    [[ -z "$PART_TOOL" ]] && PART_TOOL=$(find "$SCRIPT_DIR/../../arduino-cli/data" 2>/dev/null -name "gen_esp32part.py" | head -1)
     if [[ -n "$PART_TOOL" ]]; then
         python3 "$PART_TOOL" "$PARTITION_CSV" "$PARTITION_BIN"
     else
-        echo "[WARN] gen_esp32part.py not found. Using pre-built partition table if available."
-        if [[ ! -f "$PARTITION_BIN" ]]; then
-            echo "[ERROR] No partition binary found. Install ESP-IDF or Arduino ESP32 board package."
-            exit 1
-        fi
+        echo "[ERROR] gen_esp32part.py not found and no pre-built partition binary."
+        exit 1
     fi
 fi
 
