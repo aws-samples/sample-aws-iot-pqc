@@ -381,3 +381,22 @@ body {
 .remove-all-button:hover { background: #ef4444; }
 .manage-actions button:last-child { background: #374151; color: #e5e7eb; }
 .manage-actions button:last-child:hover { background: #4b5563; }
+
+/* LED Controls */
+.led-controls {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+}
+.led-button {
+  padding: 6px 12px;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 13px;
+  flex: 1;
+}
+.led-button.led-on { background: #065f46; color: #6ee7b7; }
+.led-button.led-on:hover { background: #047857; }
+.led-button.led-off { background: #374151; color: #9ca3af; }
+.led-button.led-off:hover { background: #4b5563; }

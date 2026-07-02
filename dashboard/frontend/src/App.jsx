@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { CognitoIdentityClient, GetIdCommand, GetCredentialsForIdentityCommand } from '@aws-sdk/client-cognito-identity';
 import config from './config.js';
-import { LIST_DEVICES, MIGRATE_FIRMWARE, DELETE_DEVICE } from './graphql.js';
+import { LIST_DEVICES, MIGRATE_FIRMWARE, DELETE_DEVICE, SEND_COMMAND } from './graphql.js';
 
 // Cognito client for fetching guest credentials
 const cognitoClient = new CognitoIdentityClient({ region: config.region });
@@ -77,7 +77,7 @@ async function appSyncQuery(query, variables = {}) {
   }
 }
 
-function DeviceCard({ device, onMigrate }) {
+function DeviceCard({ device, onMigrate, onLedToggle }) {
   const isPqc = device.pqcAlgorithm && 
     (device.pqcAlgorithm.includes('MLKEM') || 
      device.pqcAlgorithm.includes('Kyber') || 
@@ -141,6 +141,13 @@ function DeviceCard({ device, onMigrate }) {
           <value>{lastSeen}</value>
         </div>
       </div>
+
+      {isOnline && (
+        <div className="led-controls">
+          <button className="led-button led-on" onClick={() => onLedToggle(device.thingName, true)}>💡 LED On</button>
+          <button className="led-button led-off" onClick={() => onLedToggle(device.thingName, false)}>⬛ LED Off</button>
+        </div>
+      )}
 
       {!isPqc && isOnline && (
         <button
@@ -233,6 +240,15 @@ function App() {
     }
   };
 
+  const handleLedToggle = async (thingName, turnOn) => {
+    const action = turnOn ? 'led-on' : 'led-off';
+    try {
+      await appSyncQuery(SEND_COMMAND, { thingName, action, topicSuffix: 'control' });
+    } catch (err) {
+      console.error('LED toggle failed:', err);
+    }
+  };
+
   const pqcCount = devices.filter(d => d.pqcAlgorithm && d.pqcAlgorithm !== 'none').length;
   const onlineCount = devices.filter(d => d.status === 'online').length;
 
@@ -281,6 +297,7 @@ function App() {
                 key={device.thingName}
                 device={device}
                 onMigrate={handleMigrate}
+                onLedToggle={handleLedToggle}
               />
             ))
           }

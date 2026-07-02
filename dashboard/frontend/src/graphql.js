@@ -61,6 +61,16 @@ export const DELETE_DEVICE = `
   }
 `;
 
+export const SEND_COMMAND = `
+  mutation SendCommand($thingName: String!, $action: String!, $topicSuffix: String) {
+    sendCommand(thingName: $thingName, action: $action, topicSuffix: $topicSuffix) {
+      success
+      message
+      thingName
+    }
+  }
+`;
+
 export const ON_DEVICE_UPDATE = `
   subscription OnDeviceUpdate {
     onDeviceUpdate {

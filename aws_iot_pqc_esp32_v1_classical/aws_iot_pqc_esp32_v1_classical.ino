@@ -138,6 +138,7 @@ static WOLFSSL_CTX* g_wolfCtx = NULL;
 // Task handles for watchdog monitoring
 static TaskHandle_t g_wifiTaskHandle = NULL;
 static TaskHandle_t g_mqttTaskHandle = NULL;
+static TaskHandle_t g_blinkTaskHandle = NULL;
 
 // ─── Forward Declarations ───────────────────────────────────────────────────
 void wifiTask(void* pvParameters);
@@ -305,7 +306,6 @@ public:
         ESP_LOGD(TAG_TLS, "I/O callbacks registered");
 
         // Step 4: Classical TLS — no PQC key exchange requested
-        // wolfSSL will negotiate standard ECDHE (P-256) for TLS 1.3
         ESP_LOGI(TAG_TLS, "Using classical key exchange (ECDHE P-256, no PQC)");
 
         // Step 5: Set SNI (Server Name Indication)
@@ -679,12 +679,25 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
     // Example: parse JSON, control GPIOs, update state, etc.
 }
 
-// MQTTClient message handler — includes OTA migration trigger
+// MQTTClient message handler (wraps mqttCallback)
 void mqttMessageHandler(String &topic, String &payload) {
     ESP_LOGI(TAG_MQTT, "Message received on topic '%s' (%d bytes)", topic.c_str(), payload.length());
     ESP_LOGD(TAG_MQTT, "Payload: %s", payload.c_str());
 
-    // Check for OTA migration command
+    // LED control: {"action":"led-off"} or {"action":"led-on"}
+    if (payload.indexOf("led-off") >= 0) {
+        ESP_LOGI(TAG_MQTT, "LED OFF command received");
+        if (g_blinkTaskHandle) vTaskSuspend(g_blinkTaskHandle);
+        digitalWrite(LED_PIN, LOW);
+        return;
+    }
+    if (payload.indexOf("led-on") >= 0) {
+        ESP_LOGI(TAG_MQTT, "LED ON command received");
+        if (g_blinkTaskHandle) vTaskResume(g_blinkTaskHandle);
+        return;
+    }
+
+    // OTA migration: {"action":"migrate-pqc"} on cmd/<thing>/ota
     if (topic.indexOf("/ota") >= 0 && payload.indexOf("migrate-pqc") >= 0) {
         ESP_LOGI(TAG_MQTT, "PQC migration command received!");
         const esp_partition_t* nextPartition = esp_ota_get_next_update_partition(NULL);
@@ -912,7 +925,7 @@ void setup() {
     pinMode(LED_PIN, OUTPUT);
     digitalWrite(LED_PIN, HIGH);  // LED on right away
     xTaskCreatePinnedToCore(blinkTask, "BlinkTask", BLINK_TASK_STACK_SIZE,
-                            NULL, BLINK_TASK_PRIORITY, NULL, 0);
+                            NULL, BLINK_TASK_PRIORITY, &g_blinkTaskHandle, 0);
 
     Serial.begin(115200);
 

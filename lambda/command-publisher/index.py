@@ -20,7 +20,7 @@ iot_data = boto3.client(
 
 
 def handler(event, context):
-    """Publish migrate-pqc command to a device via IoT Core."""
+    """Publish a command to a device via IoT Core."""
     print(f"Event: {json.dumps(event)}")
 
     thing_name = event.get('thingName')
@@ -39,8 +39,11 @@ def handler(event, context):
             'thingName': thing_name
         }
 
-    topic = f'cmd/{thing_name}/ota'
-    payload = json.dumps({'action': 'migrate-pqc'})
+    # Support custom action and topic suffix (defaults to migrate-pqc on /ota)
+    action = event.get('action', 'migrate-pqc')
+    topic_suffix = event.get('topicSuffix', 'ota')
+    topic = f'cmd/{thing_name}/{topic_suffix}'
+    payload = json.dumps({'action': action})
 
     try:
         iot_data.publish(
@@ -48,10 +51,10 @@ def handler(event, context):
             qos=1,
             payload=payload
         )
-        print(f"Published migrate-pqc to {topic}")
+        print(f"Published '{action}' to {topic}")
         return {
             'success': True,
-            'message': f'Migration command sent to {thing_name}',
+            'message': f'Command "{action}" sent to {thing_name}',
             'thingName': thing_name
         }
     except Exception as e:

@@ -135,6 +135,7 @@ static WOLFSSL_CTX* g_wolfCtx = NULL;
 // Task handles for watchdog monitoring
 static TaskHandle_t g_wifiTaskHandle = NULL;
 static TaskHandle_t g_mqttTaskHandle = NULL;
+static TaskHandle_t g_blinkTaskHandle = NULL;
 
 // ─── Forward Declarations ───────────────────────────────────────────────────
 void wifiTask(void* pvParameters);
@@ -701,6 +702,19 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
 void mqttMessageHandler(String &topic, String &payload) {
     ESP_LOGI(TAG_MQTT, "Message received on topic '%s' (%d bytes)", topic.c_str(), payload.length());
     ESP_LOGD(TAG_MQTT, "Payload: %s", payload.c_str());
+
+    // LED control: {"action":"led-off"} or {"action":"led-on"}
+    if (payload.indexOf("led-off") >= 0) {
+        ESP_LOGI(TAG_MQTT, "LED OFF command received");
+        if (g_blinkTaskHandle) vTaskSuspend(g_blinkTaskHandle);
+        digitalWrite(LED_PIN, LOW);
+        return;
+    }
+    if (payload.indexOf("led-on") >= 0) {
+        ESP_LOGI(TAG_MQTT, "LED ON command received");
+        if (g_blinkTaskHandle) vTaskResume(g_blinkTaskHandle);
+        return;
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -915,7 +929,7 @@ void setup() {
     pinMode(LED_PIN, OUTPUT);
     digitalWrite(LED_PIN, HIGH);  // LED on right away
     xTaskCreatePinnedToCore(blinkTask, "BlinkTask", BLINK_TASK_STACK_SIZE,
-                            NULL, BLINK_TASK_PRIORITY, NULL, 0);
+                            NULL, BLINK_TASK_PRIORITY, &g_blinkTaskHandle, 0);
 
     Serial.begin(115200);
 
