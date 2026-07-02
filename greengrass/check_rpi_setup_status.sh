@@ -379,25 +379,41 @@ echo ""
 echo "─── 11. PQC TLS Handshake Test ─────────────────────────────"
 
 MOSQ_PUB="/opt/mosquitto-pqc/bin/mosquitto_pub"
-DEVICE_CERT_DIR=""
+DEVICE_CERT=""
+DEVICE_KEY=""
 
-# Find a device cert to test with
+# Find device certs to test with (check multiple possible locations)
 for dir in \
     "$(dirname "$0")/certs/output/devices/esp32-pqc-device-001" \
     "$HOME/Sample-aws-iot-pqc/greengrass/certs/output/devices/esp32-pqc-device-001" \
     "/home/pi/Sample-aws-iot-pqc/greengrass/certs/output/devices/esp32-pqc-device-001"; do
     if [[ -f "$dir/device.crt" ]]; then
-        DEVICE_CERT_DIR="$dir"
+        DEVICE_CERT="$dir/device.crt"
+        DEVICE_KEY="$dir/device.key"
         break
     fi
 done
 
-if [[ -x "$MOSQ_PUB" && -n "$DEVICE_CERT_DIR" && -f "$CERT_DIR/ca.crt" ]]; then
+# Also check for fleet certificate (shared by all devices)
+if [[ -z "$DEVICE_CERT" ]]; then
+    for dir in \
+        "$(dirname "$0")/certs/output" \
+        "$HOME/Sample-aws-iot-pqc/greengrass/certs/output" \
+        "$HOME/Downloads/rpi-pqc-workshop-bundle/certs/output"; do
+        if [[ -f "$dir/fleet-device.crt" ]]; then
+            DEVICE_CERT="$dir/fleet-device.crt"
+            DEVICE_KEY="$dir/fleet-device.key"
+            break
+        fi
+    done
+fi
+
+if [[ -x "$MOSQ_PUB" && -n "$DEVICE_CERT" && -f "$CERT_DIR/ca.crt" ]]; then
     # Try a test publish
     TEST_RESULT=$("$MOSQ_PUB" \
         --cafile "$CERT_DIR/ca.crt" \
-        --cert "$DEVICE_CERT_DIR/device.crt" \
-        --key "$DEVICE_CERT_DIR/device.key" \
+        --cert "$DEVICE_CERT" \
+        --key "$DEVICE_KEY" \
         -h localhost -p 8883 \
         -t "dt/test-rpi-check/telemetry" \
         -m "{\"test\":true,\"timestamp\":$(date +%s)}" \
@@ -411,7 +427,7 @@ if [[ -x "$MOSQ_PUB" && -n "$DEVICE_CERT_DIR" && -f "$CERT_DIR/ca.crt" ]]; then
     }
 elif [[ ! -x "$MOSQ_PUB" ]]; then
     warn "mosquitto_pub not found — cannot test handshake"
-elif [[ -z "$DEVICE_CERT_DIR" ]]; then
+elif [[ -z "$DEVICE_CERT" ]]; then
     warn "No device certs found — cannot test handshake (generate certs first)"
 else
     warn "Missing CA cert — cannot test handshake"
