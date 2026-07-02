@@ -291,11 +291,11 @@ public:
         // with the post-quantum ML-KEM-768 algorithm.
         // Uses IANA code point 4587 (SecP256r1MLKEM768) for interoperability
         // with OpenSSL 3.5+ based servers (e.g., Mosquitto PQC broker).
-        int ret = wolfSSL_UseKeyShare(_ssl, WOLFSSL_SECP256R1_MLKEM768);
+        int ret = wolfSSL_UseKeyShare(_ssl, WOLFSSL_SECP256R1MLKEM768);
         if (ret != WOLFSSL_SUCCESS) {
             ESP_LOGW(TAG_TLS, "P-256 + ML-KEM-768 key share failed (rc=%d), trying fallback", ret);
             // Fall back to X25519 + ML-KEM-768 (also IANA-standard, code point 4588)
-            ret = wolfSSL_UseKeyShare(_ssl, WOLFSSL_X25519_MLKEM768);
+            ret = wolfSSL_UseKeyShare(_ssl, WOLFSSL_X25519MLKEM768);
             if (ret != WOLFSSL_SUCCESS) {
                 ESP_LOGE(TAG_TLS, "PQC key share fallback (X25519 + ML-KEM-768) also failed (rc=%d)", ret);
                 wolfSSL_free(_ssl);

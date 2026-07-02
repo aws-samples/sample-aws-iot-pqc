@@ -9,6 +9,11 @@
 # Generated bundles with credentials
 esp32-arduino-bundle/
 
+# Arduino CLI local data (toolchains, board packages — ~2GB, re-created by setup.sh)
+arduino-cli/data/
+arduino-cli/staging/
+arduino-cli/user/
+
 # Node modules
 node_modules/
 dashboard/frontend/build/

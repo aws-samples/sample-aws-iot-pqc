@@ -27,12 +27,24 @@
 #define WOLFSSL_USER_SETTINGS_PQC_H
 
 // ─── Platform: Espressif ESP32 ──────────────────────────────────────────────
-#define WOLFSSL_ESPIDF
-#define WOLFSSL_ESPWROOM32          // Works for all ESP32 variants
-#define WOLFSSL_ESP32
+// Note: Do NOT define WOLFSSL_ESPIDF when using Arduino ESP32 core v3.x
+// (which is built on ESP-IDF internally). Only define WOLFSSL_ESP32.
+#ifdef ARDUINO
+  // Arduino ESP32 core — do not set ESPIDF flag
+  #define WOLFSSL_ESP32
+#else
+  // Native ESP-IDF build
+  #define WOLFSSL_ESPIDF
+  #define WOLFSSL_ESPWROOM32
+  #define WOLFSSL_ESP32
+#endif
 
 // Use ESP32 hardware acceleration where available
-#define WOLFSSL_ESP32_CRYPT         // HW AES, SHA, RSA acceleration
+// Note: HW crypto (WOLFSSL_ESP32_CRYPT) requires native ESP-IDF build.
+// Arduino ESP32 core v3.x does not expose the esp32 HW crypto API directly.
+#ifndef ARDUINO
+  #define WOLFSSL_ESP32_CRYPT       // HW AES, SHA, RSA acceleration
+#endif
 #define USE_FAST_MATH
 #define TFM_TIMING_RESISTANT
 
@@ -56,7 +68,7 @@
 #define WOLFSSL_HAVE_MLKEM          // Enable ML-KEM (FIPS 203) support
 #define HAVE_PQC                    // General PQC flag
 #define WOLFSSL_PQC_HYBRIDS         // Enable hybrid key exchange groups
-#define WOLFSSL_WC_KYBER            // Use wolfSSL's native ML-KEM implementation
+#define WOLFSSL_WC_MLKEM            // Use wolfSSL's native ML-KEM implementation (5.8.x)
 #define WOLFSSL_SHA3                // Required by ML-KEM
 
 // ─── ECC (for hybrid PQC key exchange) ──────────────────────────────────────
@@ -74,6 +86,7 @@
 #define RSA_LOW_MEM
 #define WC_RSA_BLINDING
 #define WOLFSSL_KEY_GEN
+#define WC_RSA_PSS                  // Required for TLS 1.3 with RSA certs
 
 // ─── Cipher Suites ──────────────────────────────────────────────────────────
 #define HAVE_AESGCM                 // AES-GCM (primary TLS 1.3 cipher)
@@ -85,10 +98,11 @@
 // ─── Hashing ────────────────────────────────────────────────────────────────
 #define WOLFSSL_SHA384
 #define WOLFSSL_SHA512
+#define WOLFSSL_SHAKE128            // Required by ML-KEM (SHAKE for key gen)
+#define WOLFSSL_SHAKE256            // Required by ML-KEM
 
 // ─── X.509 Certificate Support ──────────────────────────────────────────────
 #define HAVE_SNI                    // Server Name Indication (required for AWS)
-#define HAVE_CERTIFICATE_STATUS_REQUEST
 #define WOLFSSL_ASN_TEMPLATE
 #define WOLFSSL_BASE64_ENCODE
 
@@ -111,6 +125,8 @@
 #define NO_OLD_TLS
 #define NO_PSK
 #define WOLFSSL_NO_TLS12            // TLS 1.3 only (saves significant space)
+#define NO_WOLFSSL_ESP32_CRYPT_HASH // Disable ESP32 HW hash (conflicts in Arduino)
+#define NO_OLD_RNGNAME              // Avoid openssl compat RNG naming conflicts
 
 // ─── Debugging (uncomment for development) ──────────────────────────────────
 // #define DEBUG_WOLFSSL
