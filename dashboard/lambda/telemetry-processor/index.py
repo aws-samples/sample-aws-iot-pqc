@@ -49,10 +49,13 @@ def handler(event, context):
             'freeHeap': event.get('free_heap'),
             'minHeap': event.get('min_heap'),
             'chipTempC': str(event.get('chip_temp_c', 0)),
-            'pqcAlgorithm': event.get('pqc_algorithm', 'unknown'),
-            'tlsVersion': event.get('tls_version', 'unknown'),
-            'firmwareVersion': event.get('firmware_version', 'unknown'),
+            'pqcAlgorithm': event.get('pqc_algorithm'),
+            'tlsVersion': event.get('tls_version'),
             'status': 'online',
+        }
+        # Only include firmware_version if present (don't overwrite with 'unknown')
+        if 'firmware_version' in event:
+            field_map['firmwareVersion'] = event['firmware_version']
         }
         for k, v in field_map.items():
             if v is not None:
