@@ -69,6 +69,29 @@ Resources:
                 Action:
                   - iot:DescribeEndpoint
                 Resource: '*'
+        # Allow the Pi to query AWS resources for setup verification and status checks
+        - PolicyName: WorkshopReadOnlyChecks
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - iot:DescribeEndpoint
+                  - iot:DescribeThing
+                  - iot:ListThings
+                  - iot:ListThingPrincipals
+                  - iot:GetPolicy
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - greengrass:ListCoreDevices
+                  - greengrass:GetCoreDevice
+                  - greengrass:ListInstalledComponents
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - sts:GetCallerIdentity
+                Resource: '*'
       Tags:
         - Key: Workshop
           Value: pqc-reinvent
