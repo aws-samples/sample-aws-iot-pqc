@@ -1006,6 +1006,7 @@ void loop() {
 
         ESP_LOGI(TAG_MAIN, "─── System Status ─────────────────────────────");
         ESP_LOGI(TAG_MAIN, "  Time:       %s", timebuf);
+        ESP_LOGI(TAG_MAIN, "  Timezone:   %s", getenv("TZ") ? getenv("TZ") : "UTC (default)");
         ESP_LOGI(TAG_MAIN, "  Device:     %s", g_thingName);
         ESP_LOGI(TAG_MAIN, "  Uptime:     %lu sec", now / 1000);
         ESP_LOGI(TAG_MAIN, "  WiFi:       %s (RSSI: %d dBm)",
