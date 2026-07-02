@@ -13,6 +13,8 @@ esp32-arduino-bundle/
 arduino-cli/data/
 arduino-cli/staging/
 arduino-cli/user/
+data/
+staging/
 
 # Node modules
 node_modules/
