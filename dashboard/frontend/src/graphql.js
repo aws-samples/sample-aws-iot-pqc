@@ -52,6 +52,15 @@ export const MIGRATE_FIRMWARE = `
   }
 `;
 
+export const DELETE_DEVICE = `
+  mutation DeleteDevice($thingName: String!) {
+    deleteDevice(thingName: $thingName) {
+      success
+      thingName
+    }
+  }
+`;
+
 export const ON_DEVICE_UPDATE = `
   subscription OnDeviceUpdate {
     onDeviceUpdate {

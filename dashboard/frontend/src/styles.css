@@ -295,3 +295,89 @@ body {
     padding: 1rem;
   }
 }
+
+/* Manage Devices */
+.manage-button {
+  position: fixed;
+  bottom: 20px;
+  right: 20px;
+  padding: 10px 16px;
+  border: none;
+  border-radius: 8px;
+  background: #374151;
+  color: #e5e7eb;
+  cursor: pointer;
+  font-size: 14px;
+  z-index: 100;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+}
+.manage-button:hover { background: #4b5563; }
+
+.manage-panel {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 200;
+}
+.manage-panel-content {
+  background: #1f2937;
+  border-radius: 12px;
+  padding: 24px;
+  min-width: 400px;
+  max-width: 500px;
+  max-height: 80vh;
+  overflow-y: auto;
+}
+.manage-panel-content h3 {
+  margin: 0 0 16px 0;
+  color: #f9fafb;
+}
+.manage-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+.manage-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  background: #111827;
+  border-radius: 6px;
+  font-size: 14px;
+  color: #e5e7eb;
+}
+.manage-item span:first-child { flex: 1; font-family: monospace; }
+.manage-status { font-size: 12px; padding: 2px 8px; border-radius: 4px; margin: 0 8px; }
+.manage-status.online { background: #065f46; color: #6ee7b7; }
+.manage-status.offline { background: #7f1d1d; color: #fca5a5; }
+.manage-item button {
+  padding: 4px 10px;
+  border: none;
+  border-radius: 4px;
+  background: #dc2626;
+  color: white;
+  cursor: pointer;
+  font-size: 12px;
+}
+.manage-item button:hover { background: #ef4444; }
+.manage-actions {
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+}
+.manage-actions button {
+  padding: 8px 16px;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 14px;
+}
+.remove-all-button { background: #dc2626; color: white; }
+.remove-all-button:hover { background: #ef4444; }
+.manage-actions button:last-child { background: #374151; color: #e5e7eb; }
+.manage-actions button:last-child:hover { background: #4b5563; }

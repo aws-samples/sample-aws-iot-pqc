@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { CognitoIdentityClient, GetIdCommand, GetCredentialsForIdentityCommand } from '@aws-sdk/client-cognito-identity';
 import config from './config.js';
-import { LIST_DEVICES, MIGRATE_FIRMWARE } from './graphql.js';
+import { LIST_DEVICES, MIGRATE_FIRMWARE, DELETE_DEVICE } from './graphql.js';
 
 // Cognito client for fetching guest credentials
 const cognitoClient = new CognitoIdentityClient({ region: config.region });
@@ -165,6 +165,7 @@ function App() {
   const [loading, setLoading] = useState(true);
   const [migrating, setMigrating] = useState(null);
   const [error, setError] = useState(null);
+  const [showManage, setShowManage] = useState(false);
 
   const fetchDevices = useCallback(async () => {
     try {
@@ -205,6 +206,30 @@ function App() {
       alert(`Migration error: ${err.message}`);
     } finally {
       setTimeout(() => setMigrating(null), 3000);
+    }
+  };
+
+  const handleDeleteDevice = async (thingName) => {
+    if (!window.confirm(`Remove ${thingName} from the dashboard?`)) return;
+    try {
+      await appSyncQuery(DELETE_DEVICE, { thingName });
+      setDevices(prev => prev.filter(d => d.thingName !== thingName));
+    } catch (err) {
+      alert(`Failed to remove: ${err.message}`);
+    }
+  };
+
+  const handleDeleteAll = async () => {
+    if (!window.confirm(`Remove ALL ${devices.length} devices from the dashboard?\n\nThis cannot be undone.`)) return;
+    try {
+      for (const device of devices) {
+        await appSyncQuery(DELETE_DEVICE, { thingName: device.thingName });
+      }
+      setDevices([]);
+      setShowManage(false);
+    } catch (err) {
+      alert(`Failed: ${err.message}`);
+      fetchDevices();
     }
   };
 
@@ -265,6 +290,39 @@ function App() {
       <footer className="app-footer">
         <p>re:Invent Builders Session — Post-Quantum Cryptography for IoT</p>
       </footer>
+
+      {/* Manage Devices Panel */}
+      <button
+        className="manage-button"
+        onClick={() => setShowManage(!showManage)}
+      >
+        ⚙️ Manage Devices
+      </button>
+
+      {showManage && (
+        <div className="manage-panel">
+          <div className="manage-panel-content">
+            <h3>Manage Devices</h3>
+            <div className="manage-list">
+              {devices.map(d => (
+                <div key={d.thingName} className="manage-item">
+                  <span>{d.thingName}</span>
+                  <span className={`manage-status ${d.status === 'online' ? 'online' : 'offline'}`}>
+                    {d.status || 'unknown'}
+                  </span>
+                  <button onClick={() => handleDeleteDevice(d.thingName)}>✕ Remove</button>
+                </div>
+              ))}
+            </div>
+            <div className="manage-actions">
+              <button className="remove-all-button" onClick={handleDeleteAll}>
+                🗑️ Remove All Devices
+              </button>
+              <button onClick={() => setShowManage(false)}>Close</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
