@@ -76,6 +76,12 @@ Manifests:
             sed -i "s|REPLACE_WITH_GREENGRASS_THING_NAME|{configuration:/greengrassThingName}|g" "$BRIDGE_CONF"
           fi
 
+          # Update ACL with bridge username (cert CN = Greengrass thing name)
+          ACL_CONF="$MOSQUITTO_PREFIX/etc/mosquitto/acl.conf"
+          if [[ -f "$ACL_CONF" ]]; then
+            sed -i "s|REPLACE_WITH_GREENGRASS_THING_NAME|{configuration:/greengrassThingName}|g" "$ACL_CONF"
+          fi
+
           echo "[PQC-Mosquitto] Install complete"
 
       run:

@@ -273,7 +273,8 @@ if [[ "$NEEDS_CONFIGURE" == true ]]; then
 
     # Copy config
     cp mosquitto/mosquitto-pqc.conf /opt/mosquitto-pqc/etc/mosquitto/
-    cp mosquitto/acl.conf /opt/mosquitto-pqc/etc/mosquitto/
+    sed "s|REPLACE_WITH_GREENGRASS_THING_NAME|$THING_NAME|g" \
+        mosquitto/acl.conf > /opt/mosquitto-pqc/etc/mosquitto/acl.conf
 
     # Configure bridge
     IOT_ENDPOINT=$(cat credentials/iot-endpoint.txt)

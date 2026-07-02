@@ -162,12 +162,14 @@ sudo cp certs/output/broker.key /opt/mosquitto-pqc/etc/mosquitto/certs/
 
 # Copy broker configuration
 sudo cp mosquitto/mosquitto-pqc.conf /opt/mosquitto-pqc/etc/mosquitto/
-sudo cp mosquitto/acl.conf /opt/mosquitto-pqc/etc/mosquitto/
 
-# Configure the IoT Core bridge (fills in placeholders)
+# Configure the IoT Core bridge and ACL (fills in placeholders)
 IOT_ENDPOINT=$(aws iot describe-endpoint --endpoint-type iot:Data-ATS \
   --query 'endpointAddress' --output text)
 GG_THING="pqc-workshop-greengrass-core"
+
+sed "s|REPLACE_WITH_GREENGRASS_THING_NAME|$GG_THING|g" \
+  mosquitto/acl.conf | sudo tee /opt/mosquitto-pqc/etc/mosquitto/acl.conf > /dev/null
 
 sed "s|REPLACE_WITH_IOT_ENDPOINT|$IOT_ENDPOINT|g; s|REPLACE_WITH_GREENGRASS_THING_NAME|$GG_THING|g" \
   mosquitto/bridge-iotcore.conf | \
@@ -231,10 +233,12 @@ cd certs && LD_LIBRARY_PATH=/opt/openssl-pqc/lib ./generate-broker-certs.sh 100 
 
 sudo cp certs/output/{ca.crt,broker.crt,broker.key} /opt/mosquitto-pqc/etc/mosquitto/certs/
 sudo cp mosquitto/mosquitto-pqc.conf /opt/mosquitto-pqc/etc/mosquitto/
-sudo cp mosquitto/acl.conf /opt/mosquitto-pqc/etc/mosquitto/
 
 IOT_ENDPOINT=$(aws iot describe-endpoint --endpoint-type iot:Data-ATS --query 'endpointAddress' --output text)
-sed "s|REPLACE_WITH_IOT_ENDPOINT|$IOT_ENDPOINT|g; s|REPLACE_WITH_GREENGRASS_THING_NAME|pqc-workshop-greengrass-core|g" \
+GG_THING="pqc-workshop-greengrass-core"
+sed "s|REPLACE_WITH_GREENGRASS_THING_NAME|$GG_THING|g" \
+  mosquitto/acl.conf | sudo tee /opt/mosquitto-pqc/etc/mosquitto/acl.conf > /dev/null
+sed "s|REPLACE_WITH_IOT_ENDPOINT|$IOT_ENDPOINT|g; s|REPLACE_WITH_GREENGRASS_THING_NAME|$GG_THING|g" \
   mosquitto/bridge-iotcore.conf | sudo tee /opt/mosquitto-pqc/etc/mosquitto/conf.d/bridge-iotcore.conf > /dev/null
 
 aws secretsmanager get-secret-value --secret-id "iot/pqc-workshop-greengrass-core/greengrass-credentials" \
