@@ -592,9 +592,10 @@ Resources:
       PolicyDocument:
         Version: '2012-10-17'
         Statement:
+          # Bridge uses a separate client ID to avoid conflict with Greengrass nucleus
           - Effect: Allow
             Action: iot:Connect
-            Resource: !Sub 'arn:aws:iot:${AWS::Region}:${AWS::AccountId}:client/${GreengrassThingName}'
+            Resource: !Sub 'arn:aws:iot:${AWS::Region}:${AWS::AccountId}:client/${GreengrassThingName}-bridge'
           - Effect: Allow
             Action:
               - iot:Publish
