@@ -990,25 +990,27 @@ void loop() {
     // All real work happens in the FreeRTOS tasks.
 
     static unsigned long lastStatusTime = 0;
-    static unsigned long lastHeartbeat = 0;
     unsigned long now = millis();
-
-    // Heartbeat every 10s using ESP_LOG (same format as all other output)
-    if (now - lastHeartbeat >= 10000) {
-        lastHeartbeat = now;
-        ESP_LOGI(TAG_MAIN, "WiFi:%s MQTT:%s Heap:%u RSSI:%d",
-                 g_wifiConnected ? "OK" : "NO",
-                 g_mqttConnected ? "OK" : "NO",
-                 ESP.getFreeHeap(),
-                 WiFi.RSSI());
-    }
 
     if (now - lastStatusTime >= 60000) { // Status every 60 seconds
         lastStatusTime = now;
+
+        // Get current timestamp
+        struct tm timeinfo;
+        char timebuf[24] = "no-ntp";
+        if (getLocalTime(&timeinfo)) {
+            snprintf(timebuf, sizeof(timebuf), "%04d-%02d-%02d %02d:%02d:%02d",
+                     timeinfo.tm_year + 1900, timeinfo.tm_mon + 1, timeinfo.tm_mday,
+                     timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec);
+        }
+
         ESP_LOGI(TAG_MAIN, "─── System Status ─────────────────────────────");
+        ESP_LOGI(TAG_MAIN, "  Time:       %s", timebuf);
+        ESP_LOGI(TAG_MAIN, "  Device:     %s", g_thingName);
         ESP_LOGI(TAG_MAIN, "  Uptime:     %lu sec", now / 1000);
         ESP_LOGI(TAG_MAIN, "  WiFi:       %s (RSSI: %d dBm)",
                  g_wifiConnected ? "Connected" : "Disconnected", WiFi.RSSI());
+        ESP_LOGI(TAG_MAIN, "  IP:         %s", WiFi.localIP().toString().c_str());
         ESP_LOGI(TAG_MAIN, "  MQTT:       %s",
                  g_mqttConnected ? "Connected" : "Disconnected");
         ESP_LOGI(TAG_MAIN, "  Free Heap:  %u bytes", ESP.getFreeHeap());
