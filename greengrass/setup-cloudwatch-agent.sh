@@ -93,7 +93,15 @@ cat > "$CONFIG_DIR/amazon-cloudwatch-agent.json" << EOF
             "file_path": "/opt/mosquitto-pqc/var/log/mosquitto/mosquitto.log",
             "log_group_name": "/pqc-workshop/mosquitto-broker",
             "log_stream_name": "{hostname}",
-            "timestamp_format": "%Y-%m-%dT%H:%M:%S:",
+            "timestamp_format": "%Y-%m-%dT%H:%M:%S",
+            "timezone": "UTC",
+            "retention_in_days": 7
+          },
+          {
+            "file_path": "/greengrass/v2/logs/greengrass.log",
+            "log_group_name": "/pqc-workshop/greengrass",
+            "log_stream_name": "{hostname}",
+            "timestamp_format": "%Y-%m-%dT%H:%M:%S",
             "timezone": "UTC",
             "retention_in_days": 7
           }
@@ -130,7 +138,10 @@ echo "════════════════════════�
 echo "  ✅ CloudWatch Agent configured!"
 echo "═══════════════════════════════════════════════════════════════"
 echo ""
-echo "  Log Group:  /pqc-workshop/mosquitto-broker"
+echo "  Log Groups:"
+echo "    /pqc-workshop/mosquitto-broker  — Device connections, bridge activity"
+echo "    /pqc-workshop/greengrass        — Greengrass nucleus, IoT Core connectivity"
+echo ""
 echo "  Log Stream: $(hostname)"
 echo "  Region:     $REGION"
 echo ""
@@ -139,10 +150,15 @@ echo "    CloudWatch > Logs > Log Groups > /pqc-workshop/mosquitto-broker"
 echo ""
 echo "  Or via CLI:"
 echo "    aws logs tail /pqc-workshop/mosquitto-broker --follow --region $REGION"
+echo "    aws logs tail /pqc-workshop/greengrass --follow --region $REGION"
 echo ""
-echo "  Query PQC connections in CloudWatch Logs Insights:"
+echo "  Query device connections in CloudWatch Logs Insights:"
 echo "    fields @timestamp, @message"
-echo "    | filter @message like /New connection|CONNACK|handshake/"
+echo "    | filter @message like /New connection|New client|CONNACK|PUBLISH/"
 echo "    | sort @timestamp desc"
 echo "    | limit 50"
+echo ""
+echo "  Query PQC telemetry (from IoT Rules → Lambda → DynamoDB):"
+echo "    Check the dashboard or IoT Core MQTT test client for"
+echo "    'pqc_algorithm' field in device telemetry messages."
 echo ""
