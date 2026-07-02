@@ -705,13 +705,14 @@ void mqttMessageHandler(String &topic, String &payload) {
 
     // LED control: {"action":"led-off"} or {"action":"led-on"}
     if (payload.indexOf("led-off") >= 0) {
-        ESP_LOGI(TAG_MQTT, "LED OFF command received");
+        ESP_LOGI(TAG_MQTT, "Blink OFF command received");
         if (g_blinkTaskHandle) vTaskSuspend(g_blinkTaskHandle);
         digitalWrite(LED_PIN, LOW);
+        delay(1);  // Ensure GPIO state settles
         return;
     }
     if (payload.indexOf("led-on") >= 0) {
-        ESP_LOGI(TAG_MQTT, "LED ON command received");
+        ESP_LOGI(TAG_MQTT, "Blink ON command received");
         if (g_blinkTaskHandle) vTaskResume(g_blinkTaskHandle);
         return;
     }

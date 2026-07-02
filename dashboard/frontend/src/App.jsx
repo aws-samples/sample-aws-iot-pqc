@@ -144,8 +144,8 @@ function DeviceCard({ device, onMigrate, onLedToggle }) {
 
       {isOnline && (
         <div className="led-controls">
-          <button className="led-button led-on" onClick={() => onLedToggle(device.thingName, true)}>💡 LED On</button>
-          <button className="led-button led-off" onClick={() => onLedToggle(device.thingName, false)}>⬛ LED Off</button>
+          <button className="led-button led-on" onClick={() => onLedToggle(device.thingName, true)}>💡 Blink On</button>
+          <button className="led-button led-off" onClick={() => onLedToggle(device.thingName, false)}>⬛ Blink Off</button>
         </div>
       )}
 
