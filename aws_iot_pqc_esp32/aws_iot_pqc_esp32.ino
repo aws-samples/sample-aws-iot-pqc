@@ -76,6 +76,9 @@ static const char* TAG_WOLFSSL = "wolfssl";
 #define WIFI_TASK_CORE          0       // Run WiFi on core 0
 #define MQTT_TASK_CORE          1       // Run MQTT on core 1 (if available)
 
+// ─── Firmware Version ───────────────────────────────────────────────────────
+#define FIRMWARE_VERSION "2.0.0"
+
 // ─── LED Configuration ──────────────────────────────────────────────────────
 // XIAO ESP32-S3 built-in LED is on GPIO 21
 #define LED_PIN                 21
@@ -805,13 +808,14 @@ void mqttTask(void* pvParameters) {
                          "{"
                          "\"status\":\"online\","
                          "\"device\":\"%s\","
-                         "\"firmware_version\":\"2.0.0\","
+                         "\"firmware_version\":\"%s\","
                          "\"pqc_algorithm\":\"%s\","
                          "\"tls_version\":\"%s\","
                          "\"ip\":\"%s\","
                          "\"uptime_sec\":%lu"
                          "}",
                          g_thingName,
+                         FIRMWARE_VERSION,
                          g_tlsKeyExchange,
                          g_tlsVersion,
                          WiFi.localIP().toString().c_str(),
