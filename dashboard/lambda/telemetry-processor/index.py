@@ -56,7 +56,7 @@ def handler(event, context):
         # Only include firmware_version if present (don't overwrite with 'unknown')
         if 'firmware_version' in event:
             field_map['firmwareVersion'] = event['firmware_version']
-        }
+
         for k, v in field_map.items():
             if v is not None:
                 update_parts.append(f'#{k} = :{k}')
