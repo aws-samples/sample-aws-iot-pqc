@@ -30,6 +30,11 @@ def handler(event, context):
     thing_name = event.get('device', event.get('thingName', 'unknown'))
     now = datetime.utcnow().isoformat() + 'Z'
 
+    # Skip messages without a valid device name
+    if not thing_name or thing_name == 'unknown':
+        print(f"Skipping message with no device name: {json.dumps(event)}")
+        return {'statusCode': 200, 'body': 'Skipped (no device name)'}
+
     # Build item from telemetry or lifecycle event
     item = {
         'thingName': thing_name,

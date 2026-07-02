@@ -724,7 +724,10 @@ void mqttTask(void* pvParameters) {
              MQTT_BROKER_ENDPOINT, MQTT_BROKER_PORT, MQTT_KEEPALIVE_SEC);
 
     // ─── Last Will and Testament (LWT) ──────────────────────────────────────
-    const char* lwtPayload = "{\"status\":\"offline\",\"reason\":\"unexpected\"}";
+    static char lwtPayload[128];
+    snprintf(lwtPayload, sizeof(lwtPayload),
+             "{\"status\":\"offline\",\"reason\":\"unexpected\",\"device\":\"%s\"}",
+             g_thingName);
     mqttClient.setWill(g_topicLifecycle, lwtPayload, true, 1);
 
     unsigned long lastPublishTime = 0;
