@@ -613,6 +613,10 @@ void wifiTask(void* pvParameters) {
                 ESP_LOGI(TAG_WIFI, "Connected! IP: %s, RSSI: %d dBm, Channel: %d",
                          WiFi.localIP().toString().c_str(),
                          WiFi.RSSI(), WiFi.channel());
+                ESP_LOGI(TAG_WIFI, "  Gateway: %s, Subnet: %s, DNS: %s",
+                         WiFi.gatewayIP().toString().c_str(),
+                         WiFi.subnetMask().toString().c_str(),
+                         WiFi.dnsIP().toString().c_str());
                 ESP_LOGD(TAG_WIFI, "BSSID: %s, DNS: %s",
                          WiFi.BSSIDstr().c_str(),
                          WiFi.dnsIP().toString().c_str());
@@ -754,6 +758,9 @@ void mqttTask(void* pvParameters) {
                 g_mqttConnected = true;
                 connectAttempts = 0; // Reset backoff on success
                 ESP_LOGI(TAG_MQTT, "Connected to PQC Mosquitto broker!");
+                ESP_LOGI(TAG_MQTT, "  Client ID: %s", g_thingName);
+                ESP_LOGI(TAG_MQTT, "  Broker:    %s:%d", MQTT_BROKER_ENDPOINT, MQTT_BROKER_PORT);
+                ESP_LOGI(TAG_MQTT, "  Local IP:  %s", WiFi.localIP().toString().c_str());
 
                 // ─── Publish Online Lifecycle Event ──────────────────────────
                 // Announce that the device is online. This is the counterpart
@@ -993,16 +1000,27 @@ void loop() {
     static unsigned long lastHeartbeat = 0;
     unsigned long now = millis();
 
-    // Serial heartbeat every 10s — uses Serial directly (not ESP_LOG)
-    // so it prints whenever someone connects to the serial port
+    // Serial heartbeat every 10s with timestamp
     if (now - lastHeartbeat >= 10000) {
         lastHeartbeat = now;
         if (Serial) {
-            Serial.printf("[%lus] WiFi:%s MQTT:%s Heap:%u\n",
-                now / 1000,
-                g_wifiConnected ? "OK" : "NO",
-                g_mqttConnected ? "OK" : "NO",
-                ESP.getFreeHeap());
+            struct tm timeinfo;
+            if (getLocalTime(&timeinfo)) {
+                Serial.printf("[%04d-%02d-%02d %02d:%02d:%02d] WiFi:%s MQTT:%s Heap:%u RSSI:%d\n",
+                    timeinfo.tm_year + 1900, timeinfo.tm_mon + 1, timeinfo.tm_mday,
+                    timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec,
+                    g_wifiConnected ? "OK" : "NO",
+                    g_mqttConnected ? "OK" : "NO",
+                    ESP.getFreeHeap(),
+                    WiFi.RSSI());
+            } else {
+                Serial.printf("[%lus] WiFi:%s MQTT:%s Heap:%u RSSI:%d\n",
+                    now / 1000,
+                    g_wifiConnected ? "OK" : "NO",
+                    g_mqttConnected ? "OK" : "NO",
+                    ESP.getFreeHeap(),
+                    WiFi.RSSI());
+            }
             Serial.flush();
         }
     }
