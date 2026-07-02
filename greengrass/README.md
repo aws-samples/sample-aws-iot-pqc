@@ -250,6 +250,153 @@ sudo systemctl start mosquitto-pqc && sudo systemctl enable mosquitto-pqc
 
 ## Interoperability Notes
 
+### Remote Access via SSM (Systems Manager)
+
+The workshop stack includes an SSM hybrid activation that lets you remotely connect to the Raspberry Pi using AWS Systems Manager Session Manager — no SSH keys, VPN, or open ports required.
+
+#### First-Time Setup (Fresh Pi)
+
+After deploying the CloudFormation stack, run the SSM agent setup on the Pi:
+
+```bash
+# SSH in (one last time!) or connect physically
+ssh pi@<raspberry-pi-ip>
+
+cd ~/Sample-aws-iot-pqc/greengrass
+
+# Set temporary AWS credentials (need SecretsManager read access)
+export AWS_ACCESS_KEY_ID="..."
+export AWS_SECRET_ACCESS_KEY="..."
+export AWS_SESSION_TOKEN="..."
+
+# Install and register the SSM agent
+sudo -E ./setup-ssm-agent.sh us-east-1
+```
+
+After this, connect remotely from your laptop:
+
+```bash
+# Find the instance ID
+aws ssm describe-instance-information \
+  --filters "Key=InstanceIds,Values=mi-*" \
+  --query 'InstanceInformationList[].{Id:InstanceId,Name:Name,Status:PingStatus}' \
+  --output table --region us-east-1
+
+# Start an interactive session
+aws ssm start-session --target mi-xxxxxxxxxxxxxxxxx --region us-east-1
+```
+
+#### Resetting a Pi from a Previous Workshop / Account
+
+If the Pi was registered to a **different AWS account** (e.g., from a previous workshop dry-run), the SSM agent will try to connect to the old account and fail. You need to reset it:
+
+**Option A: Run the reset script (if you can still SSH in)**
+
+```bash
+ssh pi@<raspberry-pi-ip>
+cd ~/Sample-aws-iot-pqc/greengrass
+
+export AWS_ACCESS_KEY_ID="..."
+export AWS_SECRET_ACCESS_KEY="..."
+export AWS_SESSION_TOKEN="..."
+
+# --reset flag deregisters from the old account, then re-registers to the new one
+sudo -E ./setup-ssm-agent.sh --reset us-east-1
+```
+
+**Option B: Manual reset (if SSH works but script isn't available)**
+
+```bash
+ssh pi@<raspberry-pi-ip>
+
+# 1. Stop the agent
+sudo systemctl stop amazon-ssm-agent
+
+# 2. Remove the old registration
+sudo rm -f /var/lib/amazon/ssm/registration
+
+# 3. Clear the credential vault
+sudo rm -rf /var/lib/amazon/ssm/Vault
+sudo mkdir -p /var/lib/amazon/ssm/Vault
+
+# 4. Re-register with new activation credentials
+# Get activation-id and activation-code from Secrets Manager (on your laptop):
+#   aws secretsmanager get-secret-value \
+#     --secret-id iot/pqc-workshop-greengrass-core/ssm-activation \
+#     --query 'SecretString' --output text --region us-east-1
+
+# Then on the Pi:
+sudo amazon-ssm-agent -register \
+  -code "<new-activation-code>" \
+  -id "<new-activation-id>" \
+  -region us-east-1 \
+  -y
+
+# 5. Start the agent
+sudo systemctl start amazon-ssm-agent
+```
+
+**Option C: Full nuclear reset (wipe all SSM state)**
+
+Use this if the agent is completely stuck or corrupted:
+
+```bash
+ssh pi@<raspberry-pi-ip>
+
+# Remove the agent entirely
+sudo systemctl stop amazon-ssm-agent
+sudo systemctl disable amazon-ssm-agent
+sudo dpkg -r amazon-ssm-agent
+
+# Clean all SSM data
+sudo rm -rf /var/lib/amazon/ssm
+sudo rm -rf /etc/amazon/ssm
+
+# Re-run setup from scratch
+cd ~/Sample-aws-iot-pqc/greengrass
+sudo -E ./setup-ssm-agent.sh us-east-1
+```
+
+#### How It Works Under the Hood
+
+1. The CloudFormation stack creates an **SSM hybrid activation** (stored in Secrets Manager as `iot/pqc-workshop-greengrass-core/ssm-activation`)
+2. The activation includes an **activation ID** and **activation code** (like a one-time password)
+3. `setup-ssm-agent.sh` retrieves these from Secrets Manager and uses them to register the Pi
+4. Once registered, the Pi gets an instance ID (`mi-xxxxxxxxxxxxxxxxx`) and maintains an outbound HTTPS connection to the SSM service
+5. Session Manager, Run Command, and other SSM features work through this connection
+
+#### Network Requirements
+
+The Pi needs **outbound HTTPS (port 443)** to these endpoints:
+- `ssm.{region}.amazonaws.com`
+- `ssmmessages.{region}.amazonaws.com`
+- `ec2messages.{region}.amazonaws.com`
+
+No inbound ports are required. Works through NAT, firewalls, and on workshop WiFi.
+
+#### Running Commands Remotely
+
+```bash
+# Interactive shell
+aws ssm start-session --target mi-xxxxxxxxxxxxxxxxx --region us-east-1
+
+# Run a single command
+aws ssm send-command \
+  --instance-ids mi-xxxxxxxxxxxxxxxxx \
+  --document-name AWS-RunShellScript \
+  --parameters 'commands=["sudo systemctl status mosquitto-pqc"]' \
+  --region us-east-1
+
+# Run the full Greengrass setup remotely
+aws ssm send-command \
+  --instance-ids mi-xxxxxxxxxxxxxxxxx \
+  --document-name AWS-RunShellScript \
+  --parameters 'commands=["cd ~/Sample-aws-iot-pqc/greengrass && sudo -E ./setup-greengrass-core.sh us-east-1"]' \
+  --region us-east-1
+```
+
+---
+
 ### Key Exchange Agreement
 
 Both the ESP32 (wolfSSL) and the Mosquitto broker (OpenSSL 3.5) must agree on the same TLS 1.3 named group for the PQC handshake:

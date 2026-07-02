@@ -1,0 +1,262 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  PQC Workshop — SSM Hybrid Activation for Raspberry Pi.
+  
+  Creates the IAM role, SSM hybrid activation, and stores the activation
+  credentials in Secrets Manager for use on the Raspberry Pi.
+  
+  Once deployed, retrieve the activation credentials and run the SSM agent
+  setup script on the Pi:
+    ./setup-ssm-agent.sh <aws-region> <stack-name>
+
+Parameters:
+  GreengrassThingName:
+    Type: String
+    Default: pqc-workshop-greengrass-core
+    Description: Thing name for the Greengrass core device (used for naming)
+
+  RegistrationLimit:
+    Type: Number
+    Default: 5
+    Description: >
+      Maximum number of on-premises instances that can register with this
+      activation. Set higher if you have multiple Raspberry Pis.
+    MinValue: 1
+    MaxValue: 100
+
+  ActivationExpirationDays:
+    Type: Number
+    Default: 7
+    Description: >
+      Number of days the activation remains valid. After expiry, new
+      registrations are rejected (already registered instances continue working).
+    MinValue: 1
+    MaxValue: 30
+
+Resources:
+
+  # ─── IAM Role for SSM Managed Instances ────────────────────────────────────
+  # This role is assumed by the SSM agent on the Raspberry Pi.
+  SSMManagedInstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${GreengrassThingName}-ssm-role'
+      Description: >
+        Role assumed by the Raspberry Pi SSM agent for Systems Manager
+        hybrid activation (PQC workshop).
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ssm.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        # Core SSM agent functionality (Session Manager, Run Command, Inventory)
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+      Policies:
+        # Allow the Pi to read its own Greengrass credentials from Secrets Manager
+        - PolicyName: ReadGreengrassCredentials
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                Resource:
+                  - !Sub 'arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:iot/${GreengrassThingName}/*'
+              - Effect: Allow
+                Action:
+                  - iot:DescribeEndpoint
+                Resource: '*'
+      Tags:
+        - Key: Workshop
+          Value: pqc-reinvent
+        - Key: ManagedBy
+          Value: CloudFormation
+
+  # ─── SSM Hybrid Activation ─────────────────────────────────────────────────
+  # Custom resource that creates the activation and stores credentials in
+  # Secrets Manager (since CloudFormation doesn't natively support
+  # ssm:CreateActivation).
+  SSMActivationFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${GreengrassThingName}-ssm-activation'
+      Description: Creates/deletes SSM hybrid activation and stores credentials
+      Runtime: python3.12
+      Handler: index.handler
+      Timeout: 60
+      Role: !GetAtt SSMActivationLambdaRole.Arn
+      Environment:
+        Variables:
+          THING_NAME: !Ref GreengrassThingName
+          IAM_ROLE_NAME: !Ref SSMManagedInstanceRole
+          REGISTRATION_LIMIT: !Ref RegistrationLimit
+          EXPIRATION_DAYS: !Ref ActivationExpirationDays
+      Code:
+        ZipFile: |
+          import boto3
+          import cfnresponse
+          import os
+          import json
+          from datetime import datetime, timedelta, timezone
+
+          def handler(event, context):
+              ssm = boto3.client('ssm')
+              sm = boto3.client('secretsmanager')
+              thing_name = os.environ['THING_NAME']
+              role_name = os.environ['IAM_ROLE_NAME']
+              reg_limit = int(os.environ['REGISTRATION_LIMIT'])
+              exp_days = int(os.environ['EXPIRATION_DAYS'])
+              secret_id = f'iot/{thing_name}/ssm-activation'
+
+              try:
+                  if event['RequestType'] in ('Create', 'Update'):
+                      # Delete old activation if updating
+                      if event['RequestType'] == 'Update':
+                          old_id = event.get('PhysicalResourceId', '')
+                          if old_id and old_id.startswith('activation-'):
+                              try:
+                                  ssm.delete_activation(ActivationId=old_id.replace('activation-', ''))
+                              except Exception:
+                                  pass
+
+                      expiration = datetime.now(timezone.utc) + timedelta(days=exp_days)
+
+                      resp = ssm.create_activation(
+                          Description=f'PQC Workshop - Raspberry Pi ({thing_name})',
+                          DefaultInstanceName=thing_name,
+                          IamRole=role_name,
+                          RegistrationLimit=reg_limit,
+                          ExpirationDate=expiration,
+                          Tags=[
+                              {'Key': 'Workshop', 'Value': 'pqc-reinvent'},
+                              {'Key': 'Thing', 'Value': thing_name}
+                          ]
+                      )
+
+                      activation_id = resp['ActivationId']
+                      activation_code = resp['ActivationCode']
+
+                      secret_value = json.dumps({
+                          'activationId': activation_id,
+                          'activationCode': activation_code,
+                          'region': os.environ['AWS_REGION'],
+                          'expirationDate': expiration.isoformat(),
+                          'registrationLimit': reg_limit,
+                          'instanceName': thing_name
+                      })
+
+                      # Create or update the secret
+                      try:
+                          sm.create_secret(
+                              Name=secret_id,
+                              Description=f'SSM hybrid activation for {thing_name}',
+                              SecretString=secret_value,
+                              Tags=[
+                                  {'Key': 'Thing', 'Value': thing_name},
+                                  {'Key': 'ManagedBy', 'Value': 'CloudFormation'},
+                                  {'Key': 'Workshop', 'Value': 'pqc-reinvent'}
+                              ]
+                          )
+                      except sm.exceptions.ResourceExistsException:
+                          sm.put_secret_value(
+                              SecretId=secret_id,
+                              SecretString=secret_value
+                          )
+
+                      physical_id = f'activation-{activation_id}'
+                      cfnresponse.send(event, context, cfnresponse.SUCCESS, {
+                          'ActivationId': activation_id,
+                          'SecretName': secret_id,
+                          'ExpirationDate': expiration.isoformat()
+                      }, physicalResourceId=physical_id)
+
+                  elif event['RequestType'] == 'Delete':
+                      physical_id = event.get('PhysicalResourceId', '')
+                      if physical_id and physical_id.startswith('activation-'):
+                          act_id = physical_id.replace('activation-', '')
+                          try:
+                              ssm.delete_activation(ActivationId=act_id)
+                          except Exception:
+                              pass
+                      try:
+                          sm.delete_secret(
+                              SecretId=secret_id,
+                              ForceDeleteWithoutRecovery=True
+                          )
+                      except Exception:
+                          pass
+                      cfnresponse.send(event, context, cfnresponse.SUCCESS, {})
+
+              except Exception as e:
+                  print(f"Error: {e}")
+                  cfnresponse.send(event, context, cfnresponse.FAILED, {'Error': str(e)})
+
+  SSMActivationLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${GreengrassThingName}-ssm-activation-lambda-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: SSMActivationAndSecrets
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ssm:CreateActivation
+                  - ssm:DeleteActivation
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - iam:PassRole
+                Resource: !GetAtt SSMManagedInstanceRole.Arn
+              - Effect: Allow
+                Action:
+                  - secretsmanager:CreateSecret
+                  - secretsmanager:DeleteSecret
+                  - secretsmanager:PutSecretValue
+                  - secretsmanager:TagResource
+                Resource:
+                  - !Sub 'arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:iot/${GreengrassThingName}/ssm-activation*'
+
+  SSMActivation:
+    Type: Custom::SSMActivation
+    Properties:
+      ServiceToken: !GetAtt SSMActivationFunction.Arn
+    DependsOn:
+      - SSMManagedInstanceRole
+      - SSMActivationLambdaRole
+
+Outputs:
+  SSMRoleName:
+    Description: IAM role name for SSM managed instances
+    Value: !Ref SSMManagedInstanceRole
+
+  SSMRoleArn:
+    Description: IAM role ARN for SSM managed instances
+    Value: !GetAtt SSMManagedInstanceRole.Arn
+
+  SSMActivationSecretName:
+    Description: >
+      Secrets Manager secret containing the activation ID and code.
+      Retrieve with: aws secretsmanager get-secret-value --secret-id <this-value>
+    Value: !Sub 'iot/${GreengrassThingName}/ssm-activation'
+
+  SSMActivationId:
+    Description: SSM Hybrid Activation ID
+    Value: !GetAtt SSMActivation.ActivationId
+
+  SSMActivationExpiration:
+    Description: When the activation expires (new registrations rejected after this)
+    Value: !GetAtt SSMActivation.ExpirationDate

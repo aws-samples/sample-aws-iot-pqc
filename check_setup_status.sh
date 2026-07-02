@@ -355,10 +355,59 @@ else
     fail "Greengrass credentials secret not found: $SECRET_ID"
 fi
 
+# SSM Activation secret
+SSM_SECRET_ID="iot/${GREENGRASS_THING:-pqc-workshop-greengrass-core}/ssm-activation"
+SSM_SECRET_STATUS=$(aws secretsmanager describe-secret --secret-id "$SSM_SECRET_ID" \
+    --query 'Name' --output text 2>/dev/null) || SSM_SECRET_STATUS=""
+
+if [[ -n "$SSM_SECRET_STATUS" ]]; then
+    pass "SSM activation secret exists: $SSM_SECRET_ID"
+else
+    warn "SSM activation secret not found: $SSM_SECRET_ID (deploy ssm-hybrid-activation-stack)"
+fi
+
 echo ""
 
-# ─── 10. Greengrass Core Device ──────────────────────────────────────────────
-echo "─── 10. Greengrass Core Device ──────────────────────────────"
+# ─── 10. SSM Hybrid Managed Instance ────────────────────────────────────────
+echo "─── 10. SSM Hybrid Managed Instance ─────────────────────────"
+
+SSM_INSTANCES=$(aws ssm describe-instance-information \
+    --filters "Key=ActivationIds,Values=$(
+        aws secretsmanager get-secret-value --secret-id "$SSM_SECRET_ID" \
+            --query 'SecretString' --output text 2>/dev/null | \
+            python3 -c "import sys,json; print(json.load(sys.stdin).get('activationId','none'))" 2>/dev/null || echo "none"
+    )" \
+    --query 'InstanceInformationList[].{Id:InstanceId,Status:PingStatus}' \
+    --output json 2>/dev/null) || SSM_INSTANCES="[]"
+
+SSM_ONLINE=$(echo "$SSM_INSTANCES" | python3 -c "
+import sys, json
+instances = json.load(sys.stdin)
+online = [i for i in instances if i.get('Status') == 'Online']
+print(len(online))
+" 2>/dev/null) || SSM_ONLINE="0"
+
+SSM_TOTAL=$(echo "$SSM_INSTANCES" | python3 -c "import sys,json; print(len(json.load(sys.stdin)))" 2>/dev/null) || SSM_TOTAL="0"
+
+if [[ "$SSM_ONLINE" -gt 0 ]]; then
+    INSTANCE_ID=$(echo "$SSM_INSTANCES" | python3 -c "
+import sys, json
+instances = json.load(sys.stdin)
+online = [i for i in instances if i.get('Status') == 'Online']
+if online:
+    print(online[0]['Id'])
+" 2>/dev/null)
+    pass "SSM managed instance online: $INSTANCE_ID (connect with: aws ssm start-session --target $INSTANCE_ID)"
+elif [[ "$SSM_TOTAL" -gt 0 ]]; then
+    warn "SSM managed instance registered but OFFLINE ($SSM_TOTAL instance(s) — Pi may be powered off)"
+else
+    warn "No SSM managed instances registered yet (run setup-ssm-agent.sh on the Pi)"
+fi
+
+echo ""
+
+# ─── 11. Greengrass Core Device ──────────────────────────────────────────────
+echo "─── 11. Greengrass Core Device ──────────────────────────────"
 
 GG_CORE_STATUS=$(aws greengrassv2 list-core-devices \
     --query "coreDevices[?coreDeviceThingName=='${GREENGRASS_THING}'].status | [0]" \
@@ -374,8 +423,8 @@ fi
 
 echo ""
 
-# ─── 11. ESP32 Device Registrations ─────────────────────────────────────────
-echo "─── 11. ESP32 Device Registrations ──────────────────────────"
+# ─── 12. ESP32 Device Registrations ─────────────────────────────────────────
+echo "─── 12. ESP32 Device Registrations ──────────────────────────"
 
 ESP32_THINGS=$(aws iot list-things \
     --query "things[?starts_with(thingName, 'esp32-')].thingName" \

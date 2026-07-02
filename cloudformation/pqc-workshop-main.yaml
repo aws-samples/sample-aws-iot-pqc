@@ -77,6 +77,19 @@ Resources:
           Value: pqc-reinvent
 
   # ═══════════════════════════════════════════════════════════════════════════
+  # Nested Stack: SSM Hybrid Activation (Raspberry Pi remote access)
+  # ═══════════════════════════════════════════════════════════════════════════
+  SSMActivationStack:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: !Sub 'https://${TemplateBucketName}.s3.amazonaws.com/${TemplateBucketPrefix}/templates/ssm-hybrid-activation-stack.yaml'
+      Parameters:
+        GreengrassThingName: !Ref GreengrassThingName
+      Tags:
+        - Key: Workshop
+          Value: pqc-reinvent
+
+  # ═══════════════════════════════════════════════════════════════════════════
   # Nested Stack: Dashboard (AppSync, DynamoDB, Lambdas, S3/CloudFront)
   # ═══════════════════════════════════════════════════════════════════════════
   DashboardStack:
@@ -141,3 +154,14 @@ Outputs:
   GreengrassBridgePolicyName:
     Description: IoT Policy for Mosquitto bridge (attach to Greengrass cert)
     Value: !GetAtt DashboardStack.Outputs.GreengrassBridgePolicyName
+
+  # ─── SSM Hybrid Activation ────────────────────────────────────────────────
+  SSMActivationSecretName:
+    Description: >
+      Secrets Manager secret with SSM activation credentials.
+      Use on Pi: ./setup-ssm-agent.sh <region> <stack-name>
+    Value: !GetAtt SSMActivationStack.Outputs.SSMActivationSecretName
+
+  SSMActivationId:
+    Description: SSM Hybrid Activation ID
+    Value: !GetAtt SSMActivationStack.Outputs.SSMActivationId

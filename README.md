@@ -576,9 +576,10 @@ After deploying the CloudFormation stacks (or at any time before/during the work
 | 6 | AppSync API | GraphQL endpoint responding |
 | 7 | Cognito | Identity pool allows unauthenticated dashboard access |
 | 8 | Dashboard | S3 files deployed, CloudFront distribution active |
-| 9 | Secrets Manager | Greengrass core credentials stored |
-| 10 | Greengrass Core | Pi registered and healthy (warning if not yet provisioned) |
-| 11 | ESP32 Devices | Auto-registered devices (warning if none yet — expected pre-workshop) |
+| 9 | Secrets Manager | Greengrass core credentials + SSM activation stored |
+| 10 | SSM Hybrid Instance | Pi registered and online via Systems Manager |
+| 11 | Greengrass Core | Pi registered and healthy (warning if not yet provisioned) |
+| 12 | ESP32 Devices | Auto-registered devices (warning if none yet — expected pre-workshop) |
 
 ### Expected Output (Pre-Workshop)
 
