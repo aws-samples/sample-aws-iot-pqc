@@ -127,18 +127,26 @@ echo "[4/5] Creating master setup script..."
 cat > "$BUNDLE_DIR/setup-all.sh" << 'SETUP_ALL'
 #!/bin/bash
 # ─────────────────────────────────────────────────────────────────────────────
-# setup-all.sh — Run all Pi setup steps in sequence
+# setup-all.sh — Idempotent Raspberry Pi provisioning for PQC workshop
+#
+# This script is IDEMPOTENT — safe to run multiple times. Each step checks
+# whether its work is already done and skips if so. Only components that
+# are missing or broken will be (re)installed.
 #
 # Usage:
 #   sudo ./setup-all.sh <aws-region>
+#   sudo ./setup-all.sh <aws-region> --force   (re-run all steps regardless)
 #
-# This is a convenience wrapper that runs all steps in order.
-# You can also run each step individually if you prefer.
+# Copyright 2024-2026 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: MIT-0
 # ─────────────────────────────────────────────────────────────────────────────
 
 set -euo pipefail
 
 REGION="${1:-us-east-1}"
+FORCE=false
+[[ "${2:-}" == "--force" ]] && FORCE=true
+
 THING_NAME="pqc-workshop-greengrass-core"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
@@ -148,112 +156,154 @@ if [[ $EUID -ne 0 ]]; then
 fi
 
 echo "═══════════════════════════════════════════════════════════════"
-echo "  PQC Workshop — Complete Raspberry Pi Setup"
+echo "  PQC Workshop — Raspberry Pi Setup (Idempotent)"
 echo "═══════════════════════════════════════════════════════════════"
 echo ""
 echo "  Region: $REGION"
 echo "  Thing:  $THING_NAME"
+echo "  Force:  $FORCE"
 echo ""
-echo "  This will run all setup steps in sequence:"
-echo "    1. Install SSM Agent (remote access)"
-echo "    2. Install Greengrass v2"
-echo "    3. Build PQC Mosquitto (OpenSSL 3.5 + Mosquitto)"
-echo "    4. Generate broker certificates"
-echo "    5. Configure and start Mosquitto"
-echo ""
-read -p "  Continue? [Y/n] " -r
-echo ""
-if [[ ! "$REPLY" =~ ^[Yy]?$ ]]; then
-    echo "Aborted."
-    exit 0
-fi
 
 cd "$SCRIPT_DIR"
+
+STEPS_SKIPPED=0
+STEPS_RUN=0
+
+step_skipped() {
+    echo "  ⏭️  SKIPPED: $1"
+    STEPS_SKIPPED=$((STEPS_SKIPPED + 1))
+}
+
+step_done() {
+    echo "  ✅ $1"
+    STEPS_RUN=$((STEPS_RUN + 1))
+}
 
 # ─── Step 1: SSM Agent ──────────────────────────────────────────────────────
 echo ""
 echo "━━━ Step 1/5: SSM Agent ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-if [[ -f credentials/ssm-activation.json ]]; then
-    # Extract creds and register directly (no AWS CLI needed for this step)
-    ACTIVATION_ID=$(python3 -c "import json; print(json.load(open('credentials/ssm-activation.json'))['activationId'])")
-    ACTIVATION_CODE=$(python3 -c "import json; print(json.load(open('credentials/ssm-activation.json'))['activationCode'])")
 
-    # Install SSM agent
-    ARCH=$(dpkg --print-architecture 2>/dev/null || uname -m)
-    case "$ARCH" in
-        arm64|aarch64) DEB_ARCH="arm64" ;;
-        armhf|armv7l) DEB_ARCH="arm" ;;
-        *) echo "[ERROR] Unsupported arch: $ARCH"; exit 1 ;;
-    esac
+SSM_NEEDS_INSTALL=false
 
-    SSM_DEB="/tmp/amazon-ssm-agent.deb"
-    echo "  Downloading SSM Agent..."
-    curl -sL -o "$SSM_DEB" \
-        "https://s3.${REGION}.amazonaws.com/amazon-ssm-${REGION}/latest/debian_${DEB_ARCH}/amazon-ssm-agent.deb"
-    dpkg -i "$SSM_DEB" >/dev/null 2>&1 || apt-get install -f -y -qq >/dev/null 2>&1
-    rm -f "$SSM_DEB"
-
-    systemctl stop amazon-ssm-agent 2>/dev/null || true
-    amazon-ssm-agent -register -code "$ACTIVATION_CODE" -id "$ACTIVATION_ID" -region "$REGION" -y
-    systemctl enable amazon-ssm-agent
+if [[ "$FORCE" == true ]]; then
+    SSM_NEEDS_INSTALL=true
+elif ! command -v amazon-ssm-agent &>/dev/null; then
+    echo "  SSM Agent not installed"
+    SSM_NEEDS_INSTALL=true
+elif [[ ! -f /var/lib/amazon/ssm/registration ]]; then
+    echo "  SSM Agent installed but not registered"
+    SSM_NEEDS_INSTALL=true
+elif ! systemctl is-active --quiet amazon-ssm-agent 2>/dev/null; then
+    echo "  SSM Agent registered but service not running — starting..."
     systemctl start amazon-ssm-agent
-    echo "  ✅ SSM Agent registered and running"
+    step_done "SSM Agent service started"
+    SSM_NEEDS_INSTALL=false
 else
-    echo "  [SKIP] No SSM activation credentials in bundle"
+    INSTANCE_ID=$(python3 -c "
+import json
+with open('/var/lib/amazon/ssm/registration') as f:
+    print(json.load(f).get('ManagedInstanceID', 'unknown'))
+" 2>/dev/null || echo "unknown")
+    step_skipped "Already registered as $INSTANCE_ID and running"
+fi
+
+if [[ "$SSM_NEEDS_INSTALL" == true ]]; then
+    if [[ ! -f credentials/ssm-activation.json ]]; then
+        echo "  [SKIP] No SSM activation credentials in bundle"
+    else
+        ACTIVATION_ID=$(python3 -c "import json; print(json.load(open('credentials/ssm-activation.json'))['activationId'])")
+        ACTIVATION_CODE=$(python3 -c "import json; print(json.load(open('credentials/ssm-activation.json'))['activationCode'])")
+
+        ARCH=$(dpkg --print-architecture 2>/dev/null || uname -m)
+        case "$ARCH" in
+            arm64|aarch64) DEB_ARCH="arm64" ;;
+            armhf|armv7l) DEB_ARCH="arm" ;;
+            *) echo "[ERROR] Unsupported arch: $ARCH"; exit 1 ;;
+        esac
+
+        SSM_DEB="/tmp/amazon-ssm-agent.deb"
+        echo "  Downloading SSM Agent..."
+        curl -sL -o "$SSM_DEB" \
+            "https://s3.${REGION}.amazonaws.com/amazon-ssm-${REGION}/latest/debian_${DEB_ARCH}/amazon-ssm-agent.deb"
+        dpkg -i "$SSM_DEB" >/dev/null 2>&1 || apt-get install -f -y -qq >/dev/null 2>&1
+        rm -f "$SSM_DEB"
+
+        systemctl stop amazon-ssm-agent 2>/dev/null || true
+        amazon-ssm-agent -register -code "$ACTIVATION_CODE" -id "$ACTIVATION_ID" -region "$REGION" -y
+        systemctl enable amazon-ssm-agent
+        systemctl start amazon-ssm-agent
+        step_done "SSM Agent registered and running"
+    fi
 fi
 
 # ─── Step 2: Greengrass ─────────────────────────────────────────────────────
 echo ""
 echo "━━━ Step 2/5: Greengrass v2 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-if [[ -f credentials/greengrass-credentials.json ]]; then
-    # Install Java if needed
-    if ! command -v java &>/dev/null; then
-        echo "  Installing Java..."
-        apt-get update -qq
-        apt-get install -y -qq default-jdk
-    fi
 
-    # Extract certs from bundled credentials
-    GG_CERT_DIR="/tmp/gg-certs"
-    mkdir -p "$GG_CERT_DIR"
-    python3 -c "
+GG_ROOT="/greengrass/v2"
+GG_NEEDS_INSTALL=false
+
+if [[ "$FORCE" == true ]]; then
+    GG_NEEDS_INSTALL=true
+elif [[ ! -d "$GG_ROOT" ]]; then
+    echo "  Greengrass not installed"
+    GG_NEEDS_INSTALL=true
+elif ! systemctl is-active --quiet greengrass 2>/dev/null; then
+    echo "  Greengrass installed but service not running — starting..."
+    systemctl start greengrass 2>/dev/null && step_done "Greengrass service started" || {
+        echo "  Service failed to start — reinstalling"
+        GG_NEEDS_INSTALL=true
+    }
+else
+    step_skipped "Greengrass running ($GG_ROOT exists, service active)"
+fi
+
+if [[ "$GG_NEEDS_INSTALL" == true ]]; then
+    if [[ ! -f credentials/greengrass-credentials.json ]]; then
+        echo "  [SKIP] No Greengrass credentials in bundle"
+    else
+        # Install Java if needed
+        if ! command -v java &>/dev/null; then
+            echo "  Installing Java..."
+            apt-get update -qq
+            apt-get install -y -qq default-jdk
+        fi
+
+        GG_CERT_DIR="/tmp/gg-certs"
+        mkdir -p "$GG_CERT_DIR"
+        python3 -c "
 import json
 creds = json.load(open('credentials/greengrass-credentials.json'))
 open('$GG_CERT_DIR/device.pem.crt', 'w').write(creds['certificatePem'])
 open('$GG_CERT_DIR/private.pem.key', 'w').write(creds['privateKey'])
-print('  Greengrass certs extracted')
 "
-    curl -s -o "$GG_CERT_DIR/AmazonRootCA1.pem" https://www.amazontrust.com/repository/AmazonRootCA1.pem
+        curl -s -o "$GG_CERT_DIR/AmazonRootCA1.pem" https://www.amazontrust.com/repository/AmazonRootCA1.pem
 
-    # Get IoT endpoints
-    IOT_ENDPOINT=$(cat credentials/iot-endpoint.txt)
-    # Derive credential endpoint from data endpoint
-    CRED_ENDPOINT=$(echo "$IOT_ENDPOINT" | sed 's/-ats\.iot\./.credentials.iot./')
+        IOT_ENDPOINT=$(cat credentials/iot-endpoint.txt)
+        CRED_ENDPOINT=$(echo "$IOT_ENDPOINT" | sed 's/-ats\.iot\./.credentials.iot./')
 
-    # Download and install Greengrass
-    GG_ROOT="/greengrass/v2"
-    INSTALLER_DIR="/tmp/gg-installer"
-    mkdir -p "$INSTALLER_DIR"
-    if [[ ! -f "$INSTALLER_DIR/greengrass-nucleus-latest.zip" ]]; then
-        echo "  Downloading Greengrass nucleus..."
-        curl -s https://d2s8p88vqu9w66.cloudfront.net/releases/greengrass-nucleus-latest.zip \
-            -o "$INSTALLER_DIR/greengrass-nucleus-latest.zip"
-    fi
-    rm -rf "$INSTALLER_DIR/GreengrassInstaller"
-    unzip -qo "$INSTALLER_DIR/greengrass-nucleus-latest.zip" -d "$INSTALLER_DIR/GreengrassInstaller"
+        INSTALLER_DIR="/tmp/gg-installer"
+        mkdir -p "$INSTALLER_DIR"
+        if [[ ! -f "$INSTALLER_DIR/greengrass-nucleus-latest.zip" ]]; then
+            echo "  Downloading Greengrass nucleus..."
+            curl -s https://d2s8p88vqu9w66.cloudfront.net/releases/greengrass-nucleus-latest.zip \
+                -o "$INSTALLER_DIR/greengrass-nucleus-latest.zip"
+        fi
+        rm -rf "$INSTALLER_DIR/GreengrassInstaller"
+        unzip -qo "$INSTALLER_DIR/greengrass-nucleus-latest.zip" -d "$INSTALLER_DIR/GreengrassInstaller"
 
-    echo "  Running Greengrass installer..."
-    java -Droot="$GG_ROOT" -Dlog.store=FILE \
-        -jar "$INSTALLER_DIR/GreengrassInstaller/lib/Greengrass.jar" \
-        --aws-region "$REGION" \
-        --thing-name "$THING_NAME" \
-        --thing-policy-name "${THING_NAME}-policy" \
-        --tes-role-name "${THING_NAME}-TES-role" \
-        --tes-role-alias-name "${THING_NAME}-TES-alias" \
-        --component-default-user ggc_user:ggc_group \
-        --provision false \
-        --setup-system-service true \
-        --init-config - <<INITCONFIG
+        echo "  Running Greengrass installer..."
+        java -Droot="$GG_ROOT" -Dlog.store=FILE \
+            -jar "$INSTALLER_DIR/GreengrassInstaller/lib/Greengrass.jar" \
+            --aws-region "$REGION" \
+            --thing-name "$THING_NAME" \
+            --thing-policy-name "${THING_NAME}-policy" \
+            --tes-role-name "${THING_NAME}-TES-role" \
+            --tes-role-alias-name "${THING_NAME}-TES-alias" \
+            --component-default-user ggc_user:ggc_group \
+            --provision false \
+            --setup-system-service true \
+            --init-config - <<INITCONFIG
 ---
 system:
   certificateFilePath: "$GG_CERT_DIR/device.pem.crt"
@@ -272,74 +322,148 @@ services:
       iotCredEndpoint: "$CRED_ENDPOINT"
 INITCONFIG
 
-    rm -rf "$GG_CERT_DIR"
-    echo "  ✅ Greengrass installed and running"
-else
-    echo "  [SKIP] No Greengrass credentials in bundle"
+        rm -rf "$GG_CERT_DIR"
+        step_done "Greengrass installed and running"
+    fi
 fi
 
 # ─── Step 3: Build PQC Mosquitto ────────────────────────────────────────────
 echo ""
 echo "━━━ Step 3/5: PQC Mosquitto (OpenSSL 3.5 + Mosquitto) ━━━━━━"
-echo "  This compiles from source and takes 15-20 minutes..."
-./setup-mosquitto-pqc.sh
-echo "  ✅ PQC Mosquitto installed"
+
+MOSQUITTO_BIN="/opt/mosquitto-pqc/sbin/mosquitto"
+[[ ! -x "$MOSQUITTO_BIN" ]] && MOSQUITTO_BIN="/opt/mosquitto-pqc/bin/mosquitto"
+OPENSSL_PQC="/opt/openssl-pqc/bin/openssl"
+
+if [[ "$FORCE" == true ]]; then
+    echo "  Force mode — rebuilding..."
+    ./setup-mosquitto-pqc.sh
+    step_done "PQC Mosquitto rebuilt"
+elif [[ ! -x "$OPENSSL_PQC" ]]; then
+    echo "  OpenSSL PQC not found — building from source (~15-20 min)..."
+    ./setup-mosquitto-pqc.sh
+    step_done "PQC Mosquitto installed (OpenSSL + Mosquitto)"
+elif [[ ! -x "$MOSQUITTO_BIN" ]]; then
+    echo "  OpenSSL PQC present but Mosquitto binary missing — building..."
+    ./setup-mosquitto-pqc.sh
+    step_done "PQC Mosquitto installed"
+else
+    step_skipped "OpenSSL PQC + Mosquitto already installed"
+fi
 
 # ─── Step 4: Generate broker certs ──────────────────────────────────────────
 echo ""
 echo "━━━ Step 4/5: Generate Broker Certificates ━━━━━━━━━━━━━━━━━━"
-cd certs
-LD_LIBRARY_PATH=/opt/openssl-pqc/lib ./generate-broker-certs.sh 100
-cd "$SCRIPT_DIR"
-echo "  ✅ Broker + device certificates generated"
+
+CERT_OUTPUT_DIR="$SCRIPT_DIR/certs/output"
+
+if [[ "$FORCE" == true ]]; then
+    echo "  Force mode — regenerating certs..."
+    cd certs
+    LD_LIBRARY_PATH=/opt/openssl-pqc/lib ./generate-broker-certs.sh 100
+    cd "$SCRIPT_DIR"
+    step_done "Broker + device certificates regenerated"
+elif [[ -f "$CERT_OUTPUT_DIR/ca.crt" && -f "$CERT_OUTPUT_DIR/broker.crt" && -d "$CERT_OUTPUT_DIR/devices" ]]; then
+    DEVICE_COUNT=$(find "$CERT_OUTPUT_DIR/devices" -name "device.crt" 2>/dev/null | wc -l)
+    step_skipped "Certificates already generated ($DEVICE_COUNT device certs found)"
+else
+    echo "  Certificates not found — generating..."
+    cd certs
+    LD_LIBRARY_PATH=/opt/openssl-pqc/lib ./generate-broker-certs.sh 100
+    cd "$SCRIPT_DIR"
+    step_done "Broker + device certificates generated"
+fi
 
 # ─── Step 5: Configure and start Mosquitto ──────────────────────────────────
 echo ""
 echo "━━━ Step 5/5: Configure and Start Mosquitto ━━━━━━━━━━━━━━━━━"
 
-CERT_DIR="/opt/mosquitto-pqc/etc/mosquitto/certs"
-mkdir -p "$CERT_DIR"
-mkdir -p /opt/mosquitto-pqc/etc/mosquitto/conf.d
+MOSQ_CERT_DIR="/opt/mosquitto-pqc/etc/mosquitto/certs"
+BRIDGE_CONF="/opt/mosquitto-pqc/etc/mosquitto/conf.d/bridge-iotcore.conf"
+NEEDS_CONFIGURE=false
 
-# Copy broker certs
-cp certs/output/ca.crt "$CERT_DIR/"
-cp certs/output/broker.crt "$CERT_DIR/"
-cp certs/output/broker.key "$CERT_DIR/"
+if [[ "$FORCE" == true ]]; then
+    NEEDS_CONFIGURE=true
+elif [[ ! -f "$MOSQ_CERT_DIR/ca.crt" ]]; then
+    echo "  Broker certs not installed"
+    NEEDS_CONFIGURE=true
+elif [[ ! -f "$BRIDGE_CONF" ]]; then
+    echo "  Bridge config not installed"
+    NEEDS_CONFIGURE=true
+elif grep -q "REPLACE_WITH" "$BRIDGE_CONF" 2>/dev/null; then
+    echo "  Bridge config has placeholders"
+    NEEDS_CONFIGURE=true
+elif [[ ! -f "$MOSQ_CERT_DIR/greengrass-device.crt" ]]; then
+    echo "  Greengrass bridge cert missing"
+    NEEDS_CONFIGURE=true
+fi
 
-# Copy config
-cp mosquitto/mosquitto-pqc.conf /opt/mosquitto-pqc/etc/mosquitto/
-cp mosquitto/acl.conf /opt/mosquitto-pqc/etc/mosquitto/
+if [[ "$NEEDS_CONFIGURE" == true ]]; then
+    mkdir -p "$MOSQ_CERT_DIR"
+    mkdir -p /opt/mosquitto-pqc/etc/mosquitto/conf.d
 
-# Configure bridge
-IOT_ENDPOINT=$(cat credentials/iot-endpoint.txt)
-sed "s|REPLACE_WITH_IOT_ENDPOINT|$IOT_ENDPOINT|g; s|REPLACE_WITH_GREENGRASS_THING_NAME|$THING_NAME|g" \
-    mosquitto/bridge-iotcore.conf > /opt/mosquitto-pqc/etc/mosquitto/conf.d/bridge-iotcore.conf
+    # Copy broker certs (use generated output if available, else from certs/ subdir)
+    if [[ -f "$CERT_OUTPUT_DIR/ca.crt" ]]; then
+        cp "$CERT_OUTPUT_DIR/ca.crt" "$MOSQ_CERT_DIR/"
+        cp "$CERT_OUTPUT_DIR/broker.crt" "$MOSQ_CERT_DIR/"
+        cp "$CERT_OUTPUT_DIR/broker.key" "$MOSQ_CERT_DIR/"
+    fi
 
-# Greengrass device cert for bridge
-python3 -c "
+    # Copy config
+    cp mosquitto/mosquitto-pqc.conf /opt/mosquitto-pqc/etc/mosquitto/
+    cp mosquitto/acl.conf /opt/mosquitto-pqc/etc/mosquitto/
+
+    # Configure bridge
+    IOT_ENDPOINT=$(cat credentials/iot-endpoint.txt)
+    sed "s|REPLACE_WITH_IOT_ENDPOINT|$IOT_ENDPOINT|g; s|REPLACE_WITH_GREENGRASS_THING_NAME|$THING_NAME|g" \
+        mosquitto/bridge-iotcore.conf > "$BRIDGE_CONF"
+
+    # Greengrass device cert for bridge
+    if [[ -f credentials/greengrass-credentials.json ]]; then
+        python3 -c "
 import json
 creds = json.load(open('credentials/greengrass-credentials.json'))
-open('$CERT_DIR/greengrass-device.crt', 'w').write(creds['certificatePem'])
-open('$CERT_DIR/greengrass-device.key', 'w').write(creds['privateKey'])
-print('  Greengrass bridge certs installed')
+open('$MOSQ_CERT_DIR/greengrass-device.crt', 'w').write(creds['certificatePem'])
+open('$MOSQ_CERT_DIR/greengrass-device.key', 'w').write(creds['privateKey'])
 "
+    fi
 
-# Amazon Root CA for bridge → IoT Core
-curl -so "$CERT_DIR/AmazonRootCA1.pem" https://www.amazontrust.com/repository/AmazonRootCA1.pem
+    # Amazon Root CA for bridge
+    if [[ ! -f "$MOSQ_CERT_DIR/AmazonRootCA1.pem" ]]; then
+        curl -so "$MOSQ_CERT_DIR/AmazonRootCA1.pem" https://www.amazontrust.com/repository/AmazonRootCA1.pem
+    fi
 
-# Start Mosquitto
-systemctl start mosquitto-pqc 2>/dev/null || systemctl restart mosquitto-pqc
-systemctl enable mosquitto-pqc
-echo "  ✅ Mosquitto running with PQC TLS"
+    # (Re)start Mosquitto
+    systemctl restart mosquitto-pqc 2>/dev/null || systemctl start mosquitto-pqc
+    systemctl enable mosquitto-pqc
+    step_done "Mosquitto configured and started"
+else
+    # Just ensure the service is running
+    if ! systemctl is-active --quiet mosquitto-pqc 2>/dev/null; then
+        echo "  Configuration present but service stopped — starting..."
+        systemctl start mosquitto-pqc
+        step_done "Mosquitto service started"
+    else
+        step_skipped "Mosquitto configured, certs installed, service running"
+    fi
+fi
 
 # ─── Done ────────────────────────────────────────────────────────────────────
 echo ""
 echo "═══════════════════════════════════════════════════════════════"
-echo "  ✅ Raspberry Pi setup complete!"
+echo "  Setup Complete"
 echo "═══════════════════════════════════════════════════════════════"
 echo ""
-echo "  Run the readiness check to verify:"
-echo "    ./check_rpi_setup_status.sh"
+echo "  Steps run:     $STEPS_RUN"
+echo "  Steps skipped: $STEPS_SKIPPED (already done)"
+echo ""
+
+if [[ $STEPS_SKIPPED -gt 0 && $STEPS_RUN -eq 0 ]]; then
+    echo "  Everything was already set up — nothing to do! 🎉"
+else
+    echo "  Run the readiness check to verify:"
+    echo "    ./check_rpi_setup_status.sh"
+fi
 echo ""
 SETUP_ALL
 
