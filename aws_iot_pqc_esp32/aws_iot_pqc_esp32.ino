@@ -910,6 +910,24 @@ void setup() {
     //   ESP_LOG_VERBOSE (5) - Everything, including I/O byte counts
     esp_log_level_set("*", (esp_log_level_t)LOG_LEVEL);
 
+    // Override ESP_LOG timestamp format to use real-time (after NTP sync)
+    // Before NTP sync, falls back to uptime in seconds
+    esp_log_set_vprintf([](const char* fmt, va_list args) -> int {
+        struct tm timeinfo;
+        char timebuf[24];
+        if (getLocalTime(&timeinfo)) {
+            snprintf(timebuf, sizeof(timebuf), "%04d-%02d-%02d %02d:%02d:%02d",
+                     timeinfo.tm_year + 1900, timeinfo.tm_mon + 1, timeinfo.tm_mday,
+                     timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec);
+        } else {
+            snprintf(timebuf, sizeof(timebuf), "%lus", millis() / 1000);
+        }
+        // Print timestamp prefix then the original log message
+        int n = Serial.printf("[%s] ", timebuf);
+        n += vprintf(fmt, args);
+        return n;
+    });
+
     // Override per-module if needed (uncomment and adjust):
     // esp_log_level_set(TAG_TLS, ESP_LOG_DEBUG);
     // esp_log_level_set(TAG_WIFI, ESP_LOG_VERBOSE);
