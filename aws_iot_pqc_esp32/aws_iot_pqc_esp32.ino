@@ -68,11 +68,17 @@ static const char* TAG_WOLFSSL = "wolfssl";
 
 // ─── FreeRTOS Task Configuration ────────────────────────────────────────────
 #define WIFI_TASK_STACK_SIZE    4096
-#define MQTT_TASK_STACK_SIZE    16384   // PQC handshake needs more stack
+#define MQTT_TASK_STACK_SIZE    32768   // PQC handshake needs significant stack
+#define BLINK_TASK_STACK_SIZE   2048
 #define WIFI_TASK_PRIORITY      1
 #define MQTT_TASK_PRIORITY      1
+#define BLINK_TASK_PRIORITY     0       // Lowest priority — just visual indicator
 #define WIFI_TASK_CORE          0       // Run WiFi on core 0
 #define MQTT_TASK_CORE          1       // Run MQTT on core 1 (if available)
+
+// ─── LED Configuration ──────────────────────────────────────────────────────
+// XIAO ESP32-S3 built-in LED is on GPIO 21
+#define LED_PIN                 21
 
 // ─── Timing Constants (milliseconds) ────────────────────────────────────────
 #define WIFI_CONNECT_TIMEOUT_MS     15000
@@ -641,6 +647,24 @@ void mqttTask(void* pvParameters) {
     }
     ESP_LOGI(TAG_MQTT, "WiFi is up, initializing wolfSSL...");
 
+    // Sync time via NTP (required for TLS certificate date validation)
+    ESP_LOGI(TAG_MQTT, "Syncing time via NTP...");
+    configTime(0, 0, "pool.ntp.org", "time.nist.gov");
+    struct tm timeinfo;
+    int ntpRetries = 0;
+    while (!getLocalTime(&timeinfo) && ntpRetries < 15) {
+        ESP_LOGD(TAG_MQTT, "Waiting for NTP sync... (%d)", ntpRetries);
+        vTaskDelay(pdMS_TO_TICKS(1000));
+        ntpRetries++;
+    }
+    if (ntpRetries < 15) {
+        ESP_LOGI(TAG_MQTT, "Time synced: %04d-%02d-%02d %02d:%02d:%02d UTC",
+                 timeinfo.tm_year + 1900, timeinfo.tm_mon + 1, timeinfo.tm_mday,
+                 timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec);
+    } else {
+        ESP_LOGW(TAG_MQTT, "NTP sync failed after %d attempts — cert date check may fail", ntpRetries);
+    }
+
     // Initialize wolfSSL context (done once)
     if (!setupWolfSSLContext()) {
         ESP_LOGE(TAG_MQTT, "FATAL: wolfSSL context setup failed. Task halted.");
@@ -802,10 +826,47 @@ void mqttTask(void* pvParameters) {
 //  Arduino Setup & Loop
 // ═══════════════════════════════════════════════════════════════════════════
 
+// ─── Blink Task ─────────────────────────────────────────────────────────────
+// Visual heartbeat indicator. Blink rate indicates state:
+//   Fast blink (200ms): booting / connecting
+//   Slow blink (1000ms): connected and running
+//   Solid ON: error state
+void blinkTask(void* pvParameters) {
+    pinMode(LED_PIN, OUTPUT);
+    for (;;) {
+        digitalWrite(LED_PIN, HIGH);
+        vTaskDelay(pdMS_TO_TICKS(200));
+        digitalWrite(LED_PIN, LOW);
+        vTaskDelay(pdMS_TO_TICKS(200));
+    }
+}
+
 void setup() {
+    // Start blink task immediately — visual indicator the device is alive
+    pinMode(LED_PIN, OUTPUT);
+    digitalWrite(LED_PIN, HIGH);  // LED on right away
+    xTaskCreatePinnedToCore(blinkTask, "BlinkTask", BLINK_TASK_STACK_SIZE,
+                            NULL, BLINK_TASK_PRIORITY, NULL, 0);
+
     Serial.begin(115200);
-    while (!Serial) { delay(10); }
-    delay(1000);
+
+    // Give USB CDC time to enumerate — don't block, just wait
+    // The ESP32-S3 HWCDC needs time for the host to recognize the port.
+    // We proceed regardless after 10 seconds so WiFi/MQTT tasks can start.
+    unsigned long serialStart = millis();
+    while (!Serial && (millis() - serialStart < 10000)) {
+        delay(100);
+    }
+
+    // Print banner using Serial directly (works once CDC is ready)
+    Serial.println();
+    Serial.println("══════════════════════════════════════════════════");
+    Serial.println("  ESP32 AWS IoT Core - Post-Quantum Cryptography");
+    Serial.println("  TLS 1.3 + Hybrid ML-KEM Key Exchange");
+    Serial.println("══════════════════════════════════════════════════");
+    Serial.println();
+    Serial.printf("  Serial ready after %lu ms\n", millis() - serialStart);
+    Serial.flush();
 
     // ─── Configure Espressif Log Levels ─────────────────────────────────────
     // Set the default log level for all tags. Change LOG_LEVEL in secrets.h
@@ -908,7 +969,22 @@ void loop() {
     // All real work happens in the FreeRTOS tasks.
 
     static unsigned long lastStatusTime = 0;
+    static unsigned long lastHeartbeat = 0;
     unsigned long now = millis();
+
+    // Serial heartbeat every 10s — uses Serial directly (not ESP_LOG)
+    // so it prints whenever someone connects to the serial port
+    if (now - lastHeartbeat >= 10000) {
+        lastHeartbeat = now;
+        if (Serial) {
+            Serial.printf("[%lus] WiFi:%s MQTT:%s Heap:%u\n",
+                now / 1000,
+                g_wifiConnected ? "OK" : "NO",
+                g_mqttConnected ? "OK" : "NO",
+                ESP.getFreeHeap());
+            Serial.flush();
+        }
+    }
 
     if (now - lastStatusTime >= 60000) { // Status every 60 seconds
         lastStatusTime = now;
