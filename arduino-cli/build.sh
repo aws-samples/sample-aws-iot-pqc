@@ -32,18 +32,27 @@ CLI="arduino-cli --config-file $CONFIG"
 UPLOAD=false
 CLASSICAL=false
 ALL=false
+DUAL_BOOT=false
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --upload|-u) UPLOAD=true; shift ;;
         --classical|-c) CLASSICAL=true; shift ;;
         --all|-a) ALL=true; shift ;;
+        --dual-boot|-d) DUAL_BOOT=true; shift ;;
         --help|-h)
-            echo "Usage: $0 [--upload] [--classical] [--all]"
+            echo "Usage: $0 [--upload] [--classical] [--all] [--dual-boot]"
             echo ""
-            echo "  --upload, -u      Upload after compiling (device must be connected)"
-            echo "  --classical, -c   Build classical firmware instead of PQC"
+            echo "  --upload, -u      Upload single firmware (device must be connected)"
+            echo "  --classical, -c   Build/upload classical firmware instead of PQC"
             echo "  --all, -a         Build both PQC and classical firmwares"
+            echo "  --dual-boot, -d   Build both and flash dual-boot (classical=OTA_0, PQC=OTA_1)"
+            echo ""
+            echo "Examples:"
+            echo "  $0                 # just compile PQC"
+            echo "  $0 --upload        # compile + flash PQC"
+            echo "  $0 --classical -u  # compile + flash classical"
+            echo "  $0 --dual-boot     # compile both + flash dual-boot partitions"
             exit 0
             ;;
         *) echo "[ERROR] Unknown: $1"; exit 1 ;;
@@ -75,7 +84,7 @@ build_sketch() {
     echo "  ✅ Build complete: $sketch_name"
     echo ""
 
-    if [[ "$UPLOAD" == true ]]; then
+    if [[ "$UPLOAD" == true && "$DUAL_BOOT" == false ]]; then
         local port=$(detect_port)
         echo "  Uploading to $port..."
         $CLI upload -b "$FQBN" -p "$port" "$sketch_dir" 2>&1
@@ -84,7 +93,40 @@ build_sketch() {
     fi
 }
 
-if [[ "$ALL" == true ]]; then
+flash_dual_boot() {
+    local port=$(detect_port)
+    local classical_bin="$BUNDLE/aws_iot_pqc_esp32_v1_classical/build/esp32.esp32.XIAO_ESP32S3/aws_iot_pqc_esp32_v1_classical.ino.bin"
+    local pqc_bin="$BUNDLE/aws_iot_pqc_esp32/build/esp32.esp32.XIAO_ESP32S3/aws_iot_pqc_esp32.ino.bin"
+
+    if [[ ! -f "$classical_bin" ]]; then
+        echo "[ERROR] Classical binary not found: $classical_bin"
+        echo "        Run: $0 --all  first"
+        exit 1
+    fi
+    if [[ ! -f "$pqc_bin" ]]; then
+        echo "[ERROR] PQC binary not found: $pqc_bin"
+        echo "        Run: $0 --all  first"
+        exit 1
+    fi
+
+    echo "═══════════════════════════════════════════════════════════════"
+    echo "  Flashing Dual-Boot (OTA_0=Classical, OTA_1=PQC)"
+    echo "═══════════════════════════════════════════════════════════════"
+    echo ""
+    echo "  Port:        $port"
+    echo "  Classical:   $classical_bin"
+    echo "  PQC:         $pqc_bin"
+    echo ""
+
+    "$BUNDLE/flash/flash-dual-boot.sh" "$port" "$classical_bin" "$pqc_bin"
+}
+
+if [[ "$DUAL_BOOT" == true ]]; then
+    # Build both, then flash dual-boot
+    build_sketch "$BUNDLE/aws_iot_pqc_esp32"
+    build_sketch "$BUNDLE/aws_iot_pqc_esp32_v1_classical"
+    flash_dual_boot
+elif [[ "$ALL" == true ]]; then
     build_sketch "$BUNDLE/aws_iot_pqc_esp32"
     build_sketch "$BUNDLE/aws_iot_pqc_esp32_v1_classical"
 elif [[ "$CLASSICAL" == true ]]; then
