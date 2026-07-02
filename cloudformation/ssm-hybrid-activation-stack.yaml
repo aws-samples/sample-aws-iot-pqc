@@ -92,6 +92,19 @@ Resources:
                 Action:
                   - sts:GetCallerIdentity
                 Resource: '*'
+        # Allow the Pi to push Mosquitto broker logs to CloudWatch
+        - PolicyName: CloudWatchLogs
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                  - logs:DescribeLogStreams
+                Resource:
+                  - !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/pqc-workshop/*'
       Tags:
         - Key: Workshop
           Value: pqc-reinvent
