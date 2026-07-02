@@ -360,8 +360,10 @@ fi
 MOSQ_LOG="/opt/mosquitto-pqc/var/log/mosquitto/mosquitto.log"
 if [[ -f "$MOSQ_LOG" ]]; then
     # Look for recent bridge connected message
-    if tail -100 "$MOSQ_LOG" 2>/dev/null | grep -qi "bridge.*connected\|Connection accepted"; then
-        pass "Bridge appears connected (found connection message in recent logs)"
+    if tail -100 "$MOSQ_LOG" 2>/dev/null | grep -qi "CONNACK\|bridge.*connected\|Connection accepted"; then
+        pass "Bridge connected (CONNACK received in recent logs)"
+    elif tail -100 "$MOSQ_LOG" 2>/dev/null | grep -qi "PINGRESP"; then
+        pass "Bridge active (PINGRESP exchanges in recent logs)"
     elif tail -100 "$MOSQ_LOG" 2>/dev/null | grep -qi "bridge.*error\|bridge.*failed\|Connection refused"; then
         fail "Bridge connection errors found in log (check: sudo tail -50 $MOSQ_LOG)"
     else
