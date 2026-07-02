@@ -30,7 +30,7 @@
 
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
-#include <PubSubClient.h>
+#include <MQTT.h>
 #include <esp_log.h>
 #include <esp_ota_ops.h>
 #include <esp_partition.h>
@@ -49,10 +49,15 @@ static const char* TAG_OTA  = "ota";
 // ─── FreeRTOS Task Configuration ────────────────────────────────────────────
 #define WIFI_TASK_STACK_SIZE    4096
 #define MQTT_TASK_STACK_SIZE    8192    // Classical TLS needs less stack
+#define BLINK_TASK_STACK_SIZE   2048
 #define WIFI_TASK_PRIORITY      1
 #define MQTT_TASK_PRIORITY      1
+#define BLINK_TASK_PRIORITY     0
 #define WIFI_TASK_CORE          0
 #define MQTT_TASK_CORE          1
+
+// ─── LED Configuration ──────────────────────────────────────────────────────
+#define LED_PIN                 21
 
 // ─── Timing Constants ───────────────────────────────────────────────────────
 #define WIFI_CONNECT_TIMEOUT_MS     15000
@@ -84,9 +89,10 @@ static TaskHandle_t g_mqttTaskHandle = NULL;
 // ─── Forward Declarations ───────────────────────────────────────────────────
 void wifiTask(void* pvParameters);
 void mqttTask(void* pvParameters);
-void mqttCallback(char* topic, byte* payload, unsigned int length);
+void mqttMessageHandler(String &topic, String &payload);
 void handleOtaMigration();
 static void initDeviceIdentity();
+void blinkTask(void* pvParameters);
 
 // ─── Device Identity from MAC Address ───────────────────────────────────────
 // Derives a unique Thing name from the ESP32's factory-burned MAC address.
@@ -171,24 +177,14 @@ void handleOtaMigration() {
 //  MQTT Callback
 // ═══════════════════════════════════════════════════════════════════════════
 
-void mqttCallback(char* topic, byte* payload, unsigned int length) {
-    ESP_LOGI(TAG_MQTT, "Message on '%s' (%u bytes)", topic, length);
-
-    // Parse the payload
-    char msgBuf[512];
-    unsigned int copyLen = (length < sizeof(msgBuf) - 1) ? length : sizeof(msgBuf) - 1;
-    memcpy(msgBuf, payload, copyLen);
-    msgBuf[copyLen] = '\0';
-    ESP_LOGD(TAG_MQTT, "Payload: %s", msgBuf);
+void mqttMessageHandler(String &topic, String &payload) {
+    ESP_LOGI(TAG_MQTT, "Message on '%s' (%d bytes)", topic.c_str(), payload.length());
+    ESP_LOGD(TAG_MQTT, "Payload: %s", payload.c_str());
 
     // Check for OTA migration command
-    // Accepts: {"action":"migrate-pqc"} on cmd/<thing>/ota
-    if (strstr(topic, "/ota") && strstr(msgBuf, "migrate-pqc")) {
+    if (topic.indexOf("/ota") >= 0 && payload.indexOf("migrate-pqc") >= 0) {
         handleOtaMigration();
-        return;
     }
-
-    // Handle other commands here...
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -228,6 +224,9 @@ void wifiTask(void* pvParameters) {
                 wifiAttempts = 0;
                 ESP_LOGI(TAG_WIFI, "Connected! IP: %s, RSSI: %d dBm",
                          WiFi.localIP().toString().c_str(), WiFi.RSSI());
+                ESP_LOGI(TAG_WIFI, "  Gateway: %s, Subnet: %s",
+                         WiFi.gatewayIP().toString().c_str(),
+                         WiFi.subnetMask().toString().c_str());
             } else {
                 wifiAttempts++;
                 unsigned long backoff = calculateBackoff(wifiAttempts);
@@ -253,6 +252,23 @@ void mqttTask(void* pvParameters) {
     }
     ESP_LOGI(TAG_MQTT, "WiFi is up, configuring classical TLS...");
 
+    // Sync time via NTP (required for TLS certificate date validation)
+    ESP_LOGI(TAG_MQTT, "Syncing time via NTP...");
+    configTime(0, 0, "pool.ntp.org", "time.nist.gov");
+    struct tm timeinfo;
+    int ntpRetries = 0;
+    while (!getLocalTime(&timeinfo) && ntpRetries < 15) {
+        vTaskDelay(pdMS_TO_TICKS(1000));
+        ntpRetries++;
+    }
+    if (ntpRetries < 15) {
+        ESP_LOGI(TAG_MQTT, "Time synced: %04d-%02d-%02d %02d:%02d:%02d UTC",
+                 timeinfo.tm_year + 1900, timeinfo.tm_mon + 1, timeinfo.tm_mday,
+                 timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec);
+    } else {
+        ESP_LOGW(TAG_MQTT, "NTP sync failed — cert date check may fail");
+    }
+
     // Initialize topics
     initTopics();
 
@@ -263,15 +279,19 @@ void mqttTask(void* pvParameters) {
     tlsClient.setPrivateKey(AWS_CERT_PRIVATE);
     ESP_LOGI(TAG_MQTT, "Classical TLS configured (WiFiClientSecure / mbedTLS)");
 
-    // Create MQTT client
-    static PubSubClient mqttClient(tlsClient);
-    mqttClient.setServer(MQTT_BROKER_ENDPOINT, MQTT_BROKER_PORT);
-    mqttClient.setCallback(mqttCallback);
+    // Create MQTT client (arduino-mqtt)
+    static MQTTClient mqttClient(1024);
+    mqttClient.begin(MQTT_BROKER_ENDPOINT, MQTT_BROKER_PORT, tlsClient);
+    mqttClient.onMessage(mqttMessageHandler);
     mqttClient.setKeepAlive(MQTT_KEEPALIVE_SEC);
-    mqttClient.setBufferSize(1024);
+    mqttClient.setTimeout(10000);
 
-    // LWT for offline detection
-    const char* lwtPayload = "{\"status\":\"offline\",\"reason\":\"unexpected\"}";
+    // LWT for offline detection (includes device name)
+    static char lwtPayload[128];
+    snprintf(lwtPayload, sizeof(lwtPayload),
+             "{\"status\":\"offline\",\"reason\":\"unexpected\",\"device\":\"%s\"}",
+             g_thingName);
+    mqttClient.setWill(g_topicLifecycle, lwtPayload, true, 1);
 
     unsigned long lastPublishTime = 0;
     unsigned long messageCount = 0;
@@ -291,18 +311,17 @@ void mqttTask(void* pvParameters) {
         // Connect or reconnect
         if (!mqttClient.connected()) {
             g_mqttConnected = false;
-            ESP_LOGI(TAG_MQTT, "Connecting to PQC Mosquitto broker (classical TLS, attempt %d)...",
+            ESP_LOGI(TAG_MQTT, "Connecting to broker (classical TLS, attempt %d)...",
                      connectAttempts + 1);
 
-            bool connected = mqttClient.connect(
-                g_thingName, NULL, NULL,
-                g_topicLifecycle, 1, true, lwtPayload
-            );
+            bool connected = mqttClient.connect(g_thingName);
 
             if (connected) {
                 g_mqttConnected = true;
                 connectAttempts = 0;
                 ESP_LOGI(TAG_MQTT, "Connected to Mosquitto broker (classical TLS 1.2)");
+                ESP_LOGI(TAG_MQTT, "  Client ID: %s", g_thingName);
+                ESP_LOGI(TAG_MQTT, "  Broker:    %s:%d", MQTT_BROKER_ENDPOINT, MQTT_BROKER_PORT);
 
                 // Publish online lifecycle event
                 char onlinePayload[256];
@@ -314,7 +333,7 @@ void mqttTask(void* pvParameters) {
                          "\"ip\":\"%s\",\"uptime_sec\":%lu}",
                          g_thingName, FIRMWARE_VERSION,
                          WiFi.localIP().toString().c_str(), millis() / 1000);
-                mqttClient.publish(g_topicLifecycle, onlinePayload, true);
+                mqttClient.publish(g_topicLifecycle, onlinePayload, true, 1);
                 ESP_LOGI(TAG_MQTT, "Published lifecycle: online");
 
                 // Subscribe to commands (including OTA trigger)
@@ -324,7 +343,7 @@ void mqttTask(void* pvParameters) {
                 connectAttempts++;
                 unsigned long backoff = calculateBackoff(connectAttempts);
                 ESP_LOGW(TAG_MQTT, "Failed (rc=%d). Backoff: %lu ms",
-                         mqttClient.state(), backoff);
+                         mqttClient.lastError(), backoff);
                 vTaskDelay(pdMS_TO_TICKS(backoff));
                 continue;
             }
@@ -358,7 +377,7 @@ void mqttTask(void* pvParameters) {
                      chipTempC);
 
             if (mqttClient.publish(g_topicTelemetry, payload)) {
-                ESP_LOGI(TAG_MQTT, "Telemetry #%lu → %s", messageCount, g_topicTelemetry);
+                ESP_LOGI(TAG_MQTT, "Telemetry #%lu published", messageCount);
             } else {
                 ESP_LOGE(TAG_MQTT, "Publish failed for #%lu", messageCount);
             }
@@ -372,14 +391,30 @@ void mqttTask(void* pvParameters) {
 //  Arduino Setup & Loop
 // ═══════════════════════════════════════════════════════════════════════════
 
+// ─── Blink Task ─────────────────────────────────────────────────────────────
+void blinkTask(void* pvParameters) {
+    pinMode(LED_PIN, OUTPUT);
+    for (;;) {
+        digitalWrite(LED_PIN, HIGH);
+        vTaskDelay(pdMS_TO_TICKS(500)); // Slower blink for classical (distinguishes from PQC)
+        digitalWrite(LED_PIN, LOW);
+        vTaskDelay(pdMS_TO_TICKS(500));
+    }
+}
+
 void setup() {
+    // Start blink task immediately
+    pinMode(LED_PIN, OUTPUT);
+    digitalWrite(LED_PIN, HIGH);
+    xTaskCreatePinnedToCore(blinkTask, "BlinkTask", BLINK_TASK_STACK_SIZE,
+                            NULL, BLINK_TASK_PRIORITY, NULL, 0);
+
     Serial.begin(115200);
-    while (!Serial) { delay(10); }
-    delay(1000);
+    unsigned long serialStart = millis();
+    while (!Serial && (millis() - serialStart < 10000)) { delay(100); }
 
     esp_log_level_set("*", (esp_log_level_t)LOG_LEVEL);
 
-    // Derive device identity from MAC address FIRST (needed for banner)
     g_wifiMutex = xSemaphoreCreateMutex();
     randomSeed(analogRead(0) ^ (uint32_t)(ESP.getEfuseMac() >> 16));
     initDeviceIdentity();
@@ -401,7 +436,6 @@ void setup() {
     ESP_LOGI(TAG_MAIN, "TLS: Classical (WiFiClientSecure / mbedTLS)");
     ESP_LOGI(TAG_MAIN, "PQC: NONE — send 'migrate-pqc' to cmd/%s/ota to upgrade", g_thingName);
 
-    // Print current boot partition info
     const esp_partition_t* running = esp_ota_get_running_partition();
     ESP_LOGI(TAG_MAIN, "Running from partition: '%s' (offset 0x%x)",
              running->label, running->address);
@@ -425,11 +459,30 @@ void loop() {
 
     if (now - lastStatusTime >= 60000) {
         lastStatusTime = now;
-        ESP_LOGI(TAG_MAIN, "── Status: uptime=%lu s, WiFi=%s, MQTT=%s, heap=%u, PQC=NONE ──",
-                 now / 1000,
-                 g_wifiConnected ? "OK" : "DOWN",
-                 g_mqttConnected ? "OK" : "DOWN",
-                 ESP.getFreeHeap());
+
+        struct tm timeinfo;
+        char timebuf[24] = "no-ntp";
+        if (getLocalTime(&timeinfo)) {
+            snprintf(timebuf, sizeof(timebuf), "%04d-%02d-%02d %02d:%02d:%02d",
+                     timeinfo.tm_year + 1900, timeinfo.tm_mon + 1, timeinfo.tm_mday,
+                     timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec);
+        }
+
+        ESP_LOGI(TAG_MAIN, "─── System Status ─────────────────────────────");
+        ESP_LOGI(TAG_MAIN, "  Time:       %s", timebuf);
+        ESP_LOGI(TAG_MAIN, "  Timezone:   %s", getenv("TZ") ? getenv("TZ") : "UTC (default)");
+        ESP_LOGI(TAG_MAIN, "  Device:     %s", g_thingName);
+        ESP_LOGI(TAG_MAIN, "  Uptime:     %lu sec", now / 1000);
+        ESP_LOGI(TAG_MAIN, "  WiFi:       %s (RSSI: %d dBm)",
+                 g_wifiConnected ? "Connected" : "Disconnected", WiFi.RSSI());
+        ESP_LOGI(TAG_MAIN, "  IP:         %s", WiFi.localIP().toString().c_str());
+        ESP_LOGI(TAG_MAIN, "  MQTT:       %s",
+                 g_mqttConnected ? "Connected" : "Disconnected");
+        ESP_LOGI(TAG_MAIN, "  TLS:        Classical (mbedTLS / TLS 1.2)");
+        ESP_LOGI(TAG_MAIN, "  PQC:        NONE — awaiting migration");
+        ESP_LOGI(TAG_MAIN, "  Free Heap:  %u bytes", ESP.getFreeHeap());
+        ESP_LOGI(TAG_MAIN, "  Min Heap:   %u bytes", ESP.getMinFreeHeap());
+        ESP_LOGI(TAG_MAIN, "───────────────────────────────────────────────");
     }
     delay(1000);
 }
