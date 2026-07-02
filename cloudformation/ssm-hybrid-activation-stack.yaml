@@ -216,6 +216,8 @@ Resources:
                 Action:
                   - ssm:CreateActivation
                   - ssm:DeleteActivation
+                  - ssm:AddTagsToResource
+                  - ssm:RemoveTagsFromResource
                 Resource: '*'
               - Effect: Allow
                 Action:
