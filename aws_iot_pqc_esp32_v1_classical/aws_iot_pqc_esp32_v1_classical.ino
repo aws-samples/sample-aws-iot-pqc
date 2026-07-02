@@ -789,7 +789,7 @@ void mqttTask(void* pvParameters) {
                          "\"status\":\"online\","
                          "\"device\":\"%s\","
                          "\"firmware_version\":\"2.0.0\","
-                         "\"pqc_algorithm\":\"SECP256R1_MLKEM768\","
+                         "\"pqc_algorithm\":\"none\","
                          "\"ip\":\"%s\","
                          "\"uptime_sec\":%lu"
                          "}",
@@ -842,8 +842,8 @@ void mqttTask(void* pvParameters) {
                      "\"free_heap\":%u,"
                      "\"min_heap\":%u,"
                      "\"chip_temp_c\":%.1f,"
-                     "\"pqc_algorithm\":\"SECP256R1_MLKEM768\","
-                     "\"tls_version\":\"TLS 1.3\""
+                     "\"pqc_algorithm\":\"none\","
+                     "\"tls_version\":\"TLS 1.3 (classical)\""
                      "}",
                      g_thingName,
                      messageCount,
