@@ -173,36 +173,51 @@ echo "       ✅ SSM Agent installed"
 echo "[2/4] Stopping agent for registration..."
 systemctl stop amazon-ssm-agent 2>/dev/null || true
 
-# ─── Step 3: Retrieve activation credentials from Secrets Manager ────────────
+# ─── Step 3: Retrieve activation credentials ────────────────────────────────
 echo "[3/4] Retrieving activation credentials..."
 
-# The user running this script needs AWS creds to read Secrets Manager.
-# This could be temporary creds passed via env vars or a configured profile.
-ACTIVATION_JSON=$(aws secretsmanager get-secret-value \
-    --region "$AWS_REGION" \
-    --secret-id "$SECRET_ID" \
-    --query 'SecretString' \
-    --output text 2>&1) || {
-    echo ""
-    echo "[ERROR] Failed to retrieve activation credentials from Secrets Manager."
-    echo "        Secret: $SECRET_ID"
-    echo "        Region: $AWS_REGION"
-    echo ""
-    echo "        Make sure:"
-    echo "          1. The pqc-workshop stack is deployed (includes SSM activation)"
-    echo "          2. AWS CLI has credentials with secretsmanager:GetSecretValue"
-    echo "          3. The region is correct"
-    echo ""
-    echo "        To set temporary credentials:"
-    echo "          export AWS_ACCESS_KEY_ID=..."
-    echo "          export AWS_SECRET_ACCESS_KEY=..."
-    echo "          export AWS_SESSION_TOKEN=..."
-    exit 1
-}
+# Check for bundled credentials file first (no AWS CLI needed)
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+BUNDLED_CREDS="$SCRIPT_DIR/credentials/ssm-activation.json"
+
+if [[ -f "$BUNDLED_CREDS" ]]; then
+    echo "       Found bundled credentials: $BUNDLED_CREDS"
+    ACTIVATION_JSON=$(cat "$BUNDLED_CREDS")
+else
+    # Fall back to Secrets Manager (requires AWS credentials)
+    echo "       No bundled credentials found, querying Secrets Manager..."
+    if ! command -v aws &>/dev/null; then
+        echo ""
+        echo "[ERROR] No bundled credentials and AWS CLI not installed."
+        echo "        Either:"
+        echo "          - Place ssm-activation.json in credentials/ directory"
+        echo "          - Or install AWS CLI and provide credentials"
+        exit 1
+    fi
+
+    ACTIVATION_JSON=$(aws secretsmanager get-secret-value \
+        --region "$AWS_REGION" \
+        --secret-id "$SECRET_ID" \
+        --query 'SecretString' \
+        --output text 2>&1) || {
+        echo ""
+        echo "[ERROR] Failed to retrieve activation credentials."
+        echo "        Secret: $SECRET_ID"
+        echo "        Region: $AWS_REGION"
+        echo ""
+        echo "        Options:"
+        echo "          1. Place the bundled credentials/ssm-activation.json next to this script"
+        echo "          2. Or provide AWS credentials:"
+        echo "             export AWS_ACCESS_KEY_ID=..."
+        echo "             export AWS_SECRET_ACCESS_KEY=..."
+        echo "             export AWS_SESSION_TOKEN=..."
+        exit 1
+    }
+fi
 
 ACTIVATION_ID=$(echo "$ACTIVATION_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin)['activationId'])")
 ACTIVATION_CODE=$(echo "$ACTIVATION_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin)['activationCode'])")
-EXPIRATION=$(echo "$ACTIVATION_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin)['expirationDate'])")
+EXPIRATION=$(echo "$ACTIVATION_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin).get('expirationDate','unknown'))")
 
 echo "       Activation ID: $ACTIVATION_ID"
 echo "       Expires:       $EXPIRATION"
