@@ -6,6 +6,9 @@
 **/secrets.h
 !**/secrets.h.template
 
+# Generated bundles with credentials
+esp32-arduino-bundle/
+
 # Node modules
 node_modules/
 dashboard/frontend/build/
