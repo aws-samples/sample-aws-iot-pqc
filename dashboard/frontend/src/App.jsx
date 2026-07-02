@@ -1,22 +1,80 @@
 import React, { useState, useEffect, useCallback } from 'react';
+import { CognitoIdentityClient, GetIdCommand, GetCredentialsForIdentityCommand } from '@aws-sdk/client-cognito-identity';
 import config from './config.js';
 import { LIST_DEVICES, MIGRATE_FIRMWARE } from './graphql.js';
 
+// Cognito client for fetching guest credentials
+const cognitoClient = new CognitoIdentityClient({ region: config.region });
+
+let cachedCredentials = null;
+let credentialsExpiry = 0;
+
+async function getCredentials() {
+  if (cachedCredentials && Date.now() < credentialsExpiry) {
+    return cachedCredentials;
+  }
+  const idResp = await cognitoClient.send(new GetIdCommand({ IdentityPoolId: config.identityPoolId }));
+  const credsResp = await cognitoClient.send(new GetCredentialsForIdentityCommand({ IdentityId: idResp.IdentityId }));
+  cachedCredentials = credsResp.Credentials;
+  credentialsExpiry = Date.now() + 50 * 60 * 1000; // refresh after 50 min
+  return cachedCredentials;
+}
+
 /**
- * Minimal AppSync client using fetch (avoids heavy Amplify bundle).
- * Uses Cognito Identity Pool for unauthenticated IAM access.
+ * AppSync query with IAM SigV4 signing.
  */
 async function appSyncQuery(query, variables = {}) {
-  const response = await fetch(config.appSyncEndpoint, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ query, variables }),
-  });
-  const result = await response.json();
-  if (result.errors) {
-    console.error('GraphQL errors:', result.errors);
+  try {
+    const creds = await getCredentials();
+    const url = new URL(config.appSyncEndpoint);
+    const body = JSON.stringify({ query, variables });
+    const datetime = new Date().toISOString().replace(/[:-]|\.\d{3}/g, '');
+    const date = datetime.substring(0, 8);
+    const region = config.region;
+    const service = 'appsync';
+    const encoder = new TextEncoder();
+
+    async function sha256(data) {
+      const buf = await crypto.subtle.digest('SHA-256', typeof data === 'string' ? encoder.encode(data) : data);
+      return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('');
+    }
+    async function hmacSha256(key, data) {
+      const k = await crypto.subtle.importKey('raw', typeof key === 'string' ? encoder.encode(key) : key, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+      return new Uint8Array(await crypto.subtle.sign('HMAC', k, encoder.encode(data)));
+    }
+
+    const payloadHash = await sha256(body);
+    const headers = {
+      'content-type': 'application/json',
+      'host': url.host,
+      'x-amz-date': datetime,
+      'x-amz-security-token': creds.SessionToken,
+    };
+    const signedHeaders = Object.keys(headers).sort().join(';');
+    const canonicalHeaders = Object.keys(headers).sort().map(k => `${k}:${headers[k]}\n`).join('');
+    const canonicalRequest = `POST\n${url.pathname}\n\n${canonicalHeaders}\n${signedHeaders}\n${payloadHash}`;
+    const credentialScope = `${date}/${region}/${service}/aws4_request`;
+    const stringToSign = `AWS4-HMAC-SHA256\n${datetime}\n${credentialScope}\n${await sha256(canonicalRequest)}`;
+
+    let signingKey = await hmacSha256(`AWS4${creds.SecretKey}`, date);
+    signingKey = await hmacSha256(signingKey, region);
+    signingKey = await hmacSha256(signingKey, service);
+    signingKey = await hmacSha256(signingKey, 'aws4_request');
+    const signature = Array.from(await hmacSha256(signingKey, stringToSign)).map(b => b.toString(16).padStart(2, '0')).join('');
+    const authorization = `AWS4-HMAC-SHA256 Credential=${creds.AccessKeyId}/${credentialScope}, SignedHeaders=${signedHeaders}, Signature=${signature}`;
+
+    const response = await fetch(config.appSyncEndpoint, {
+      method: 'POST',
+      headers: { ...headers, authorization },
+      body,
+    });
+    const result = await response.json();
+    if (result.errors) console.error('GraphQL errors:', result.errors);
+    return result.data;
+  } catch (err) {
+    console.error('AppSync query failed:', err);
+    return null;
   }
-  return result.data;
 }
 
 function DeviceCard({ device, onMigrate }) {
