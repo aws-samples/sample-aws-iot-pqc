@@ -889,16 +889,6 @@ void setup() {
         delay(100);
     }
 
-    // Print banner using Serial directly (works once CDC is ready)
-    Serial.println();
-    Serial.println("══════════════════════════════════════════════════");
-    Serial.println("  ESP32 AWS IoT Core - Post-Quantum Cryptography");
-    Serial.println("  TLS 1.3 + Hybrid ML-KEM Key Exchange");
-    Serial.println("══════════════════════════════════════════════════");
-    Serial.println();
-    Serial.printf("  Serial ready after %lu ms\n", millis() - serialStart);
-    Serial.flush();
-
     // ─── Configure Espressif Log Levels ─────────────────────────────────────
     // Set the default log level for all tags. Change LOG_LEVEL in secrets.h
     // to control verbosity:
@@ -909,24 +899,6 @@ void setup() {
     //   ESP_LOG_DEBUG (4)   - Detailed diagnostic information
     //   ESP_LOG_VERBOSE (5) - Everything, including I/O byte counts
     esp_log_level_set("*", (esp_log_level_t)LOG_LEVEL);
-
-    // Override ESP_LOG timestamp format to use real-time (after NTP sync)
-    // Before NTP sync, falls back to uptime in seconds
-    esp_log_set_vprintf([](const char* fmt, va_list args) -> int {
-        struct tm timeinfo;
-        char timebuf[24];
-        if (getLocalTime(&timeinfo)) {
-            snprintf(timebuf, sizeof(timebuf), "%04d-%02d-%02d %02d:%02d:%02d",
-                     timeinfo.tm_year + 1900, timeinfo.tm_mon + 1, timeinfo.tm_mday,
-                     timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec);
-        } else {
-            snprintf(timebuf, sizeof(timebuf), "%lus", millis() / 1000);
-        }
-        // Print timestamp prefix then the original log message
-        int n = Serial.printf("[%s] ", timebuf);
-        n += vprintf(fmt, args);
-        return n;
-    });
 
     // Override per-module if needed (uncomment and adjust):
     // esp_log_level_set(TAG_TLS, ESP_LOG_DEBUG);
@@ -1021,29 +993,14 @@ void loop() {
     static unsigned long lastHeartbeat = 0;
     unsigned long now = millis();
 
-    // Serial heartbeat every 10s with timestamp
+    // Heartbeat every 10s using ESP_LOG (same format as all other output)
     if (now - lastHeartbeat >= 10000) {
         lastHeartbeat = now;
-        if (Serial) {
-            struct tm timeinfo;
-            if (getLocalTime(&timeinfo)) {
-                Serial.printf("[%04d-%02d-%02d %02d:%02d:%02d] WiFi:%s MQTT:%s Heap:%u RSSI:%d\n",
-                    timeinfo.tm_year + 1900, timeinfo.tm_mon + 1, timeinfo.tm_mday,
-                    timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec,
-                    g_wifiConnected ? "OK" : "NO",
-                    g_mqttConnected ? "OK" : "NO",
-                    ESP.getFreeHeap(),
-                    WiFi.RSSI());
-            } else {
-                Serial.printf("[%lus] WiFi:%s MQTT:%s Heap:%u RSSI:%d\n",
-                    now / 1000,
-                    g_wifiConnected ? "OK" : "NO",
-                    g_mqttConnected ? "OK" : "NO",
-                    ESP.getFreeHeap(),
-                    WiFi.RSSI());
-            }
-            Serial.flush();
-        }
+        ESP_LOGI(TAG_MAIN, "WiFi:%s MQTT:%s Heap:%u RSSI:%d",
+                 g_wifiConnected ? "OK" : "NO",
+                 g_mqttConnected ? "OK" : "NO",
+                 ESP.getFreeHeap(),
+                 WiFi.RSSI());
     }
 
     if (now - lastStatusTime >= 60000) { // Status every 60 seconds
