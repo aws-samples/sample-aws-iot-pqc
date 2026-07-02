@@ -36,7 +36,7 @@
  */
 
 #include <WiFi.h>
-#include <PubSubClient.h>
+#include <MQTT.h>
 
 // Espressif logging framework
 #include <esp_log.h>
@@ -132,6 +132,7 @@ static TaskHandle_t g_mqttTaskHandle = NULL;
 void wifiTask(void* pvParameters);
 void mqttTask(void* pvParameters);
 void mqttCallback(char* topic, byte* payload, unsigned int length);
+void mqttMessageHandler(String &topic, String &payload);
 bool setupWolfSSLContext();
 WiFiClient* createPQCTLSClient();
 static void initDeviceIdentity();
@@ -397,14 +398,30 @@ public:
     int available() override {
         if (!_ssl || !_connected) return 0;
 
-        // Check if wolfSSL has buffered data or if TCP has data
+        // Check if wolfSSL has already-decrypted data buffered
         int pending = wolfSSL_pending(_ssl);
         if (pending > 0) return pending;
-        return _tcpClient.available();
+
+        // Check if the underlying TCP has encrypted data waiting.
+        // If so, we report 1 byte available to trigger PubSubClient
+        // to call read(), which will invoke wolfSSL_read() to decrypt.
+        if (_tcpClient.available() > 0) return 1;
+
+        return 0;
     }
 
     int read() override {
         uint8_t b;
+        // PubSubClient reads one byte at a time during readPacket().
+        // We must block briefly to allow wolfSSL to decrypt incoming records.
+        if (!_ssl || !_connected) return -1;
+
+        unsigned long startWait = millis();
+        while (available() == 0) {
+            if (millis() - startWait > 5000) return -1; // 5s timeout
+            if (!_connected) return -1;
+            delay(1);
+        }
         if (read(&b, 1) == 1) return b;
         return -1;
     }
@@ -416,6 +433,16 @@ public:
         if (ret <= 0) {
             int err = wolfSSL_get_error(_ssl, ret);
             if (err == WOLFSSL_ERROR_WANT_READ) {
+                // If TCP has data, wolfSSL needs another call to finish
+                // decrypting a record. Retry a few times with small delays.
+                for (int i = 0; i < 10 && _tcpClient.available() > 0; i++) {
+                    delay(10);
+                    ret = wolfSSL_read(_ssl, buf, size);
+                    if (ret > 0) {
+                        ESP_LOGV(TAG_TLS, "read: %d/%zu bytes (after %d retries)", ret, size, i + 1);
+                        return ret;
+                    }
+                }
                 return 0; // No data yet, non-blocking
             }
             ESP_LOGE(TAG_TLS, "read failed (err=%d), marking disconnected", err);
@@ -634,6 +661,12 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
     // Example: parse JSON, control GPIOs, update state, etc.
 }
 
+// MQTTClient message handler (wraps mqttCallback)
+void mqttMessageHandler(String &topic, String &payload) {
+    ESP_LOGI(TAG_MQTT, "Message received on topic '%s' (%d bytes)", topic.c_str(), payload.length());
+    ESP_LOGD(TAG_MQTT, "Payload: %s", payload.c_str());
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 //  MQTT FreeRTOS Task
 // ═══════════════════════════════════════════════════════════════════════════
@@ -677,20 +710,18 @@ void mqttTask(void* pvParameters) {
 
     // Create the wolfSSL-backed TLS client and MQTT client
     static WolfSSLClient tlsClient;
-    static PubSubClient mqttClient(tlsClient);
+    static MQTTClient mqttClient(1024); // 1024 byte buffer
 
-    mqttClient.setServer(MQTT_BROKER_ENDPOINT, MQTT_BROKER_PORT);
-    mqttClient.setCallback(mqttCallback);
+    mqttClient.begin(MQTT_BROKER_ENDPOINT, MQTT_BROKER_PORT, tlsClient);
+    mqttClient.onMessage(mqttMessageHandler);
     mqttClient.setKeepAlive(MQTT_KEEPALIVE_SEC);
-    mqttClient.setBufferSize(1024); // Increase for larger messages
-    ESP_LOGD(TAG_MQTT, "PubSubClient configured: endpoint=%s, port=%d, keepalive=%ds, buffer=1024",
+    mqttClient.setTimeout(10000); // 10 second timeout for read/write operations
+    ESP_LOGD(TAG_MQTT, "MQTTClient configured: endpoint=%s, port=%d, keepalive=%ds, timeout=10s",
              MQTT_BROKER_ENDPOINT, MQTT_BROKER_PORT, MQTT_KEEPALIVE_SEC);
 
     // ─── Last Will and Testament (LWT) ──────────────────────────────────────
-    // The LWT message is published by the broker if the device disconnects
-    // unexpectedly (network loss, crash, keepalive timeout). This lets other
-    // services know the device went offline without a graceful disconnect.
     const char* lwtPayload = "{\"status\":\"offline\",\"reason\":\"unexpected\"}";
+    mqttClient.setWill(g_topicLifecycle, lwtPayload, true, 1);
 
     unsigned long lastPublishTime = 0;
     unsigned long messageCount = 0;
@@ -716,18 +747,8 @@ void mqttTask(void* pvParameters) {
                      g_thingName, connectAttempts + 1);
             ESP_LOGD(TAG_MQTT, "Free heap before connect: %u bytes", ESP.getFreeHeap());
 
-            // Connect with Last Will and Testament (LWT)
-            // If the device disconnects unexpectedly, the broker publishes
-            // the LWT message to the lifecycle topic automatically.
-            bool connected = mqttClient.connect(
-                g_thingName,                // Client ID (MAC-derived Thing name)
-                NULL,                       // Username (not used with mTLS)
-                NULL,                       // Password (not used with mTLS)
-                g_topicLifecycle,           // LWT topic
-                1,                          // LWT QoS (1 = at least once)
-                true,                       // LWT retain (persists last status)
-                lwtPayload                  // LWT payload (offline message)
-            );
+            // Connect with client ID (LWT already set via setWill above)
+            bool connected = mqttClient.connect(g_thingName);
 
             if (connected) {
                 g_mqttConnected = true;
@@ -752,7 +773,7 @@ void mqttTask(void* pvParameters) {
                          WiFi.localIP().toString().c_str(),
                          millis() / 1000);
 
-                if (mqttClient.publish(g_topicLifecycle, onlinePayload, true)) {
+                if (mqttClient.publish(g_topicLifecycle, onlinePayload, true, 1)) {
                     ESP_LOGI(TAG_MQTT, "Published lifecycle: online → %s", g_topicLifecycle);
                 } else {
                     ESP_LOGW(TAG_MQTT, "Failed to publish online lifecycle event");
@@ -769,7 +790,7 @@ void mqttTask(void* pvParameters) {
                 connectAttempts++;
                 unsigned long backoffDelay = calculateBackoff(connectAttempts);
                 ESP_LOGW(TAG_MQTT, "Connection failed (rc=%d). Backoff: %lu ms (attempt %d)",
-                         mqttClient.state(), backoffDelay, connectAttempts);
+                         mqttClient.lastError(), backoffDelay, connectAttempts);
                 vTaskDelay(pdMS_TO_TICKS(backoffDelay));
                 continue;
             }
