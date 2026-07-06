@@ -14,7 +14,7 @@
  *
  * Required Arduino Libraries (install via Library Manager):
  *   1. wolfSSL          (by wolfSSL Inc.) - TLS 1.3 + PQC support
- *   2. PubSubClient     (by Nick O'Leary) - lightweight MQTT client
+ *   2. MQTT            (by Joel Gaehwiler) - Arduino MQTT client
  *
  * Required Board Package:
  *   - esp32 by Espressif Systems (Board Manager)
@@ -260,7 +260,7 @@ static int wolfssl_recv_cb(WOLFSSL* ssl, char* buf, int sz, void* ctx) {
 // ═══════════════════════════════════════════════════════════════════════════
 
 // This class wraps a plain WiFiClient with wolfSSL TLS 1.3 + PQC,
-// and exposes the Arduino Client interface so PubSubClient can use it.
+// and exposes the Arduino Client interface so MQTTClient can use it.
 
 class WolfSSLClient : public Client {
 public:
@@ -416,7 +416,7 @@ public:
         if (pending > 0) return pending;
 
         // Check if the underlying TCP has encrypted data waiting.
-        // If so, we report 1 byte available to trigger PubSubClient
+        // If so, we report 1 byte available to trigger MQTTClient
         // to call read(), which will invoke wolfSSL_read() to decrypt.
         if (_tcpClient.available() > 0) return 1;
 
@@ -425,7 +425,7 @@ public:
 
     int read() override {
         uint8_t b;
-        // PubSubClient reads one byte at a time during readPacket().
+        // MQTTClient reads one byte at a time during packet parsing.
         // We must block briefly to allow wolfSSL to decrypt incoming records.
         if (!_ssl || !_connected) return -1;
 
