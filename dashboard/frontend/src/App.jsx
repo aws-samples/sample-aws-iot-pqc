@@ -144,8 +144,15 @@ function DeviceCard({ device, onMigrate, onLedToggle }) {
 
       {isOnline && (
         <div className="led-controls">
-          <button className="led-button led-on" onClick={() => onLedToggle(device.thingName, true)}>💡 Blink On</button>
-          <button className="led-button led-off" onClick={() => onLedToggle(device.thingName, false)}>⬛ Blink Off</button>
+          <label className="toggle-switch">
+            <input
+              type="checkbox"
+              defaultChecked={true}
+              onChange={(e) => onLedToggle(device.thingName, e.target.checked)}
+            />
+            <span className="toggle-slider"></span>
+          </label>
+          <span className="toggle-label">Blink</span>
         </div>
       )}
 
@@ -173,6 +180,7 @@ function App() {
   const [migrating, setMigrating] = useState(null);
   const [error, setError] = useState(null);
   const [showManage, setShowManage] = useState(false);
+  const [filter, setFilter] = useState('');
 
   const fetchDevices = useCallback(async () => {
     try {
@@ -249,8 +257,11 @@ function App() {
     }
   };
 
-  const pqcCount = devices.filter(d => d.pqcAlgorithm && d.pqcAlgorithm !== 'none').length;
+  const pqcCount = devices.filter(d => d.pqcAlgorithm && (d.pqcAlgorithm.includes('MLKEM') || d.pqcAlgorithm.includes('Kyber'))).length;
   const onlineCount = devices.filter(d => d.status === 'online').length;
+  const filteredDevices = filter
+    ? devices.filter(d => d.thingName.toLowerCase().includes(filter.toLowerCase()))
+    : devices;
 
   return (
     <div className="app">
@@ -273,6 +284,16 @@ function App() {
             <span className="stat-label">Total</span>
           </div>
         </div>
+        <div className="header-filter">
+          <input
+            type="text"
+            placeholder="Filter by device name..."
+            value={filter}
+            onChange={(e) => setFilter(e.target.value)}
+            className="filter-input"
+          />
+          {filter && <button className="filter-clear" onClick={() => setFilter('')}>✕</button>}
+        </div>
       </header>
 
       {error && (
@@ -290,7 +311,7 @@ function App() {
         </div>
       ) : (
         <div className="device-grid">
-          {devices
+          {filteredDevices
             .sort((a, b) => a.thingName.localeCompare(b.thingName))
             .map(device => (
               <DeviceCard
