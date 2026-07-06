@@ -71,6 +71,31 @@ export const SEND_COMMAND = `
   }
 `;
 
+export const GET_DEVICE_LOG = `
+  query GetDeviceLog($thingName: String!, $limit: Int) {
+    getDeviceLog(thingName: $thingName, limit: $limit) {
+      thingName
+      timestamp
+      topic
+      direction
+      payload
+    }
+  }
+`;
+
+export const GET_BROKER_LOG = `
+  query GetBrokerLog($thingName: String, $limit: Int) {
+    getBrokerLog(thingName: $thingName, limit: $limit) {
+      entries {
+        timestamp
+        message
+      }
+      count
+      message
+    }
+  }
+`;
+
 export const ON_DEVICE_UPDATE = `
   subscription OnDeviceUpdate {
     onDeviceUpdate {

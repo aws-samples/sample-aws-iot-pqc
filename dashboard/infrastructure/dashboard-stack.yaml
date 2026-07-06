@@ -125,20 +125,48 @@ Resources:
           lastSeen: String
         }
 
+        type MessageLogEntry {
+          thingName: String!
+          timestamp: String!
+          topic: String
+          direction: String
+          payload: String
+        }
+
+        type BrokerLogEntry {
+          timestamp: String
+          message: String
+        }
+
+        type BrokerLogResult {
+          entries: [BrokerLogEntry]
+          count: Int
+          message: String
+        }
+
+        type CommandResult {
+          success: Boolean!
+          message: String
+          thingName: String!
+        }
+
+        type DeleteResult {
+          success: Boolean!
+          thingName: String!
+        }
+
         type Query {
           listDevices: [Device]
           getDevice(thingName: String!): Device
+          getDeviceLog(thingName: String!, limit: Int): [MessageLogEntry]
+          getBrokerLog(thingName: String, limit: Int): BrokerLogResult
         }
 
         type Mutation {
           updateDevice(input: UpdateDeviceInput!): Device
-          migrateFirmware(thingName: String!): MigrateResult
-        }
-
-        type MigrateResult {
-          success: Boolean!
-          message: String
-          thingName: String!
+          migrateFirmware(thingName: String!): CommandResult
+          deleteDevice(thingName: String!): DeleteResult
+          sendCommand(thingName: String!, action: String!, topicSuffix: String): CommandResult
         }
 
         input UpdateDeviceInput {
@@ -191,6 +219,7 @@ Resources:
                   - dynamodb:GetItem
                   - dynamodb:PutItem
                   - dynamodb:UpdateItem
+                  - dynamodb:DeleteItem
                   - dynamodb:Scan
                   - dynamodb:Query
                 Resource:
@@ -580,6 +609,353 @@ Resources:
         Actions:
           - Lambda:
               FunctionArn: !GetAtt TelemetryProcessorFunction.Arn
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # Message Log — Captures all MQTT messages for dashboard log view
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  MessageLogTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: pqc-workshop-message-log
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: thingName
+          AttributeType: S
+        - AttributeName: timestamp
+          AttributeType: S
+      KeySchema:
+        - AttributeName: thingName
+          KeyType: HASH
+        - AttributeName: timestamp
+          KeyType: RANGE
+      TimeToLiveSpecification:
+        AttributeName: ttl
+        Enabled: true
+
+  MessageLoggerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: pqc-workshop-message-logger
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: DynamoDBWriteAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:PutItem
+                Resource: !GetAtt MessageLogTable.Arn
+
+  MessageLoggerFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: pqc-workshop-message-logger
+      Runtime: python3.12
+      Handler: index.handler
+      Timeout: 10
+      Role: !GetAtt MessageLoggerRole.Arn
+      Environment:
+        Variables:
+          LOG_TABLE_NAME: !Ref MessageLogTable
+      Code:
+        ZipFile: |
+          import boto3
+          import json
+          import os
+          import time
+          from datetime import datetime, timezone
+
+          dynamodb = boto3.resource('dynamodb')
+          table = dynamodb.Table(os.environ['LOG_TABLE_NAME'])
+          MESSAGE_TTL_SECONDS = 3600
+
+          def extract_thing_name(topic):
+              parts = topic.split('/')
+              if len(parts) >= 2:
+                  return parts[1]
+              return 'unknown'
+
+          def determine_direction(topic):
+              if topic.startswith('dt/'):
+                  return 'inbound'
+              elif topic.startswith('cmd/'):
+                  return 'outbound'
+              return 'unknown'
+
+          def handler(event, context):
+              topic = event.get('mqtttopic', event.get('topic', 'unknown'))
+              thing_name = extract_thing_name(topic)
+              direction = determine_direction(topic)
+              if thing_name == 'unknown' or not thing_name:
+                  return {'statusCode': 200, 'body': 'skipped'}
+              payload = {k: v for k, v in event.items() if k != 'mqtttopic'}
+              now = datetime.now(timezone.utc)
+              timestamp = now.strftime('%Y-%m-%dT%H:%M:%S.') + f'{now.microsecond // 1000:03d}Z'
+              item = {
+                  'thingName': thing_name,
+                  'timestamp': timestamp,
+                  'topic': topic,
+                  'direction': direction,
+                  'payload': json.dumps(payload, default=str),
+                  'ttl': int(time.time()) + MESSAGE_TTL_SECONDS
+              }
+              try:
+                  table.put_item(Item=item)
+              except Exception as e:
+                  print(f"Error: {e}")
+                  return {'statusCode': 500, 'body': str(e)}
+              return {'statusCode': 200, 'body': f'Logged {direction} for {thing_name}'}
+
+  MessageLoggerPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref MessageLoggerFunction
+      Action: lambda:InvokeFunction
+      Principal: iot.amazonaws.com
+      SourceArn: !Sub 'arn:aws:iot:${AWS::Region}:${AWS::AccountId}:rule/*'
+
+  MessageLogDtRule:
+    Type: AWS::IoT::TopicRule
+    Properties:
+      RuleName: pqc_workshop_message_log_dt
+      TopicRulePayload:
+        Description: Captures all device-to-cloud messages for dashboard log
+        Sql: "SELECT *, topic() as mqtttopic FROM 'dt/+/+'"
+        AwsIotSqlVersion: '2016-03-23'
+        RuleDisabled: false
+        Actions:
+          - Lambda:
+              FunctionArn: !GetAtt MessageLoggerFunction.Arn
+
+  MessageLogCmdRule:
+    Type: AWS::IoT::TopicRule
+    Properties:
+      RuleName: pqc_workshop_message_log_cmd
+      TopicRulePayload:
+        Description: Captures all cloud-to-device commands for dashboard log
+        Sql: "SELECT *, topic() as mqtttopic FROM 'cmd/+/+'"
+        AwsIotSqlVersion: '2016-03-23'
+        RuleDisabled: false
+        Actions:
+          - Lambda:
+              FunctionArn: !GetAtt MessageLoggerFunction.Arn
+
+  # ─── AppSync Data Source: Message Log DynamoDB ─────────────────────────────
+
+  MessageLogDataSource:
+    Type: AWS::AppSync::DataSource
+    Properties:
+      ApiId: !GetAtt DeviceApi.ApiId
+      Name: MessageLogSource
+      Type: AMAZON_DYNAMODB
+      ServiceRoleArn: !GetAtt AppSyncMessageLogRole.Arn
+      DynamoDBConfig:
+        AwsRegion: !Ref AWS::Region
+        TableName: !Ref MessageLogTable
+
+  AppSyncMessageLogRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: pqc-workshop-appsync-message-log
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: appsync.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: DynamoDBQueryAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:Query
+                Resource:
+                  - !GetAtt MessageLogTable.Arn
+
+  GetDeviceLogResolver:
+    Type: AWS::AppSync::Resolver
+    Properties:
+      ApiId: !GetAtt DeviceApi.ApiId
+      TypeName: Query
+      FieldName: getDeviceLog
+      DataSourceName: !GetAtt MessageLogDataSource.Name
+      Runtime:
+        Name: APPSYNC_JS
+        RuntimeVersion: 1.0.0
+      Code: |
+        export function request(ctx) {
+          const limit = ctx.args.limit || 50;
+          return {
+            operation: 'Query',
+            query: {
+              expression: 'thingName = :tn',
+              expressionValues: util.dynamodb.toMapValues({ ':tn': ctx.args.thingName })
+            },
+            scanIndexForward: false,
+            limit: limit
+          };
+        }
+        export function response(ctx) {
+          return ctx.result.items;
+        }
+    DependsOn: DeviceApiSchema
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # Broker Log Reader — Queries CloudWatch Logs for Mosquitto broker activity
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  BrokerLogReaderRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: pqc-workshop-broker-log-reader
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: CloudWatchLogsRead
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:StartQuery
+                  - logs:GetQueryResults
+                Resource:
+                  - !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/pqc-workshop/mosquitto-broker:*'
+
+  BrokerLogReaderFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: pqc-workshop-broker-log-reader
+      Runtime: python3.12
+      Handler: index.handler
+      Timeout: 15
+      Role: !GetAtt BrokerLogReaderRole.Arn
+      Environment:
+        Variables:
+          LOG_GROUP_NAME: /pqc-workshop/mosquitto-broker
+      Code:
+        ZipFile: |
+          import boto3
+          import json
+          import os
+          import time
+
+          logs_client = boto3.client('logs')
+          LOG_GROUP = os.environ.get('LOG_GROUP_NAME', '/pqc-workshop/mosquitto-broker')
+
+          def handler(event, context):
+              print(f"Event: {json.dumps(event)}")
+              thing_name = event.get('thingName', '')
+              limit = min(event.get('limit', 50), 200)
+              if thing_name:
+                  query = f"fields @timestamp, @message | filter @message like /{thing_name}/ | sort @timestamp desc | limit {limit}"
+              else:
+                  query = f"fields @timestamp, @message | filter @message not like /PINGREQ/ | filter @message not like /PINGRESP/ | sort @timestamp desc | limit {limit}"
+              end_time = int(time.time())
+              start_time = end_time - 3600
+              try:
+                  response = logs_client.start_query(logGroupName=LOG_GROUP, startTime=start_time, endTime=end_time, queryString=query)
+                  query_id = response['queryId']
+                  results = None
+                  for _ in range(10):
+                      time.sleep(0.5)
+                      result_response = logs_client.get_query_results(queryId=query_id)
+                      if result_response['status'] == 'Complete':
+                          results = result_response['results']
+                          break
+                  if results is None:
+                      return {'entries': [], 'count': 0, 'message': 'Query timed out'}
+                  entries = []
+                  for row in results:
+                      entry = {}
+                      for field in row:
+                          if field['field'] == '@timestamp':
+                              entry['timestamp'] = field['value']
+                          elif field['field'] == '@message':
+                              entry['message'] = field['value'].strip()
+                      if entry.get('message'):
+                          entries.append(entry)
+                  return {'entries': entries, 'count': len(entries), 'message': None}
+              except Exception as e:
+                  print(f"Error: {e}")
+                  return {'entries': [], 'count': 0, 'message': str(e)}
+
+  AppSyncBrokerLogRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: pqc-workshop-appsync-broker-log
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: appsync.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: LambdaInvoke
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - lambda:InvokeFunction
+                Resource:
+                  - !GetAtt BrokerLogReaderFunction.Arn
+
+  BrokerLogDataSource:
+    Type: AWS::AppSync::DataSource
+    Properties:
+      ApiId: !GetAtt DeviceApi.ApiId
+      Name: BrokerLogSource
+      Type: AWS_LAMBDA
+      ServiceRoleArn: !GetAtt AppSyncBrokerLogRole.Arn
+      LambdaConfig:
+        LambdaFunctionArn: !GetAtt BrokerLogReaderFunction.Arn
+
+  GetBrokerLogResolver:
+    Type: AWS::AppSync::Resolver
+    Properties:
+      ApiId: !GetAtt DeviceApi.ApiId
+      TypeName: Query
+      FieldName: getBrokerLog
+      DataSourceName: !GetAtt BrokerLogDataSource.Name
+      Runtime:
+        Name: APPSYNC_JS
+        RuntimeVersion: 1.0.0
+      Code: |
+        export function request(ctx) {
+          return {
+            operation: 'Invoke',
+            payload: {
+              thingName: ctx.args.thingName || '',
+              limit: ctx.args.limit || 50
+            }
+          };
+        }
+        export function response(ctx) {
+          return ctx.result;
+        }
+    DependsOn: DeviceApiSchema
 
   # ═══════════════════════════════════════════════════════════════════════════
   # IoT Policy — For Greengrass Bridge (allows bridging all device topics)

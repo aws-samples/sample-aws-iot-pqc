@@ -700,14 +700,25 @@ void mqttMessageHandler(String &topic, String &payload) {
     // OTA migration: {"action":"migrate-pqc"} on cmd/<thing>/ota
     if (topic.indexOf("/ota") >= 0 && payload.indexOf("migrate-pqc") >= 0) {
         ESP_LOGI(TAG_MQTT, "PQC migration command received!");
-        const esp_partition_t* nextPartition = esp_ota_get_next_update_partition(NULL);
-        if (!nextPartition) { ESP_LOGE(TAG_MQTT, "No next OTA partition"); return; }
-        esp_app_desc_t appDesc;
-        if (esp_ota_get_partition_description(nextPartition, &appDesc) != ESP_OK) {
-            ESP_LOGE(TAG_MQTT, "No firmware in '%s'", nextPartition->label); return;
+        // Classical firmware runs on app0 — find app1 (PQC) explicitly
+        const esp_partition_t* pqcPartition = esp_partition_find_first(
+            ESP_PARTITION_TYPE_APP, ESP_PARTITION_SUBTYPE_APP_OTA_1, NULL);
+        if (!pqcPartition) {
+            ESP_LOGE(TAG_MQTT, "No OTA_1 (PQC) partition found");
+            return;
         }
-        ESP_LOGI(TAG_MQTT, "Switching to %s v%s", appDesc.project_name, appDesc.version);
-        esp_ota_set_boot_partition(nextPartition);
+        esp_app_desc_t appDesc;
+        if (esp_ota_get_partition_description(pqcPartition, &appDesc) != ESP_OK) {
+            ESP_LOGE(TAG_MQTT, "No firmware in '%s'", pqcPartition->label);
+            return;
+        }
+        ESP_LOGI(TAG_MQTT, "Switching to %s v%s (PQC)", appDesc.project_name, appDesc.version);
+        esp_err_t err = esp_ota_set_boot_partition(pqcPartition);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG_MQTT, "Failed to set boot partition: %s", esp_err_to_name(err));
+            return;
+        }
+        ESP_LOGI(TAG_MQTT, "Boot partition set to '%s', restarting...", pqcPartition->label);
         vTaskDelay(pdMS_TO_TICKS(2000));
         esp_restart();
     }

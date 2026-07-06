@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { CognitoIdentityClient, GetIdCommand, GetCredentialsForIdentityCommand } from '@aws-sdk/client-cognito-identity';
 import config from './config.js';
-import { LIST_DEVICES, MIGRATE_FIRMWARE, DELETE_DEVICE, SEND_COMMAND } from './graphql.js';
+import { LIST_DEVICES, MIGRATE_FIRMWARE, DELETE_DEVICE, SEND_COMMAND, GET_DEVICE_LOG, GET_BROKER_LOG } from './graphql.js';
 
 // Cognito client for fetching guest credentials
 const cognitoClient = new CognitoIdentityClient({ region: config.region });
@@ -77,7 +77,7 @@ async function appSyncQuery(query, variables = {}) {
   }
 }
 
-function DeviceCard({ device, onMigrate, onLedToggle }) {
+function DeviceCard({ device, onMigrate, onRevert, onLedToggle, onShowLog }) {
   const isPqc = device.pqcAlgorithm && 
     (device.pqcAlgorithm.includes('MLKEM') || 
      device.pqcAlgorithm.includes('Kyber') || 
@@ -95,9 +95,12 @@ function DeviceCard({ device, onMigrate, onLedToggle }) {
     <div className={`device-card ${isPqc ? 'pqc' : 'classical'} ${isOnline ? 'online' : 'offline'}`}>
       <div className="device-header">
         <h3>{device.thingName}</h3>
-        <span className={`status-badge ${isOnline ? 'online' : 'offline'}`}>
-          {isOnline ? '● Online' : '○ Offline'}
-        </span>
+        <div className="header-actions">
+          <button className="log-button" onClick={() => onShowLog(device.thingName)} title="View message log">📋</button>
+          <span className={`status-badge ${isOnline ? 'online' : 'offline'}`}>
+            {isOnline ? '● Online' : '○ Offline'}
+          </span>
+        </div>
       </div>
 
       <div className="device-crypto">
@@ -165,11 +168,123 @@ function DeviceCard({ device, onMigrate, onLedToggle }) {
         </button>
       )}
 
-      {isPqc && (
+      {isPqc && isOnline && (
+        <div className="pqc-actions">
+          <div className="migrated-banner">
+            ✓ Quantum-resistant connection active
+          </div>
+          <button
+            className="revert-button"
+            onClick={() => onRevert(device.thingName)}
+          >
+            ⬇️ Revert to Classical
+          </button>
+        </div>
+      )}
+
+      {isPqc && !isOnline && (
         <div className="migrated-banner">
           ✓ Quantum-resistant connection active
         </div>
       )}
+    </div>
+  );
+}
+
+function MessageLogPanel({ thingName, onClose }) {
+  const [logs, setLogs] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let interval;
+    const fetchLogs = async () => {
+      const data = await appSyncQuery(GET_DEVICE_LOG, { thingName, limit: 50 });
+      if (data && data.getDeviceLog) {
+        setLogs(data.getDeviceLog);
+      }
+      setLoading(false);
+    };
+    fetchLogs();
+    interval = setInterval(fetchLogs, 5000);
+    return () => clearInterval(interval);
+  }, [thingName]);
+
+  return (
+    <div className="log-panel-overlay" onClick={onClose}>
+      <div className="log-panel" onClick={(e) => e.stopPropagation()}>
+        <div className="log-panel-header">
+          <h3>📋 Message Log — {thingName}</h3>
+          <button className="log-close" onClick={onClose}>✕</button>
+        </div>
+        <div className="log-entries">
+          {loading && <div className="log-loading">Loading messages...</div>}
+          {!loading && logs.length === 0 && (
+            <div className="log-empty">No messages yet. Messages appear here as the device communicates.</div>
+          )}
+          {logs.map((entry, i) => (
+            <div key={i} className={`log-entry ${entry.direction}`}>
+              <span className="log-time">{new Date(entry.timestamp).toLocaleTimeString()}</span>
+              <span className={`log-direction ${entry.direction}`}>
+                {entry.direction === 'inbound' ? '⬆️' : '⬇️'}
+              </span>
+              <span className="log-topic">{entry.topic}</span>
+              <pre className="log-payload">{entry.payload}</pre>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function BrokerLogPanel({ thingName, onClose }) {
+  const [entries, setEntries] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [filterText, setFilterText] = useState(thingName || '');
+
+  useEffect(() => {
+    let interval;
+    const fetchLogs = async () => {
+      const data = await appSyncQuery(GET_BROKER_LOG, { thingName: filterText || null, limit: 100 });
+      if (data && data.getBrokerLog && data.getBrokerLog.entries) {
+        setEntries(data.getBrokerLog.entries);
+      }
+      setLoading(false);
+    };
+    fetchLogs();
+    interval = setInterval(fetchLogs, 5000);
+    return () => clearInterval(interval);
+  }, [filterText]);
+
+  return (
+    <div className="log-panel-overlay" onClick={onClose}>
+      <div className="log-panel broker-log-panel" onClick={(e) => e.stopPropagation()}>
+        <div className="log-panel-header">
+          <h3>🦟 Broker Log</h3>
+          <div className="broker-filter">
+            <input
+              type="text"
+              placeholder="Filter by device..."
+              value={filterText}
+              onChange={(e) => setFilterText(e.target.value)}
+              className="broker-filter-input"
+            />
+          </div>
+          <button className="log-close" onClick={onClose}>✕</button>
+        </div>
+        <div className="log-entries">
+          {loading && <div className="log-loading">Querying CloudWatch Logs...</div>}
+          {!loading && entries.length === 0 && (
+            <div className="log-empty">No broker log entries found for the last hour.</div>
+          )}
+          {entries.map((entry, i) => (
+            <div key={i} className="log-entry broker">
+              <span className="log-time">{entry.timestamp ? new Date(entry.timestamp).toLocaleTimeString() : ''}</span>
+              <span className="broker-message">{entry.message}</span>
+            </div>
+          ))}
+        </div>
+      </div>
     </div>
   );
 }
@@ -181,6 +296,8 @@ function App() {
   const [error, setError] = useState(null);
   const [showManage, setShowManage] = useState(false);
   const [filter, setFilter] = useState('');
+  const [logDevice, setLogDevice] = useState(null);
+  const [showBrokerLog, setShowBrokerLog] = useState(false);
 
   const fetchDevices = useCallback(async () => {
     try {
@@ -257,6 +374,27 @@ function App() {
     }
   };
 
+  const handleRevert = async (thingName) => {
+    if (!window.confirm(`Revert ${thingName} to classical firmware?\n\nThe device will reboot and reconnect with standard TLS encryption.`)) {
+      return;
+    }
+
+    setMigrating(thingName);
+    try {
+      const data = await appSyncQuery(SEND_COMMAND, { thingName, action: 'migrate-classical', topicSuffix: 'ota' });
+      if (data && data.sendCommand && data.sendCommand.success) {
+        console.log(`Revert command sent to ${thingName}`);
+      } else {
+        alert(`Revert failed: ${data?.sendCommand?.message || 'Unknown error'}`);
+      }
+    } catch (err) {
+      console.error('Revert error:', err);
+      alert(`Revert error: ${err.message}`);
+    } finally {
+      setTimeout(() => setMigrating(null), 3000);
+    }
+  };
+
   const pqcCount = devices.filter(d => d.pqcAlgorithm && (d.pqcAlgorithm.includes('MLKEM') || d.pqcAlgorithm.includes('Kyber'))).length;
   const onlineCount = devices.filter(d => d.status === 'online').length;
   const filteredDevices = filter
@@ -318,7 +456,9 @@ function App() {
                 key={device.thingName}
                 device={device}
                 onMigrate={handleMigrate}
+                onRevert={handleRevert}
                 onLedToggle={handleLedToggle}
+                onShowLog={(name) => setLogDevice(name)}
               />
             ))
           }
@@ -335,6 +475,13 @@ function App() {
         onClick={() => setShowManage(!showManage)}
       >
         ⚙️ Manage Devices
+      </button>
+
+      <button
+        className="broker-log-button"
+        onClick={() => setShowBrokerLog(true)}
+      >
+        🦟 Broker Log
       </button>
 
       {showManage && (
@@ -360,6 +507,14 @@ function App() {
             </div>
           </div>
         </div>
+      )}
+
+      {logDevice && (
+        <MessageLogPanel thingName={logDevice} onClose={() => setLogDevice(null)} />
+      )}
+
+      {showBrokerLog && (
+        <BrokerLogPanel thingName="" onClose={() => setShowBrokerLog(false)} />
       )}
     </div>
   );

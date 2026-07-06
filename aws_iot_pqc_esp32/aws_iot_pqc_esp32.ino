@@ -49,6 +49,9 @@
 
 #include "secrets.h"
 
+#include <esp_ota_ops.h>
+#include <esp_partition.h>
+
 // ─── Log Tags ───────────────────────────────────────────────────────────────
 // Each component gets its own tag for per-module log level control.
 // Use esp_log_level_set(TAG, level) to adjust at runtime.
@@ -701,7 +704,40 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
 // MQTTClient message handler (wraps mqttCallback)
 void mqttMessageHandler(String &topic, String &payload) {
     ESP_LOGI(TAG_MQTT, "Message received on topic '%s' (%d bytes)", topic.c_str(), payload.length());
-    ESP_LOGD(TAG_MQTT, "Payload: %s", payload.c_str());
+    ESP_LOGI(TAG_MQTT, "Payload: %s", payload.c_str());
+
+    // OTA revert: {"action":"migrate-classical"} on cmd/<thing>/ota
+    // Check OTA commands FIRST before LED controls
+    if (topic.indexOf("/ota") >= 0) {
+        ESP_LOGI(TAG_MQTT, "OTA topic detected, checking payload...");
+        if (payload.indexOf("migrate-classical") >= 0) {
+            ESP_LOGI(TAG_MQTT, "Classical revert command received!");
+            // PQC firmware runs on app1 — find app0 (classical) explicitly
+            const esp_partition_t* classicalPartition = esp_partition_find_first(
+                ESP_PARTITION_TYPE_APP, ESP_PARTITION_SUBTYPE_APP_OTA_0, NULL);
+            if (!classicalPartition) {
+                ESP_LOGE(TAG_MQTT, "No OTA_0 (classical) partition found");
+                return;
+            }
+            esp_app_desc_t appDesc;
+            if (esp_ota_get_partition_description(classicalPartition, &appDesc) != ESP_OK) {
+                ESP_LOGE(TAG_MQTT, "No firmware in '%s'", classicalPartition->label);
+                return;
+            }
+            ESP_LOGI(TAG_MQTT, "Switching to %s v%s (classical)", appDesc.project_name, appDesc.version);
+            esp_err_t err = esp_ota_set_boot_partition(classicalPartition);
+            if (err != ESP_OK) {
+                ESP_LOGE(TAG_MQTT, "Failed to set boot partition: %s", esp_err_to_name(err));
+                return;
+            }
+            ESP_LOGI(TAG_MQTT, "Boot partition set to '%s', restarting...", classicalPartition->label);
+            vTaskDelay(pdMS_TO_TICKS(2000));
+            esp_restart();
+        } else {
+            ESP_LOGW(TAG_MQTT, "OTA topic but unrecognized payload: '%s'", payload.c_str());
+        }
+        return;
+    }
 
     // LED control: {"action":"led-off"} or {"action":"led-on"}
     if (payload.indexOf("led-off") >= 0) {
@@ -716,6 +752,8 @@ void mqttMessageHandler(String &topic, String &payload) {
         if (g_blinkTaskHandle) vTaskResume(g_blinkTaskHandle);
         return;
     }
+
+    ESP_LOGW(TAG_MQTT, "Unhandled message on topic '%s'", topic.c_str());
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
