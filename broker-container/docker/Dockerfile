@@ -14,7 +14,7 @@ WORKDIR /tmp
 RUN git clone --depth 1 --branch openssl-3.5.0 https://github.com/openssl/openssl.git && \
     cd openssl && \
     ./Configure --prefix=/opt/openssl-pqc --openssldir=/opt/openssl-pqc/ssl \
-        shared linux-x86_64 && \
+        --libdir=lib shared && \
     make -j$(nproc) && \
     make install_sw install_ssldirs && \
     cd .. && rm -rf openssl
@@ -26,7 +26,10 @@ RUN git clone --depth 1 --branch 0.10.1 https://github.com/open-quantum-safe/lib
         -DCMAKE_INSTALL_PREFIX=/opt/openssl-pqc \
         -DBUILD_SHARED_LIBS=ON \
         -DOQS_USE_OPENSSL=ON \
-        -DOPENSSL_ROOT_DIR=/opt/openssl-pqc && \
+        -DOPENSSL_ROOT_DIR=/opt/openssl-pqc \
+        -DOPENSSL_INCLUDE_DIR=/opt/openssl-pqc/include \
+        -DOPENSSL_CRYPTO_LIBRARY=/opt/openssl-pqc/lib/libcrypto.so \
+        -DOPENSSL_SSL_LIBRARY=/opt/openssl-pqc/lib/libssl.so && \
     cmake --build build -j$(nproc) && \
     cmake --install build && \
     cd .. && rm -rf liboqs
