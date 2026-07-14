@@ -1,0 +1,511 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  PQC Workshop — Device Builder Pipeline. Provides infrastructure for
+  registering raw ESP32 devices, compiling device-specific firmware,
+  and managing OTA updates via presigned S3 URLs.
+
+Parameters:
+  GitRepoUrl:
+    Type: String
+    Description: Git repository URL for firmware source
+    Default: https://gitlab.aws.dev/swaym/Sample-aws-iot-pqc.git
+
+  FirmwareBucketName:
+    Type: String
+    Description: S3 bucket for compiled firmware artifacts
+    Default: pqc-workshop-firmware
+
+  DefaultWifiSsid:
+    Type: String
+    Description: Default WiFi SSID for devices
+    Default: clarmouth-4-24
+
+  DefaultBrokerEndpoint:
+    Type: String
+    Description: Default MQTT broker endpoint (Pi IP)
+    Default: '192.168.1.90'
+
+  IoTEndpoint:
+    Type: String
+    Description: AWS IoT Core data endpoint
+    Default: auxsw1j2tp0z6-ats.iot.us-east-1.amazonaws.com
+
+  BrokerPiInstanceId:
+    Type: String
+    Description: SSM Instance ID of the broker Raspberry Pi (mi-xxxx)
+    Default: mi-0edb5bc536ce8b7fc
+
+Resources:
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # ECR — Docker Image Repository for Build Environment
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  BuildImageRepository:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: pqc-workshop-firmware-builder
+      ImageScanningConfiguration:
+        ScanOnPush: false
+      LifecyclePolicy:
+        LifecyclePolicyText: |
+          {"rules":[{"rulePriority":1,"selection":{"tagStatus":"untagged","countType":"sinceImagePushed","countUnit":"days","countNumber":30},"action":{"type":"expire"}}]}
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # CodeBuild — Image Builder (one-time, builds Docker image with toolchain)
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  ImageBuilderRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: pqc-workshop-image-builder
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codebuild.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: ImageBuilderPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - ecr:GetAuthorizationToken
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - ecr:BatchCheckLayerAvailability
+                  - ecr:CompleteLayerUpload
+                  - ecr:InitiateLayerUpload
+                  - ecr:PutImage
+                  - ecr:UploadLayerPart
+                  - ecr:GetDownloadUrlForLayer
+                  - ecr:BatchGetImage
+                Resource: !GetAtt BuildImageRepository.Arn
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                Resource: !Sub '${FirmwareBucket.Arn}/*'
+
+  ImageBuilderProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: pqc-workshop-build-image
+      Description: Builds Docker image with ESP32 toolchain (run once)
+      ServiceRole: !GetAtt ImageBuilderRole.Arn
+      Source:
+        Type: S3
+        Location: !Sub '${FirmwareBucketName}-${AWS::AccountId}/source/buildspec-image.yml'
+        BuildSpec: buildspec-image.yml
+      Artifacts:
+        Type: NO_ARTIFACTS
+      Environment:
+        Type: LINUX_CONTAINER
+        ComputeType: BUILD_GENERAL1_MEDIUM
+        Image: aws/codebuild/standard:7.0
+        PrivilegedMode: true
+        EnvironmentVariables:
+          - Name: ECR_REPO_URI
+            Value: !Sub '${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/pqc-workshop-firmware-builder'
+          - Name: FIRMWARE_BUCKET
+            Value: !Sub '${FirmwareBucketName}-${AWS::AccountId}'
+          - Name: AWS_DEFAULT_REGION
+            Value: !Ref AWS::Region
+      TimeoutInMinutes: 30
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # S3 — Firmware Artifact Bucket
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  FirmwareBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub '${FirmwareBucketName}-${AWS::AccountId}'
+      VersioningConfiguration:
+        Status: Enabled
+      LifecycleConfiguration:
+        Rules:
+          - Id: ExpireOldVersions
+            Status: Enabled
+            NoncurrentVersionExpiration:
+              NoncurrentDays: 90
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # DynamoDB — Device Registry
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  DeviceRegistryTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: pqc-workshop-device-registry
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: serialNumber
+          AttributeType: S
+      KeySchema:
+        - AttributeName: serialNumber
+          KeyType: HASH
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # IAM — Device Registrar Lambda Role
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  DeviceRegistrarRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: pqc-workshop-device-registrar
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: DeviceRegistrarPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - iot:CreateThing
+                  - iot:CreateKeysAndCertificate
+                  - iot:AttachThingPrincipal
+                  - iot:AttachPolicy
+                  - iot:CreatePolicy
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - dynamodb:PutItem
+                  - dynamodb:GetItem
+                  - dynamodb:UpdateItem
+                Resource: !GetAtt DeviceRegistryTable.Arn
+              - Effect: Allow
+                Action:
+                  - codebuild:StartBuild
+                Resource: !GetAtt FirmwareBuildProject.Arn
+              - Effect: Allow
+                Action:
+                  - s3:PutObject
+                  - s3:GetObject
+                Resource: !Sub '${FirmwareBucket.Arn}/*'
+              - Effect: Allow
+                Action:
+                  - ssm:SendCommand
+                  - ssm:GetCommandInvocation
+                Resource: '*'
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # Lambda — Device Registrar
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  DeviceRegistrarFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: pqc-workshop-device-registrar
+      Runtime: python3.12
+      Handler: index.handler
+      Timeout: 30
+      Role: !GetAtt DeviceRegistrarRole.Arn
+      Environment:
+        Variables:
+          REGISTRY_TABLE: !Ref DeviceRegistryTable
+          FIRMWARE_BUCKET: !Sub '${FirmwareBucketName}-${AWS::AccountId}'
+          BUILD_PROJECT: !Ref FirmwareBuildProject
+          IOT_ENDPOINT: !Ref IoTEndpoint
+          DEFAULT_WIFI_SSID: !Ref DefaultWifiSsid
+          DEFAULT_BROKER_ENDPOINT: !Ref DefaultBrokerEndpoint
+          BROKER_PI_INSTANCE_ID: !Ref BrokerPiInstanceId
+      Code:
+        ZipFile: |
+          # Placeholder — real code is in lambda/device-registrar/index.py
+          def handler(event, context):
+              return {'statusCode': 200, 'body': 'placeholder'}
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # Lambda — Firmware Pusher (generates presigned URLs for OTA)
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  FirmwarePusherRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: pqc-workshop-firmware-pusher
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: FirmwarePusherPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:ListBucket
+                Resource:
+                  - !GetAtt FirmwareBucket.Arn
+                  - !Sub '${FirmwareBucket.Arn}/*'
+              - Effect: Allow
+                Action:
+                  - iot:Publish
+                Resource:
+                  - !Sub 'arn:aws:iot:${AWS::Region}:${AWS::AccountId}:topic/cmd/*/ota'
+              - Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:Query
+                  - dynamodb:Scan
+                Resource: !GetAtt DeviceRegistryTable.Arn
+
+  FirmwarePusherFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: pqc-workshop-firmware-pusher
+      Runtime: python3.12
+      Handler: index.handler
+      Timeout: 15
+      Role: !GetAtt FirmwarePusherRole.Arn
+      Environment:
+        Variables:
+          FIRMWARE_BUCKET: !Sub '${FirmwareBucketName}-${AWS::AccountId}'
+          IOT_ENDPOINT: !Ref IoTEndpoint
+          REGISTRY_TABLE: !Ref DeviceRegistryTable
+      Code:
+        ZipFile: |
+          # Placeholder — real code is in lambda/firmware-pusher/index.py
+          def handler(event, context):
+              return {'statusCode': 200, 'body': 'placeholder'}
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # API Gateway — Builder-Pi API
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  BuilderApi:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: pqc-workshop-device-builder-api
+      Description: API for device registration and firmware management
+
+  RegisterResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref BuilderApi
+      ParentId: !GetAtt BuilderApi.RootResourceId
+      PathPart: register
+
+  RegisterMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref BuilderApi
+      ResourceId: !Ref RegisterResource
+      HttpMethod: POST
+      AuthorizationType: AWS_IAM
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${DeviceRegistrarFunction.Arn}/invocations'
+
+  FirmwareResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref BuilderApi
+      ParentId: !GetAtt BuilderApi.RootResourceId
+      PathPart: firmware
+
+  FirmwareListMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref BuilderApi
+      ResourceId: !Ref FirmwareResource
+      HttpMethod: GET
+      AuthorizationType: AWS_IAM
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${FirmwarePusherFunction.Arn}/invocations'
+
+  ApiDeployment:
+    Type: AWS::ApiGateway::Deployment
+    DependsOn:
+      - RegisterMethod
+      - FirmwareListMethod
+    Properties:
+      RestApiId: !Ref BuilderApi
+      StageName: prod
+
+  RegisterLambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref DeviceRegistrarFunction
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub 'arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${BuilderApi}/*'
+
+  FirmwarePusherLambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref FirmwarePusherFunction
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub 'arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${BuilderApi}/*'
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # CodeBuild — Firmware Compilation
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  CodeBuildRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: pqc-workshop-codebuild-firmware
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codebuild.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: CodeBuildPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - s3:PutObject
+                  - s3:GetObject
+                Resource: !Sub '${FirmwareBucket.Arn}/*'
+              - Effect: Allow
+                Action:
+                  - s3:GetBucketLocation
+                Resource: !GetAtt FirmwareBucket.Arn
+              - Effect: Allow
+                Action:
+                  - ecr:GetAuthorizationToken
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - ecr:BatchCheckLayerAvailability
+                  - ecr:GetDownloadUrlForLayer
+                  - ecr:BatchGetImage
+                Resource: !GetAtt BuildImageRepository.Arn
+
+  FirmwareBuildProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: pqc-workshop-firmware-build
+      Description: Compiles ESP32 firmware with device-specific credentials (fast — uses pre-built image)
+      ServiceRole: !GetAtt CodeBuildRole.Arn
+      Source:
+        Type: S3
+        Location: !Sub '${FirmwareBucketName}-${AWS::AccountId}/source/buildspec.yml'
+        BuildSpec: buildspec.yml
+      Artifacts:
+        Type: NO_ARTIFACTS
+      Environment:
+        Type: LINUX_CONTAINER
+        ComputeType: BUILD_GENERAL1_MEDIUM
+        Image: !Sub '${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/pqc-workshop-firmware-builder:latest'
+        ImagePullCredentialsType: SERVICE_ROLE
+        EnvironmentVariables:
+          - Name: DEVICE_SERIAL
+            Value: placeholder
+          - Name: FIRMWARE_VERSION
+            Value: '0.1.0'
+          - Name: FIRMWARE_BUCKET
+            Value: !Sub '${FirmwareBucketName}-${AWS::AccountId}'
+          - Name: WIFI_SSID
+            Value: !Ref DefaultWifiSsid
+          - Name: WIFI_PASSWORD
+            Value: changeme
+          - Name: BROKER_ENDPOINT
+            Value: !Ref DefaultBrokerEndpoint
+          - Name: IOT_ENDPOINT
+            Value: !Ref IoTEndpoint
+          - Name: CA_CERT
+            Value: placeholder
+          - Name: DEVICE_CERT
+            Value: placeholder
+          - Name: DEVICE_KEY
+            Value: placeholder
+      TimeoutInMinutes: 10
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # SSM — Builder-Pi Access Role (for firmware flash commands)
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  BuilderPiSsmRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: pqc-workshop-builder-pi-ssm
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ssm.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+      Policies:
+        - PolicyName: BuilderPiAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                Resource: !Sub '${FirmwareBucket.Arn}/*'
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: '*'
+
+Outputs:
+  ApiEndpoint:
+    Description: Builder API endpoint
+    Value: !Sub 'https://${BuilderApi}.execute-api.${AWS::Region}.amazonaws.com/prod'
+
+  FirmwareBucketName:
+    Description: S3 bucket for firmware artifacts
+    Value: !Sub '${FirmwareBucketName}-${AWS::AccountId}'
+
+  DeviceRegistryTableName:
+    Description: DynamoDB device registry table
+    Value: !Ref DeviceRegistryTable
+
+  CodeBuildProjectName:
+    Description: CodeBuild project for firmware compilation
+    Value: !Ref FirmwareBuildProject
+
+  ECRRepositoryUri:
+    Description: ECR repository for the build image
+    Value: !Sub '${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/pqc-workshop-firmware-builder'
+
+  ImageBuilderProjectName:
+    Description: CodeBuild project for building the Docker image (run once)
+    Value: !Ref ImageBuilderProject

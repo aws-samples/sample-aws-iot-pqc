@@ -1,0 +1,24 @@
+version: 0.2
+
+# Builds the custom Docker image with the ESP32 toolchain pre-installed.
+# Run once (or when toolchain needs updating). The firmware build project
+# then uses this image for fast ~30s compile times.
+
+phases:
+  pre_build:
+    commands:
+      - echo "Logging in to ECR..."
+      - aws ecr get-login-password --region $AWS_DEFAULT_REGION | docker login --username AWS --password-stdin $ECR_REPO_URI
+      - echo "Downloading wolfSSL settings from S3..."
+      - aws s3 cp s3://$FIRMWARE_BUCKET/source/wolfssl_user_settings_arduino.h codebuild/wolfssl_user_settings_arduino.h
+  build:
+    commands:
+      - echo "Building Docker image..."
+      - docker build -t $ECR_REPO_URI:latest -f codebuild/Dockerfile codebuild/
+      - docker tag $ECR_REPO_URI:latest $ECR_REPO_URI:$(date +%Y%m%d)
+  post_build:
+    commands:
+      - echo "Pushing image to ECR..."
+      - docker push $ECR_REPO_URI:latest
+      - docker push $ECR_REPO_URI:$(date +%Y%m%d)
+      - echo "Image pushed successfully"

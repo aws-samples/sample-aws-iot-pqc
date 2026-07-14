@@ -1,0 +1,14 @@
+{
+  "api_endpoint": "https://683vdu3tii.execute-api.us-east-1.amazonaws.com/prod",
+  "wifi_ssid": "clarmouth-4-24",
+  "wifi_password": "Piaggio727411!",
+  "broker_endpoint": "192.168.1.90",
+  "iot_endpoint": "auxsw1j2tp0z6-ats.iot.us-east-1.amazonaws.com",
+  "firmware_bucket": "pqc-workshop-firmware-087195661091",
+  "region": "us-east-1",
+  "firmware_version": "0.1.0",
+  "max_usb_ports": 4,
+  "serial_baud_rate": 115200,
+  "flash_baud_rate": 921600,
+  "gui_port": 8080
+}

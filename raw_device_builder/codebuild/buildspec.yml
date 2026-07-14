@@ -1,0 +1,130 @@
+version: 0.2
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PQC Workshop Firmware Build
+#
+# Compiles ESP32 firmware with device-specific credentials injected.
+# Triggered by the device-registrar Lambda after IoT Core registration.
+#
+# Required environment variables (passed by Lambda):
+#   DEVICE_SERIAL    — Device serial number (e.g., C69E44)
+#   FIRMWARE_VERSION — Version string (e.g., 0.1.0)
+#   FIRMWARE_BUCKET  — S3 bucket for output
+#   WIFI_SSID        — WiFi network name
+#   WIFI_PASSWORD    — WiFi password
+#   BROKER_ENDPOINT  — MQTT broker IP (Mosquitto on Pi)
+#   IOT_ENDPOINT     — AWS IoT Core endpoint
+#   CA_CERT          — PEM-encoded CA certificate
+#   DEVICE_CERT      — PEM-encoded device certificate
+#   DEVICE_KEY       — PEM-encoded device private key
+# ─────────────────────────────────────────────────────────────────────────────
+
+phases:
+  install:
+    runtime-versions:
+      python: 3.12
+    commands:
+      - echo "Installing arduino-cli..."
+      - curl -fsSL https://raw.githubusercontent.com/arduino/arduino-cli/master/install.sh | BINDIR=/usr/local/bin sh
+      - arduino-cli version
+
+      - echo "Configuring ESP32 platform..."
+      - arduino-cli config init --overwrite
+      - arduino-cli config add board_manager.additional_urls https://espressif.github.io/arduino-esp32/package_esp32_index.json
+      - arduino-cli core update-index
+      - arduino-cli core install esp32:esp32@3.3.10
+
+      - echo "Installing libraries..."
+      - arduino-cli lib install wolfSSL
+      - arduino-cli lib install MQTT
+
+  pre_build:
+    commands:
+      - echo "Preparing firmware source for device $DEVICE_SERIAL..."
+      - mkdir -p /tmp/firmware_build/ota_updater
+
+      # Clone firmware source from repository
+      - |
+        if [ -n "$GIT_REPO_URL" ]; then
+          git clone --depth 1 "$GIT_REPO_URL" /tmp/repo
+          cp /tmp/repo/raw_device_builder/firmware/ota_updater/ota_updater.ino /tmp/firmware_build/ota_updater/
+        else
+          echo "No GIT_REPO_URL — using embedded source"
+          cp /codebuild/readonly/ota_updater.ino /tmp/firmware_build/ota_updater/ 2>/dev/null || true
+        fi
+
+      # Generate device-specific secrets.h
+      - |
+        cat > /tmp/firmware_build/ota_updater/secrets.h << SECRETS_EOF
+        #ifndef SECRETS_H
+        #define SECRETS_H
+
+        #define FIRMWARE_VERSION "$FIRMWARE_VERSION"
+        #define WIFI_SSID "$WIFI_SSID"
+        #define WIFI_PASSWORD "$WIFI_PASSWORD"
+        #define LOG_LEVEL 3
+        #define MQTT_BROKER_ENDPOINT "$BROKER_ENDPOINT"
+        #define MQTT_BROKER_PORT 8883
+        #define AWS_IOT_ENDPOINT "$IOT_ENDPOINT"
+        #define AWS_IOT_PORT 8883
+        #define AWS_IOT_PUBLISH_TOPIC "esp32/pqc/pub"
+        #define AWS_IOT_SUBSCRIBE_TOPIC "esp32/pqc/sub"
+
+        static const char AWS_CERT_CA[] PROGMEM = R"EOF(
+        $CA_CERT
+        )EOF";
+
+        static const char AWS_CERT_CRT[] PROGMEM = R"KEY(
+        $DEVICE_CERT
+        )KEY";
+
+        static const char AWS_CERT_PRIVATE[] PROGMEM = R"KEY(
+        $DEVICE_KEY
+        )KEY";
+
+        #endif
+        SECRETS_EOF
+
+      - echo "secrets.h generated for esp32-$DEVICE_SERIAL"
+
+  build:
+    commands:
+      - echo "Compiling firmware..."
+      - |
+        arduino-cli compile \
+          -b esp32:esp32:XIAO_ESP32S3:USBMode=hwcdc,CDCOnBoot=default,DebugLevel=info,PartitionScheme=default_8MB \
+          --build-property "build.partitions=default_8MB" \
+          --export-binaries \
+          /tmp/firmware_build/ota_updater/
+
+      - echo "Build complete!"
+      - ls -la /tmp/firmware_build/ota_updater/build/esp32.esp32.XIAO_ESP32S3/
+
+  post_build:
+    commands:
+      - echo "Uploading firmware to S3..."
+      - |
+        aws s3 cp \
+          /tmp/firmware_build/ota_updater/build/esp32.esp32.XIAO_ESP32S3/ota_updater.ino.bin \
+          s3://$FIRMWARE_BUCKET/$DEVICE_SERIAL/$FIRMWARE_VERSION/firmware.bin
+
+      - echo "Firmware uploaded: s3://$FIRMWARE_BUCKET/$DEVICE_SERIAL/$FIRMWARE_VERSION/firmware.bin"
+
+      # Store build metadata
+      - |
+        cat > /tmp/build-metadata.json << EOF
+        {
+          "serialNumber": "$DEVICE_SERIAL",
+          "thingName": "esp32-$DEVICE_SERIAL",
+          "firmwareVersion": "$FIRMWARE_VERSION",
+          "buildId": "$CODEBUILD_BUILD_ID",
+          "buildTime": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+          "s3Key": "$DEVICE_SERIAL/$FIRMWARE_VERSION/firmware.bin"
+        }
+        EOF
+      - aws s3 cp /tmp/build-metadata.json s3://$FIRMWARE_BUCKET/$DEVICE_SERIAL/$FIRMWARE_VERSION/metadata.json
+
+artifacts:
+  files:
+    - /tmp/firmware_build/ota_updater/build/esp32.esp32.XIAO_ESP32S3/ota_updater.ino.bin
+  discard-paths: yes

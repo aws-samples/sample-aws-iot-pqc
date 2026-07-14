@@ -1,0 +1,451 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  PQC MQTT Broker — Containerized Mosquitto with OpenSSL 3.5 + ML-KEM,
+  running on ECS Fargate behind an NLB, with certificates from Private CA.
+
+Parameters:
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: VPC to deploy the broker into
+
+  SubnetIds:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: Subnets for the NLB and ECS tasks (at least 2 AZs)
+
+  IoTEndpoint:
+    Type: String
+    Description: AWS IoT Core data endpoint
+    Default: auxsw1j2tp0z6-ats.iot.us-east-1.amazonaws.com
+
+  BrokerImageUri:
+    Type: String
+    Description: ECR image URI for the Mosquitto PQC container
+    Default: ''
+
+Resources:
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # ECR Repository
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  BrokerEcrRepository:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: pqc-workshop-mosquitto-broker
+      ImageScanningConfiguration:
+        ScanOnPush: true
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # AWS Private CA — Certificate Authority
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  PrivateCA:
+    Type: AWS::ACMPCA::CertificateAuthority
+    Properties:
+      Type: ROOT
+      KeyAlgorithm: EC_prime256v1
+      SigningAlgorithm: SHA256WITHECDSA
+      Subject:
+        CommonName: PQC Workshop Private CA
+        Organization: AWS PQC Workshop
+        Country: US
+      RevocationConfiguration:
+        CrlConfiguration:
+          Enabled: false
+
+  PrivateCACertificate:
+    Type: AWS::ACMPCA::Certificate
+    Properties:
+      CertificateAuthorityArn: !Ref PrivateCA
+      CertificateSigningRequest: !GetAtt PrivateCA.CertificateSigningRequest
+      SigningAlgorithm: SHA256WITHECDSA
+      TemplateArn: arn:aws:acm-pca:::template/RootCACertificate/V1
+      Validity:
+        Type: YEARS
+        Value: 10
+
+  PrivateCAActivation:
+    Type: AWS::ACMPCA::CertificateAuthorityActivation
+    Properties:
+      CertificateAuthorityArn: !Ref PrivateCA
+      Certificate: !GetAtt PrivateCACertificate.Certificate
+      Status: ACTIVE
+
+  # ─── Broker Certificate (issued by Private CA via Lambda custom resource) ──
+  # The CertProvisionerFunction generates a key, CSR, issues the cert from
+  # Private CA, and stores everything in Secrets Manager automatically.
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # Secrets Manager — Store broker cert and key
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  BrokerCACertSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: pqc-broker/ca-cert
+      Description: Private CA certificate for the PQC MQTT broker
+
+  BrokerCertSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: pqc-broker/broker-cert
+      Description: Broker TLS certificate (issued by Private CA)
+
+  BrokerKeySecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: pqc-broker/broker-key
+      Description: Broker TLS private key
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # ECS — Cluster, Task Definition, Service
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  BrokerCluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: pqc-workshop-broker
+      ClusterSettings:
+        - Name: containerInsights
+          Value: enabled
+
+  BrokerTaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: pqc-workshop-broker-task
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: BrokerTaskPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                Resource:
+                  - !Ref BrokerCACertSecret
+                  - !Ref BrokerCertSecret
+                  - !Ref BrokerKeySecret
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: '*'
+
+  BrokerExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: pqc-workshop-broker-execution
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+      Policies:
+        - PolicyName: ECRPull
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ecr:GetAuthorizationToken
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - ecr:BatchCheckLayerAvailability
+                  - ecr:GetDownloadUrlForLayer
+                  - ecr:BatchGetImage
+                Resource: !GetAtt BrokerEcrRepository.Arn
+
+  BrokerLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /pqc-workshop/broker-container
+      RetentionInDays: 7
+
+  BrokerTaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: pqc-workshop-broker
+      Cpu: '1024'
+      Memory: '2048'
+      NetworkMode: awsvpc
+      RequiresCompatibilities:
+        - FARGATE
+      ExecutionRoleArn: !GetAtt BrokerExecutionRole.Arn
+      TaskRoleArn: !GetAtt BrokerTaskRole.Arn
+      ContainerDefinitions:
+        - Name: mosquitto-pqc
+          Image: !Sub '${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/pqc-workshop-mosquitto-broker:latest'
+          Essential: true
+          PortMappings:
+            - ContainerPort: 8883
+              Protocol: tcp
+          Environment:
+            - Name: AWS_REGION
+              Value: !Ref AWS::Region
+            - Name: CA_CERT_SECRET
+              Value: !Ref BrokerCACertSecret
+            - Name: BROKER_CERT_SECRET
+              Value: !Ref BrokerCertSecret
+            - Name: BROKER_KEY_SECRET
+              Value: !Ref BrokerKeySecret
+            - Name: IOT_ENDPOINT
+              Value: !Ref IoTEndpoint
+            - Name: GREENGRASS_THING
+              Value: pqc-workshop-broker
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref BrokerLogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: mosquitto
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # Network Load Balancer — TCP passthrough (preserves PQC TLS handshake)
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  BrokerSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: PQC MQTT Broker - allow port 8883
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 8883
+          ToPort: 8883
+          CidrIp: 0.0.0.0/0
+
+  BrokerNLB:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: pqc-broker-nlb
+      Type: network
+      Scheme: internet-facing
+      Subnets: !Ref SubnetIds
+
+  BrokerTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: pqc-broker-tg
+      Port: 8883
+      Protocol: TCP
+      TargetType: ip
+      VpcId: !Ref VpcId
+      HealthCheckProtocol: TCP
+      HealthCheckPort: '8883'
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 2
+
+  BrokerListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref BrokerNLB
+      Port: 8883
+      Protocol: TCP
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref BrokerTargetGroup
+
+  # ─── ECS Service ───────────────────────────────────────────────────────────
+
+  BrokerService:
+    Type: AWS::ECS::Service
+    DependsOn: BrokerListener
+    Properties:
+      ServiceName: pqc-workshop-broker
+      Cluster: !Ref BrokerCluster
+      TaskDefinition: !Ref BrokerTaskDefinition
+      DesiredCount: 0
+      LaunchType: FARGATE
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: ENABLED
+          SecurityGroups:
+            - !Ref BrokerSecurityGroup
+          Subnets: !Ref SubnetIds
+      LoadBalancers:
+        - ContainerName: mosquitto-pqc
+          ContainerPort: 8883
+          TargetGroupArn: !Ref BrokerTargetGroup
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # Lambda — Certificate Provisioner (generates broker CSR + stores certs)
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  CertProvisionerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: pqc-workshop-cert-provisioner
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: CertProvisionerPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - acm-pca:IssueCertificate
+                  - acm-pca:GetCertificate
+                  - acm-pca:GetCertificateAuthorityCertificate
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - secretsmanager:PutSecretValue
+                  - secretsmanager:UpdateSecret
+                Resource:
+                  - !Ref BrokerCACertSecret
+                  - !Ref BrokerCertSecret
+                  - !Ref BrokerKeySecret
+
+  CertProvisionerFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: pqc-workshop-cert-provisioner
+      Runtime: python3.12
+      Handler: index.handler
+      Timeout: 60
+      Role: !GetAtt CertProvisionerRole.Arn
+      Environment:
+        Variables:
+          CA_ARN: !Ref PrivateCA
+          CA_CERT_SECRET: !Ref BrokerCACertSecret
+          BROKER_CERT_SECRET: !Ref BrokerCertSecret
+          BROKER_KEY_SECRET: !Ref BrokerKeySecret
+      Code:
+        ZipFile: |
+          """
+          Provisions broker certificate from Private CA and stores in Secrets Manager.
+          Triggered as a CloudFormation Custom Resource.
+          Uses subprocess to call openssl for CSR generation (avoids pip dependencies).
+          """
+          import boto3
+          import subprocess
+          import tempfile
+          import time
+          import os
+          import cfnresponse
+
+          acm_pca = boto3.client('acm-pca')
+          secrets = boto3.client('secretsmanager')
+
+          def handler(event, context):
+              try:
+                  if event['RequestType'] == 'Delete':
+                      cfnresponse.send(event, context, cfnresponse.SUCCESS, {})
+                      return
+
+                  ca_arn = os.environ['CA_ARN']
+
+                  # Generate EC P-256 key and CSR using openssl CLI
+                  with tempfile.TemporaryDirectory() as tmp:
+                      key_file = f'{tmp}/broker.key'
+                      csr_file = f'{tmp}/broker.csr'
+
+                      subprocess.run([
+                          'openssl', 'ecparam', '-genkey', '-name', 'prime256v1',
+                          '-noout', '-out', key_file
+                      ], check=True, capture_output=True)
+
+                      subprocess.run([
+                          'openssl', 'req', '-new', '-key', key_file,
+                          '-out', csr_file, '-subj',
+                          '/CN=pqc-mqtt-broker/O=AWS PQC Workshop/C=US'
+                      ], check=True, capture_output=True)
+
+                      with open(key_file) as f:
+                          key_pem = f.read()
+                      with open(csr_file) as f:
+                          csr_pem = f.read()
+
+                  # Issue certificate from Private CA
+                  issue_resp = acm_pca.issue_certificate(
+                      CertificateAuthorityArn=ca_arn,
+                      Csr=csr_pem.encode(),
+                      SigningAlgorithm='SHA256WITHECDSA',
+                      Validity={'Type': 'DAYS', 'Value': 365}
+                  )
+                  cert_arn = issue_resp['CertificateArn']
+
+                  # Wait for certificate issuance
+                  time.sleep(5)
+                  for _ in range(10):
+                      try:
+                          cert_resp = acm_pca.get_certificate(
+                              CertificateAuthorityArn=ca_arn,
+                              CertificateArn=cert_arn
+                          )
+                          break
+                      except acm_pca.exceptions.RequestInProgressException:
+                          time.sleep(2)
+                  else:
+                      raise Exception('Certificate issuance timed out')
+
+                  broker_cert = cert_resp['Certificate']
+
+                  # Get CA certificate
+                  ca_resp = acm_pca.get_certificate_authority_certificate(
+                      CertificateAuthorityArn=ca_arn
+                  )
+                  ca_cert = ca_resp['Certificate']
+
+                  # Store in Secrets Manager
+                  secrets.put_secret_value(SecretId=os.environ['CA_CERT_SECRET'], SecretString=ca_cert)
+                  secrets.put_secret_value(SecretId=os.environ['BROKER_CERT_SECRET'], SecretString=broker_cert)
+                  secrets.put_secret_value(SecretId=os.environ['BROKER_KEY_SECRET'], SecretString=key_pem)
+
+                  cfnresponse.send(event, context, cfnresponse.SUCCESS, {
+                      'CertificateArn': cert_arn
+                  })
+              except Exception as e:
+                  print(f"Error: {e}")
+                  cfnresponse.send(event, context, cfnresponse.FAILED, {'Error': str(e)})
+
+  # Trigger cert provisioning on stack creation
+  ProvisionCerts:
+    Type: Custom::ProvisionCerts
+    DependsOn: PrivateCAActivation
+    Properties:
+      ServiceToken: !GetAtt CertProvisionerFunction.Arn
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Outputs
+# ─────────────────────────────────────────────────────────────────────────────
+Outputs:
+  BrokerEndpoint:
+    Description: NLB endpoint for MQTT connections
+    Value: !GetAtt BrokerNLB.DNSName
+
+  BrokerPort:
+    Description: MQTT TLS port
+    Value: '8883'
+
+  PrivateCAArn:
+    Description: Private CA ARN (for issuing device certificates)
+    Value: !Ref PrivateCA
+
+  ECRRepositoryUri:
+    Description: ECR repository for broker image
+    Value: !Sub '${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/pqc-workshop-mosquitto-broker'
+
+  BrokerClusterName:
+    Description: ECS cluster name
+    Value: !Ref BrokerCluster

@@ -1,0 +1,255 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>🔧 PQC Device Builder</title>
+    <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+    <header>
+        <h1>🔧 PQC Device Builder</h1>
+        <p class="subtitle">ESP32 Production Line Registration</p>
+    </header>
+
+    <main>
+        <!-- Settings Panel -->
+        <section class="settings-panel">
+            <h2>⚙️ Settings</h2>
+            <div class="settings-grid">
+                <div class="setting">
+                    <label>WiFi SSID</label>
+                    <input type="text" id="wifi-ssid" value="{{ config.wifi_ssid }}">
+                </div>
+                <div class="setting">
+                    <label>WiFi Password</label>
+                    <input type="password" id="wifi-password" value="{{ config.wifi_password }}">
+                </div>
+                <div class="setting">
+                    <label>Broker Endpoint</label>
+                    <input type="text" id="broker-endpoint" value="{{ config.broker_endpoint }}">
+                </div>
+                <div class="setting">
+                    <label>IoT Endpoint</label>
+                    <input type="text" id="iot-endpoint" value="{{ config.iot_endpoint }}">
+                </div>
+                <div class="setting">
+                    <label>Firmware Version</label>
+                    <input type="text" id="firmware-version" value="{{ config.firmware_version }}">
+                </div>
+                <div class="setting">
+                    <label>API Endpoint</label>
+                    <input type="text" id="api-endpoint" value="{{ config.api_endpoint }}">
+                </div>
+            </div>
+            <button id="save-settings" onclick="saveSettings()">💾 Save Settings</button>
+        </section>
+
+        <!-- Device Slots -->
+        <section class="devices-panel">
+            <div class="devices-header">
+                <h2>🔌 USB Devices</h2>
+                <button onclick="scanPorts()">🔄 Rescan</button>
+            </div>
+            <div id="device-grid" class="device-grid">
+                <div class="empty-state">
+                    <p>No ESP32 devices detected. Plug in a device via USB.</p>
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <footer>
+        <p>PQC Workshop — Device Builder Pipeline</p>
+    </footer>
+
+    <script>
+        // Poll device status every 2 seconds
+        setInterval(refreshDevices, 2000);
+
+        async function refreshDevices() {
+            try {
+                const response = await fetch('/api/devices');
+                const devices = await response.json();
+                renderDevices(devices);
+            } catch (err) {
+                console.error('Failed to refresh devices:', err);
+            }
+        }
+
+        function renderDevices(devices) {
+            const grid = document.getElementById('device-grid');
+            if (devices.length === 0) {
+                grid.innerHTML = '<div class="empty-state"><p>No ESP32 devices detected. Plug in a device via USB.</p></div>';
+                return;
+            }
+
+            grid.innerHTML = devices.map(device => `
+                <div class="device-card ${device.status}">
+                    <div class="device-header">
+                        <span class="port-badge">${device.port}</span>
+                        <span class="status-badge ${device.status}">${device.status}</span>
+                    </div>
+                    <div class="device-info">
+                        <div class="info-row">
+                            <label>Serial:</label>
+                            <span>${device.serialNumber || 'detecting...'}</span>
+                        </div>
+                        <div class="info-row">
+                            <label>Thing Name:</label>
+                            <span>${device.thingName || '—'}</span>
+                        </div>
+                        <div class="info-row">
+                            <label>Registered:</label>
+                            <span>${device.isRegistered ? '✅ Yes' : '❌ No'}</span>
+                        </div>
+                    </div>
+                    ${device.status === 'ready' && !device.isRegistered ? `
+                        <button class="register-btn" onclick="registerDevice('${device.port}')">
+                            🚀 Register & Flash
+                        </button>
+                    ` : ''}
+                    ${device.isRegistered && (device.status === 'registered' || device.status === 'done') ? `
+                        <div class="device-actions">
+                            <button class="action-btn reflash" onclick="reflashDevice('${device.port}')">
+                                🔄 Reflash
+                            </button>
+                            <button class="action-btn serial" onclick="openSerial('${device.port}')">
+                                📟 Serial
+                            </button>
+                            <button class="action-btn deregister" onclick="deregisterDevice('${device.port}')">
+                                🗑️ Deregister
+                            </button>
+                        </div>
+                    ` : ''}
+                    ${device.error ? `<div class="error-msg">❌ ${device.error}</div>` : ''}
+                    <div class="progress-log">
+                        ${(device.progress || []).map(line => `<div class="log-line">${line}</div>`).join('')}
+                    </div>
+                </div>
+            `).join('');
+        }
+
+        async function registerDevice(port) {
+            try {
+                const response = await fetch('/api/register', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ port })
+                });
+                const result = await response.json();
+                if (!result.success) {
+                    alert(`Registration failed: ${result.error || result.message}`);
+                }
+            } catch (err) {
+                alert(`Error: ${err.message}`);
+            }
+        }
+
+        async function deregisterDevice(port) {
+            if (!confirm('Deregister this device? This will delete the IoT Thing, certificate, policy, and firmware.')) return;
+            try {
+                const response = await fetch('/api/deregister', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ port })
+                });
+                const result = await response.json();
+                if (!result.success) {
+                    alert(`Deregistration failed: ${result.error || result.message}`);
+                }
+            } catch (err) {
+                alert(`Error: ${err.message}`);
+            }
+        }
+
+        async function reflashDevice(port) {
+            if (!confirm('Reflash this device with the current firmware from S3?')) return;
+            try {
+                const response = await fetch('/api/reflash', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ port })
+                });
+                const result = await response.json();
+                if (!result.success) {
+                    alert(`Reflash failed: ${result.error || result.message}`);
+                }
+            } catch (err) {
+                alert(`Error: ${err.message}`);
+            }
+        }
+
+        let serialWindow = null;
+        let serialInterval = null;
+
+        function openSerial(port) {
+            // Open a popup with live serial output
+            if (serialWindow && !serialWindow.closed) {
+                serialWindow.close();
+            }
+            serialWindow = window.open('', 'serial', 'width=700,height=500,scrollbars=yes');
+            serialWindow.document.write(`
+                <html><head><title>Serial: ${port}</title>
+                <style>
+                    body { background: #0f172a; color: #e2e8f0; font-family: monospace; font-size: 12px; padding: 10px; margin: 0; }
+                    #output { white-space: pre-wrap; }
+                    .line { padding: 1px 0; border-bottom: 1px solid #1e293b; }
+                </style></head>
+                <body><div id="output">Connecting to ${port}...</div></body></html>
+            `);
+
+            // Poll serial output
+            const encodedPort = port.substring(1); // remove leading /
+            if (serialInterval) clearInterval(serialInterval);
+            serialInterval = setInterval(async () => {
+                if (serialWindow.closed) { clearInterval(serialInterval); return; }
+                try {
+                    const resp = await fetch('/api/serial/' + encodedPort);
+                    const data = await resp.json();
+                    const el = serialWindow.document.getElementById('output');
+                    if (el && data.lines) {
+                        el.innerHTML = data.lines.map(l => `<div class="line">${l}</div>`).join('');
+                        el.scrollTop = el.scrollHeight;
+                    }
+                } catch (e) {}
+            }, 1000);
+        }
+
+        async function scanPorts() {
+            try {
+                await fetch('/api/scan', { method: 'POST' });
+            } catch (err) {
+                console.error('Scan failed:', err);
+            }
+        }
+
+        async function saveSettings() {
+            const settings = {
+                wifi_ssid: document.getElementById('wifi-ssid').value,
+                wifi_password: document.getElementById('wifi-password').value,
+                broker_endpoint: document.getElementById('broker-endpoint').value,
+                iot_endpoint: document.getElementById('iot-endpoint').value,
+                firmware_version: document.getElementById('firmware-version').value,
+                api_endpoint: document.getElementById('api-endpoint').value
+            };
+            try {
+                const response = await fetch('/api/config', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify(settings)
+                });
+                const result = await response.json();
+                if (result.success) {
+                    alert('Settings saved!');
+                }
+            } catch (err) {
+                alert(`Save failed: ${err.message}`);
+            }
+        }
+
+        // Initial load
+        refreshDevices();
+    </script>
+</body>
+</html>
