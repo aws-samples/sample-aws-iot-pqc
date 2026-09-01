@@ -9,6 +9,5 @@
   "firmware_version": "0.1.0",
   "max_usb_ports": 4,
   "serial_baud_rate": 115200,
-  "flash_baud_rate": 921600,
   "gui_port": 8080
 }

@@ -3,15 +3,16 @@ Device Registrar Lambda
 
 Called by the builder-pi GUI when an operator clicks "Register & Flash".
 Performs the full device registration workflow:
-  1. Generates PQC-signed certificate via SSM command on the broker-pi
-  2. Creates IoT Thing
-  3. Creates per-device IoT policy
-  4. Stores metadata in DynamoDB device registry
-  5. Triggers CodeBuild to compile device-specific firmware
+  1. Generates EC P-256 key + CSR, issues certificate from AWS Private CA
+  2. Gets the CA certificate from Private CA
+  3. Creates IoT Thing
+  4. Creates per-device IoT policy
+  5. Stores metadata in DynamoDB device registry
+  6. Triggers CodeBuild to compile device-specific firmware (classical TLS)
 
-The certificate is generated on the broker-pi using its PQC CA (OpenSSL +
-oqs-provider), so the CA signature is quantum-resistant. The device key is
-EC P-256 (for ESP32 performance) but the trust chain is PQC.
+Certificates are issued by the same Private CA that signed the broker cert,
+ensuring the device and broker share a common trust root. Firmware 0 uses
+classical TLS — PQC migration happens via OTA (Firmware 1+).
 
 Environment variables:
   REGISTRY_TABLE — DynamoDB table for device registry
@@ -19,18 +20,20 @@ Environment variables:
   BUILD_PROJECT — CodeBuild project name
   IOT_ENDPOINT — AWS IoT Core data endpoint
   DEFAULT_WIFI_SSID — Default WiFi SSID
-  DEFAULT_BROKER_ENDPOINT — Default Mosquitto broker IP
-  BROKER_PI_INSTANCE_ID — SSM instance ID of broker-pi
+  DEFAULT_BROKER_ENDPOINT — Default Mosquitto broker IP/NLB endpoint
+  PRIVATE_CA_ARN — AWS Private CA ARN (shared with broker-container stack)
 """
 
 import boto3
 import json
 import os
 import time
+import subprocess
+import tempfile
 from datetime import datetime, timezone
 
 iot = boto3.client('iot')
-ssm = boto3.client('ssm')
+acm_pca = boto3.client('acm-pca')
 dynamodb = boto3.resource('dynamodb')
 codebuild = boto3.client('codebuild')
 
@@ -40,7 +43,7 @@ BUILD_PROJECT = os.environ['BUILD_PROJECT']
 IOT_ENDPOINT = os.environ['IOT_ENDPOINT']
 DEFAULT_WIFI_SSID = os.environ.get('DEFAULT_WIFI_SSID', 'workshop-wifi')
 DEFAULT_BROKER = os.environ.get('DEFAULT_BROKER_ENDPOINT', '192.168.1.90')
-BROKER_PI_INSTANCE = os.environ.get('BROKER_PI_INSTANCE_ID', '')
+PRIVATE_CA_ARN = os.environ['PRIVATE_CA_ARN']
 
 table = dynamodb.Table(TABLE_NAME)
 
@@ -70,24 +73,23 @@ def handler(event, context):
     region = os.environ.get('AWS_REGION', 'us-east-1')
 
     try:
-        # ─── Step 1: Generate PQC certificate via SSM on broker-pi ────────
-        print(f"Generating PQC cert for {thing_name} via SSM...")
-        cert_data = generate_pqc_cert_via_ssm(serial_number)
+        # ─── Step 1: Generate device certificate from Private CA ──────────
+        print(f"Generating device cert for {thing_name} from Private CA...")
+        cert_data = issue_device_certificate(serial_number, thing_name)
         if not cert_data:
             return api_response(500, {
-                'error': 'Failed to generate PQC certificate on broker-pi',
+                'error': 'Failed to issue device certificate from Private CA',
                 'serialNumber': serial_number
             })
 
         ca_cert = cert_data['ca_cert']
         device_cert = cert_data['device_cert']
         device_key = cert_data['device_key']
-        print(f"PQC cert generated for {thing_name}")
+        print(f"Certificate issued for {thing_name}")
 
         # ─── Step 2: Create IoT Thing ─────────────────────────────────────
         print(f"Creating IoT Thing: {thing_name}")
         try:
-            # IoT Thing attributes only allow [a-zA-Z0-9_.,@/:#=\[\]-]
             registered_at = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H-%M-%SZ')
             iot.create_thing(
                 thingName=thing_name,
@@ -97,7 +99,7 @@ def handler(event, context):
                         'serialNumber': serial_number,
                         'registeredAt': registered_at,
                         'firmwareVersion': firmware_version,
-                        'certType': 'PQC-signed'
+                        'certType': 'PrivateCA-ECDSA'
                     }
                 }
             )
@@ -153,7 +155,7 @@ def handler(event, context):
             'serialNumber': serial_number,
             'thingName': thing_name,
             'policyName': policy_name,
-            'certType': 'PQC-signed',
+            'certType': 'PrivateCA-ECDSA',
             'firmwareVersion': firmware_version,
             'status': 'registered',
             'registeredAt': datetime.now(timezone.utc).isoformat(),
@@ -161,8 +163,8 @@ def handler(event, context):
             'brokerEndpoint': broker_endpoint
         })
 
-        # ─── Step 5: Trigger CodeBuild ────────────────────────────────────
-        print(f"Starting firmware build for {thing_name}...")
+        # ─── Step 5: Trigger CodeBuild (classical firmware) ───────────────
+        print(f"Starting classical firmware build for {thing_name}...")
         build_response = codebuild.start_build(
             projectName=BUILD_PROJECT,
             environmentVariablesOverride=[
@@ -171,6 +173,7 @@ def handler(event, context):
                 {'name': 'WIFI_SSID', 'value': wifi_ssid, 'type': 'PLAINTEXT'},
                 {'name': 'WIFI_PASSWORD', 'value': wifi_password, 'type': 'PLAINTEXT'},
                 {'name': 'BROKER_ENDPOINT', 'value': broker_endpoint, 'type': 'PLAINTEXT'},
+                {'name': 'BROKER_PORT', 'value': '8883', 'type': 'PLAINTEXT'},
                 {'name': 'IOT_ENDPOINT', 'value': IOT_ENDPOINT, 'type': 'PLAINTEXT'},
                 {'name': 'CA_CERT', 'value': ca_cert, 'type': 'PLAINTEXT'},
                 {'name': 'DEVICE_CERT', 'value': device_cert, 'type': 'PLAINTEXT'},
@@ -183,10 +186,11 @@ def handler(event, context):
             'success': True,
             'thingName': thing_name,
             'serialNumber': serial_number,
-            'certType': 'PQC-signed',
+            'certType': 'PrivateCA-ECDSA',
             'buildId': build_id,
-            'firmwarePath': f's3://{FIRMWARE_BUCKET}/{serial_number}/{firmware_version}/firmware.bin',
-            'message': f'Device {thing_name} registered with PQC cert. Build: {build_id}'
+            'firmwareBucket': FIRMWARE_BUCKET,
+            'firmwareKey': f'{serial_number}/{firmware_version}/firmware.bin',
+            'message': f'Device {thing_name} registered. Classical firmware build: {build_id}'
         })
 
     except Exception as e:
@@ -200,47 +204,78 @@ def handler(event, context):
         })
 
 
-def generate_pqc_cert_via_ssm(serial_number):
-    """Generate a PQC-signed device certificate on the broker-pi via SSM."""
-    if not BROKER_PI_INSTANCE:
-        print("ERROR: BROKER_PI_INSTANCE_ID not configured")
-        return None
-
+def issue_device_certificate(serial_number, thing_name):
+    """
+    Generate an EC P-256 key and CSR, issue a certificate from the Private CA.
+    Returns dict with ca_cert, device_cert, device_key (all PEM strings).
+    """
     try:
-        # Send command to broker-pi to generate cert
-        cmd_response = ssm.send_command(
-            InstanceIds=[BROKER_PI_INSTANCE],
-            DocumentName='AWS-RunShellScript',
-            Parameters={
-                'commands': [
-                    f'/opt/mosquitto-pqc/etc/mosquitto/certs/generate-device-cert.sh {serial_number}'
-                ]
-            },
-            TimeoutSeconds=30
+        with tempfile.TemporaryDirectory() as tmp:
+            key_file = f'{tmp}/device.key'
+            csr_file = f'{tmp}/device.csr'
+
+            # Generate EC P-256 private key
+            subprocess.run([
+                'openssl', 'ecparam', '-genkey', '-name', 'prime256v1',
+                '-noout', '-out', key_file
+            ], check=True, capture_output=True)
+
+            # Generate CSR
+            subject = f'/CN={thing_name}/O=AWS PQC Workshop/OU=IoT Device/C=US'
+            subprocess.run([
+                'openssl', 'req', '-new', '-key', key_file,
+                '-out', csr_file, '-subj', subject
+            ], check=True, capture_output=True)
+
+            with open(key_file) as f:
+                device_key = f.read()
+            with open(csr_file) as f:
+                csr_pem = f.read()
+
+        # Issue certificate from Private CA
+        issue_resp = acm_pca.issue_certificate(
+            CertificateAuthorityArn=PRIVATE_CA_ARN,
+            Csr=csr_pem.encode(),
+            SigningAlgorithm='SHA256WITHECDSA',
+            Validity={'Type': 'DAYS', 'Value': 365},
+            IdempotencyToken=f'dev-{serial_number[:16]}'
         )
-        command_id = cmd_response['Command']['CommandId']
+        cert_arn = issue_resp['CertificateArn']
+        print(f"Certificate issued: {cert_arn}")
 
-        # Poll for completion (up to 20 seconds)
-        for _ in range(20):
-            time.sleep(1)
-            result = ssm.get_command_invocation(
-                CommandId=command_id,
-                InstanceId=BROKER_PI_INSTANCE
-            )
-            if result['Status'] in ('Success', 'Failed', 'TimedOut', 'Cancelled'):
+        # Wait for certificate to be available (typically < 3 seconds)
+        time.sleep(3)
+        for attempt in range(10):
+            try:
+                cert_resp = acm_pca.get_certificate(
+                    CertificateAuthorityArn=PRIVATE_CA_ARN,
+                    CertificateArn=cert_arn
+                )
                 break
+            except acm_pca.exceptions.RequestInProgressException:
+                print(f"  Certificate pending (attempt {attempt + 1})...")
+                time.sleep(2)
+        else:
+            raise Exception('Certificate issuance timed out after 20s')
 
-        if result['Status'] != 'Success':
-            print(f"SSM command failed: {result.get('StandardErrorContent', 'unknown error')}")
-            return None
+        device_cert = cert_resp['Certificate']
 
-        # Parse JSON output from the script
-        output = result['StandardOutputContent'].strip()
-        cert_data = json.loads(output)
-        return cert_data
+        # Get the CA certificate (for the trust chain)
+        ca_resp = acm_pca.get_certificate_authority_certificate(
+            CertificateAuthorityArn=PRIVATE_CA_ARN
+        )
+        ca_cert = ca_resp['Certificate']
+
+        return {
+            'ca_cert': ca_cert,
+            'device_cert': device_cert,
+            'device_key': device_key
+        }
 
     except Exception as e:
-        print(f"SSM cert generation failed: {e}")
+        print(f"Certificate generation failed: {e}")
+        import traceback
+        traceback.print_exc()
         return None
 
 

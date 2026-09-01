@@ -187,7 +187,81 @@ aws lambda update-function-code --function-name pqc-workshop-message-logger --zi
 - Consider adding AppSync subscriptions for real-time dashboard updates (currently polling every 5s)
 - Workshop attendee guide / step-by-step instructions document
 
-## TASK 18: Raw Device Builder (Stretch Goal) — READY TO DEPLOY
+## TASK 19: Broker Container (ECS Fargate + NLB + Private CA)
+
+**STATUS:** In progress — Docker image building in CodeBuild
+
+**Location:** `broker-container/`
+
+**What it is:** Containerized Mosquitto MQTT broker with OpenSSL 3.5 + oqs-provider (ML-KEM PQC), running on ECS Fargate behind an NLB (TCP passthrough). Certificates from AWS Private CA.
+
+**Current state:**
+- CloudFormation stack `pqc-workshop-broker-container` — CREATE_IN_PROGRESS (ECS service failing because no image yet)
+- Docker image build `pqc-workshop-broker-image:077e7870-5efa-4153-ad7c-cec272e221eb` — building (compiling OpenSSL 3.5 + liboqs + Mosquitto)
+- ECR repo `pqc-workshop-mosquitto-broker` exists but empty
+- Private CA created and activated
+- Secrets Manager populated with CA cert, broker cert, broker key
+- NLB created
+
+**When you check in tomorrow:**
+
+1. Check if the Docker image build succeeded:
+```bash
+aws codebuild batch-get-builds --ids "pqc-workshop-broker-image:077e7870-5efa-4153-ad7c-cec272e221eb" --region us-east-1 --query 'builds[0].buildStatus' --output text
+```
+
+2. Check if image is in ECR:
+```bash
+aws ecr describe-images --repository-name pqc-workshop-mosquitto-broker --region us-east-1
+```
+
+3. Check CloudFormation stack status:
+```bash
+aws cloudformation describe-stacks --stack-name pqc-workshop-broker-container --region us-east-1 --query 'Stacks[0].StackStatus' --output text
+```
+
+**If image build SUCCEEDED but stack rolled back:**
+```bash
+# Redeploy stack with DesiredCount: 0 (template already fixed)
+cd broker-container
+aws cloudformation deploy \
+  --template-file cloudformation/broker-container-stack.yaml \
+  --stack-name pqc-workshop-broker-container \
+  --capabilities CAPABILITY_NAMED_IAM \
+  --parameter-overrides VpcId=vpc-0e2090cf34c4dd5df SubnetIds=subnet-08e67aa7ab02cd95f,subnet-09d47ce3ddab3b738 \
+  --region us-east-1
+
+# Then scale to 1
+aws ecs update-service --cluster pqc-workshop-broker --service pqc-workshop-broker --desired-count 1 --region us-east-1
+```
+
+**If image build FAILED:**
+- Check logs: `aws logs filter-log-events --log-group-name /aws/codebuild/pqc-workshop-broker-image --region us-east-1`
+- The issue was liboqs CMake not finding OpenSSL — fixed by adding explicit `-DOPENSSL_INCLUDE_DIR` and `-DOPENSSL_CRYPTO_LIBRARY` paths and `--libdir=lib` to the OpenSSL configure
+- May need another iteration on the Dockerfile
+
+**Key resources:**
+- CodeBuild project: `pqc-workshop-broker-image`
+- ECR repo: `pqc-workshop-mosquitto-broker`
+- CloudFormation stack: `pqc-workshop-broker-container`
+- VPC: `vpc-0e2090cf34c4dd5df`
+- Subnets: `subnet-08e67aa7ab02cd95f`, `subnet-09d47ce3ddab3b738`
+- Private CA ARN: check stack outputs once created
+
+---
+
+## Pending Tasks Summary
+
+| Task | Status | Next Action |
+|------|--------|-------------|
+| Broker container image build | Building in CodeBuild | Check if succeeded tomorrow |
+| CloudFormation stack | Likely rolled back (no image) | Redeploy with DesiredCount:0 |
+| Device FC22E0 cleanup | ✅ Done | - |
+| Builder-pi GUI updates | ✅ Deployed | Ready to test register & flash |
+| Dashboard v2 (firmware manager) | ✅ Deployed | https://d21c2wyzdgiex7.cloudfront.net |
+| PQC cert gen via SSM | ✅ Working | - |
+| Firmware build (pre-built ECR image) | ✅ Working | ~30s builds |
+| OTA updater firmware | ✅ Code complete | Needs successful flash test |
 
 **STATUS:** Code complete, not yet deployed
 

@@ -1,24 +1,24 @@
 version: 0.2
 
-# Builds the custom Docker image with the ESP32 toolchain pre-installed.
-# Run once (or when toolchain needs updating). The firmware build project
-# then uses this image for fast ~30s compile times.
-
 phases:
   pre_build:
     commands:
       - echo "Logging in to ECR..."
-      - aws ecr get-login-password --region $AWS_DEFAULT_REGION | docker login --username AWS --password-stdin $ECR_REPO_URI
-      - echo "Downloading wolfSSL settings from S3..."
-      - aws s3 cp s3://$FIRMWARE_BUCKET/source/wolfssl_user_settings_arduino.h codebuild/wolfssl_user_settings_arduino.h
+      - aws ecr get-login-password --region $AWS_DEFAULT_REGION | docker login --username AWS --password-stdin $(echo $ECR_REPO_URI | cut -d/ -f1)
+      - echo "Downloading build context from S3..."
+      - mkdir -p /tmp/docker-context
+      - aws s3 cp "s3://$FIRMWARE_BUCKET/source/Dockerfile" /tmp/docker-context/Dockerfile
+      - aws s3 cp "s3://$FIRMWARE_BUCKET/source/wolfssl_user_settings_arduino.h" /tmp/docker-context/wolfssl_user_settings_arduino.h
+      - aws s3 cp "s3://$FIRMWARE_BUCKET/source/partitions_pqc_workshop.csv" /tmp/docker-context/partitions_pqc_workshop.csv
   build:
     commands:
-      - echo "Building Docker image..."
-      - docker build -t $ECR_REPO_URI:latest -f codebuild/Dockerfile codebuild/
-      - docker tag $ECR_REPO_URI:latest $ECR_REPO_URI:$(date +%Y%m%d)
+      - echo "Building firmware-builder Docker image..."
+      - BUILD_TAG=$(date +%Y%m%d-%H%M%S)
+      - docker build -t $ECR_REPO_URI:latest -t $ECR_REPO_URI:$BUILD_TAG /tmp/docker-context/
+      - echo "Build complete"
   post_build:
     commands:
-      - echo "Pushing image to ECR..."
+      - echo "Pushing to ECR..."
       - docker push $ECR_REPO_URI:latest
-      - docker push $ECR_REPO_URI:$(date +%Y%m%d)
+      - docker push $ECR_REPO_URI:$BUILD_TAG
       - echo "Image pushed successfully"

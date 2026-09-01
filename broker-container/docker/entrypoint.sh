@@ -3,26 +3,31 @@
 # entrypoint.sh — Fetches certificates from Secrets Manager on container start
 #
 # Environment variables (set by ECS task definition):
-#   AWS_REGION          — AWS region
-#   BROKER_CERT_ARN     — ACM Private CA certificate ARN
-#   CA_CERT_SECRET      — Secrets Manager ARN for CA cert
-#   BROKER_CERT_SECRET  — Secrets Manager ARN for broker cert
-#   BROKER_KEY_SECRET   — Secrets Manager ARN for broker private key
-#   IOT_ENDPOINT        — AWS IoT Core endpoint (for bridge)
-#   GREENGRASS_THING    — Greengrass thing name (for bridge client ID)
+#   AWS_REGION            — AWS region
+#   CA_CERT_SECRET        — Secrets Manager ARN for device-facing CA cert
+#   BROKER_CERT_SECRET    — Secrets Manager ARN for broker cert
+#   BROKER_KEY_SECRET     — Secrets Manager ARN for broker private key
+#   IOT_ENDPOINT          — AWS IoT Core endpoint (for bridge)
+#   GREENGRASS_THING      — Thing name prefix (for bridge client ID)
+#   BRIDGE_CERT_SECRET    — Secrets Manager ARN for IoT Core bridge cert
+#   BRIDGE_KEY_SECRET     — Secrets Manager ARN for IoT Core bridge key
+#   BRIDGE_ROOT_CA_SECRET — Secrets Manager ARN for Amazon Root CA
 # ─────────────────────────────────────────────────────────────────────────────
 
 set -euo pipefail
 
 CERT_DIR="/mosquitto/certs"
+BRIDGE_CERT_DIR="/mosquitto/certs/bridge"
 REGION="${AWS_REGION:-us-east-1}"
+
+mkdir -p "$BRIDGE_CERT_DIR"
 
 echo "═══════════════════════════════════════════════════════════════"
 echo "  Mosquitto PQC Broker — Container Startup"
 echo "═══════════════════════════════════════════════════════════════"
 
-# ─── Fetch certificates from Secrets Manager ─────────────────────────────────
-echo "[1/3] Fetching certificates from Secrets Manager..."
+# ─── Fetch device-facing certificates from Secrets Manager ───────────────────
+echo "[1/4] Fetching broker certificates from Secrets Manager..."
 
 if [[ -n "${CA_CERT_SECRET:-}" ]]; then
     aws secretsmanager get-secret-value \
@@ -45,41 +50,86 @@ if [[ -n "${BROKER_KEY_SECRET:-}" ]]; then
         --secret-id "$BROKER_KEY_SECRET" \
         --query 'SecretString' --output text \
         --region "$REGION" > "$CERT_DIR/broker.key"
-    chmod 600 "$CERT_DIR/broker.key"
     echo "       Broker key fetched"
 fi
 
-# ─── Configure bridge to IoT Core ───────────────────────────────────────────
-echo "[2/3] Configuring IoT Core bridge..."
+# ─── Fetch IoT Core bridge credentials ──────────────────────────────────────
+echo "[2/4] Fetching IoT Core bridge credentials..."
 
-if [[ -n "${IOT_ENDPOINT:-}" ]]; then
-    BRIDGE_CLIENT_ID="${GREENGRASS_THING:-pqc-broker}-bridge"
-    cat > /mosquitto/config/bridge.conf << BRIDGE_EOF
-# IoT Core MQTT Bridge
+BRIDGE_READY=true
+
+if [[ -n "${BRIDGE_CERT_SECRET:-}" ]]; then
+    aws secretsmanager get-secret-value \
+        --secret-id "$BRIDGE_CERT_SECRET" \
+        --query 'SecretString' --output text \
+        --region "$REGION" > "$BRIDGE_CERT_DIR/bridge.crt"
+    echo "       Bridge cert fetched"
+else
+    echo "       BRIDGE_CERT_SECRET not set"
+    BRIDGE_READY=false
+fi
+
+if [[ -n "${BRIDGE_KEY_SECRET:-}" ]]; then
+    aws secretsmanager get-secret-value \
+        --secret-id "$BRIDGE_KEY_SECRET" \
+        --query 'SecretString' --output text \
+        --region "$REGION" > "$BRIDGE_CERT_DIR/bridge.key"
+    echo "       Bridge key fetched"
+else
+    echo "       BRIDGE_KEY_SECRET not set"
+    BRIDGE_READY=false
+fi
+
+if [[ -n "${BRIDGE_ROOT_CA_SECRET:-}" ]]; then
+    aws secretsmanager get-secret-value \
+        --secret-id "$BRIDGE_ROOT_CA_SECRET" \
+        --query 'SecretString' --output text \
+        --region "$REGION" > "$BRIDGE_CERT_DIR/AmazonRootCA1.pem"
+    echo "       Amazon Root CA fetched"
+else
+    echo "       BRIDGE_ROOT_CA_SECRET not set"
+    BRIDGE_READY=false
+fi
+
+# ─── Configure bridge to IoT Core ───────────────────────────────────────────
+echo "[3/4] Configuring IoT Core bridge..."
+
+if [[ -n "${IOT_ENDPOINT:-}" && "$BRIDGE_READY" == "true" ]]; then
+    BRIDGE_CLIENT_ID="${GREENGRASS_THING:-pqc-workshop-broker}-bridge"
+    BRIDGE_UNIQUE_ID="${BRIDGE_CLIENT_ID}-$(date +%s)"
+    cat > /mosquitto/config/conf.d/bridge.conf << BRIDGE_EOF
+# IoT Core MQTT Bridge — mTLS with IoT Core certificate
 connection iot-core-bridge
 address ${IOT_ENDPOINT}:8883
 bridge_protocol_version mqttv311
 cleansession true
-clientid ${BRIDGE_CLIENT_ID}
-try_private false
-start_type automatic
+clientid ${BRIDGE_UNIQUE_ID}
 notifications false
+keepalive_interval 30
+restart_timeout 30
+bridge_attempt_unsubscribe false
 
-# Bridge TLS (uses system OpenSSL for IoT Core connection)
+# Bridge mTLS credentials (IoT Core issued certificate)
 bridge_tls_version tlsv1.2
-bridge_cafile /etc/ssl/certs/ca-certificates.crt
+bridge_cafile ${BRIDGE_CERT_DIR}/AmazonRootCA1.pem
+bridge_certfile ${BRIDGE_CERT_DIR}/bridge.crt
+bridge_keyfile ${BRIDGE_CERT_DIR}/bridge.key
 
-# Topic bridging: forward device telemetry/lifecycle to IoT Core
-topic dt/# out 1
-topic cmd/# in 1
+# Topic bridging: only forward telemetry (non-retained) to IoT Core.
+# Lifecycle messages use MQTT retain which IoT Core rejects, so we exclude them.
+topic dt/+/telemetry out 0
+topic cmd/# in 0
 BRIDGE_EOF
-    echo "       Bridge configured: ${IOT_ENDPOINT}"
+    echo "       Bridge configured: ${IOT_ENDPOINT} (mTLS)"
+    echo "       Client ID: ${BRIDGE_CLIENT_ID}"
+elif [[ -n "${IOT_ENDPOINT:-}" ]]; then
+    echo "       WARNING: Bridge certs not available, bridge disabled"
 else
     echo "       No IOT_ENDPOINT set, bridge disabled"
 fi
 
 # ─── Verify OpenSSL PQC support ─────────────────────────────────────────────
-echo "[3/3] Verifying PQC support..."
+echo "[4/4] Verifying PQC support..."
 openssl list -providers 2>/dev/null | head -5
 echo ""
 echo "  Broker ready. Starting Mosquitto..."

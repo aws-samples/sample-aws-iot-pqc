@@ -1,0 +1,29 @@
+version: 0.2
+
+phases:
+  pre_build:
+    commands:
+      - echo "Logging in to ECR..."
+      - aws ecr get-login-password --region $AWS_DEFAULT_REGION | docker login --username AWS --password-stdin $ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com
+      - ECR_URI=$ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com/$ECR_REPO_NAME
+      - BUILD_TAG=$(date +%Y%m%d-%H%M%S)
+      - echo "ECR_URI=$ECR_URI"
+      - echo "BUILD_TAG=$BUILD_TAG"
+
+  build:
+    commands:
+      - echo "Building Mosquitto PQC broker image..."
+      - docker build --no-cache -t $ECR_URI:latest -t $ECR_URI:$BUILD_TAG .
+
+  post_build:
+    commands:
+      - echo "Pushing to ECR..."
+      - docker push $ECR_URI:latest
+      - docker push $ECR_URI:$BUILD_TAG
+      - echo "Image pushed successfully"
+      - echo "{\"imageUri\":\"$ECR_URI:latest\",\"buildTag\":\"$BUILD_TAG\"}" > build-output.json
+
+artifacts:
+  files:
+    - build-output.json
+  discard-paths: yes

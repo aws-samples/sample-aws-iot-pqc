@@ -1,18 +1,14 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Description: >
-  PQC Workshop — Device Builder Pipeline. Provides infrastructure for
-  registering raw ESP32 devices, compiling device-specific firmware,
-  and managing OTA updates via presigned S3 URLs.
+  PQC Workshop — Device Builder Pipeline. Registers raw ESP32 devices,
+  compiles device-specific classical firmware (Firmware 0), and manages
+  OTA updates (Firmware 1+ with PQC) via presigned S3 URLs.
+  Certificates issued by the same Private CA as the broker container.
 
 Parameters:
-  GitRepoUrl:
-    Type: String
-    Description: Git repository URL for firmware source
-    Default: https://gitlab.aws.dev/swaym/Sample-aws-iot-pqc.git
-
   FirmwareBucketName:
     Type: String
-    Description: S3 bucket for compiled firmware artifacts
+    Description: S3 bucket name prefix for compiled firmware artifacts
     Default: pqc-workshop-firmware
 
   DefaultWifiSsid:
@@ -22,18 +18,27 @@ Parameters:
 
   DefaultBrokerEndpoint:
     Type: String
-    Description: Default MQTT broker endpoint (Pi IP)
+    Description: MQTT broker endpoint (NLB DNS or Pi IP for local testing)
     Default: '192.168.1.90'
+
+  DefaultBrokerPort:
+    Type: String
+    Description: MQTT broker port
+    Default: '8883'
 
   IoTEndpoint:
     Type: String
     Description: AWS IoT Core data endpoint
     Default: auxsw1j2tp0z6-ats.iot.us-east-1.amazonaws.com
 
-  BrokerPiInstanceId:
+  PrivateCAArn:
     Type: String
-    Description: SSM Instance ID of the broker Raspberry Pi (mi-xxxx)
-    Default: mi-0edb5bc536ce8b7fc
+    Description: ARN of the Private CA (from broker-container stack) used to issue device certs
+
+  BuilderPiInstanceId:
+    Type: String
+    Description: SSM Managed Instance ID of the builder Raspberry Pi
+    Default: mi-0f2c31334f3e87c8b
 
 Resources:
 
@@ -94,17 +99,20 @@ Resources:
               - Effect: Allow
                 Action:
                   - s3:GetObject
-                Resource: !Sub '${FirmwareBucket.Arn}/*'
+                  - s3:ListBucket
+                Resource:
+                  - !GetAtt FirmwareBucket.Arn
+                  - !Sub '${FirmwareBucket.Arn}/*'
 
   ImageBuilderProject:
     Type: AWS::CodeBuild::Project
     Properties:
       Name: pqc-workshop-build-image
-      Description: Builds Docker image with ESP32 toolchain (run once)
+      Description: Builds Docker image with ESP32 arduino-cli toolchain (run once)
       ServiceRole: !GetAtt ImageBuilderRole.Arn
       Source:
         Type: S3
-        Location: !Sub '${FirmwareBucketName}-${AWS::AccountId}/source/buildspec-image.yml'
+        Location: !Sub '${FirmwareBucketName}-${AWS::AccountId}/source/'
         BuildSpec: buildspec-image.yml
       Artifacts:
         Type: NO_ARTIFACTS
@@ -187,6 +195,12 @@ Resources:
                 Resource: '*'
               - Effect: Allow
                 Action:
+                  - acm-pca:IssueCertificate
+                  - acm-pca:GetCertificate
+                  - acm-pca:GetCertificateAuthorityCertificate
+                Resource: !Ref PrivateCAArn
+              - Effect: Allow
+                Action:
                   - dynamodb:PutItem
                   - dynamodb:GetItem
                   - dynamodb:UpdateItem
@@ -200,11 +214,6 @@ Resources:
                   - s3:PutObject
                   - s3:GetObject
                 Resource: !Sub '${FirmwareBucket.Arn}/*'
-              - Effect: Allow
-                Action:
-                  - ssm:SendCommand
-                  - ssm:GetCommandInvocation
-                Resource: '*'
 
   # ═══════════════════════════════════════════════════════════════════════════
   # Lambda — Device Registrar
@@ -216,7 +225,7 @@ Resources:
       FunctionName: pqc-workshop-device-registrar
       Runtime: python3.12
       Handler: index.handler
-      Timeout: 30
+      Timeout: 60
       Role: !GetAtt DeviceRegistrarRole.Arn
       Environment:
         Variables:
@@ -226,10 +235,74 @@ Resources:
           IOT_ENDPOINT: !Ref IoTEndpoint
           DEFAULT_WIFI_SSID: !Ref DefaultWifiSsid
           DEFAULT_BROKER_ENDPOINT: !Ref DefaultBrokerEndpoint
-          BROKER_PI_INSTANCE_ID: !Ref BrokerPiInstanceId
+          PRIVATE_CA_ARN: !Ref PrivateCAArn
       Code:
         ZipFile: |
-          # Placeholder — real code is in lambda/device-registrar/index.py
+          # Placeholder — deploy real code from lambda/device-registrar/index.py
+          def handler(event, context):
+              return {'statusCode': 200, 'body': 'placeholder'}
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # Lambda — Device Deregistrar
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  DeviceDeregistrarRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: pqc-workshop-device-deregistrar
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: DeviceDeregistrarPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - iot:DeleteThing
+                  - iot:DeletePolicy
+                  - iot:ListThingPrincipals
+                  - iot:DetachThingPrincipal
+                  - iot:DetachPolicy
+                  - iot:UpdateCertificate
+                  - iot:DeleteCertificate
+                  - iot:ListTargetsForPolicy
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - dynamodb:DeleteItem
+                  - dynamodb:GetItem
+                Resource: !GetAtt DeviceRegistryTable.Arn
+              - Effect: Allow
+                Action:
+                  - s3:DeleteObject
+                  - s3:ListBucket
+                Resource:
+                  - !GetAtt FirmwareBucket.Arn
+                  - !Sub '${FirmwareBucket.Arn}/*'
+
+  DeviceDeregistrarFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: pqc-workshop-device-deregistrar
+      Runtime: python3.12
+      Handler: index.handler
+      Timeout: 30
+      Role: !GetAtt DeviceDeregistrarRole.Arn
+      Environment:
+        Variables:
+          REGISTRY_TABLE: !Ref DeviceRegistryTable
+          FIRMWARE_BUCKET: !Sub '${FirmwareBucketName}-${AWS::AccountId}'
+      Code:
+        ZipFile: |
+          # Placeholder — deploy real code from lambda/device-deregistrar/index.py
           def handler(event, context):
               return {'statusCode': 200, 'body': 'placeholder'}
 
@@ -289,7 +362,7 @@ Resources:
           REGISTRY_TABLE: !Ref DeviceRegistryTable
       Code:
         ZipFile: |
-          # Placeholder — real code is in lambda/firmware-pusher/index.py
+          # Placeholder — deploy real code from lambda/firmware-pusher/index.py
           def handler(event, context):
               return {'statusCode': 200, 'body': 'placeholder'}
 
@@ -301,8 +374,9 @@ Resources:
     Type: AWS::ApiGateway::RestApi
     Properties:
       Name: pqc-workshop-device-builder-api
-      Description: API for device registration and firmware management
+      Description: API for device registration, deregistration, and firmware management
 
+  # /register
   RegisterResource:
     Type: AWS::ApiGateway::Resource
     Properties:
@@ -322,6 +396,27 @@ Resources:
         IntegrationHttpMethod: POST
         Uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${DeviceRegistrarFunction.Arn}/invocations'
 
+  # /deregister
+  DeregisterResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref BuilderApi
+      ParentId: !GetAtt BuilderApi.RootResourceId
+      PathPart: deregister
+
+  DeregisterMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref BuilderApi
+      ResourceId: !Ref DeregisterResource
+      HttpMethod: POST
+      AuthorizationType: AWS_IAM
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${DeviceDeregistrarFunction.Arn}/invocations'
+
+  # /firmware
   FirmwareResource:
     Type: AWS::ApiGateway::Resource
     Properties:
@@ -329,12 +424,12 @@ Resources:
       ParentId: !GetAtt BuilderApi.RootResourceId
       PathPart: firmware
 
-  FirmwareListMethod:
+  FirmwareMethod:
     Type: AWS::ApiGateway::Method
     Properties:
       RestApiId: !Ref BuilderApi
       ResourceId: !Ref FirmwareResource
-      HttpMethod: GET
+      HttpMethod: POST
       AuthorizationType: AWS_IAM
       Integration:
         Type: AWS_PROXY
@@ -345,7 +440,8 @@ Resources:
     Type: AWS::ApiGateway::Deployment
     DependsOn:
       - RegisterMethod
-      - FirmwareListMethod
+      - DeregisterMethod
+      - FirmwareMethod
     Properties:
       RestApiId: !Ref BuilderApi
       StageName: prod
@@ -354,6 +450,14 @@ Resources:
     Type: AWS::Lambda::Permission
     Properties:
       FunctionName: !Ref DeviceRegistrarFunction
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub 'arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${BuilderApi}/*'
+
+  DeregisterLambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref DeviceDeregistrarFunction
       Action: lambda:InvokeFunction
       Principal: apigateway.amazonaws.com
       SourceArn: !Sub 'arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${BuilderApi}/*'
@@ -400,6 +504,7 @@ Resources:
               - Effect: Allow
                 Action:
                   - s3:GetBucketLocation
+                  - s3:ListBucket
                 Resource: !GetAtt FirmwareBucket.Arn
               - Effect: Allow
                 Action:
@@ -416,11 +521,11 @@ Resources:
     Type: AWS::CodeBuild::Project
     Properties:
       Name: pqc-workshop-firmware-build
-      Description: Compiles ESP32 firmware with device-specific credentials (fast — uses pre-built image)
+      Description: Compiles classical ESP32 firmware with device-specific credentials
       ServiceRole: !GetAtt CodeBuildRole.Arn
       Source:
         Type: S3
-        Location: !Sub '${FirmwareBucketName}-${AWS::AccountId}/source/buildspec.yml'
+        Location: !Sub '${FirmwareBucketName}-${AWS::AccountId}/source/'
         BuildSpec: buildspec.yml
       Artifacts:
         Type: NO_ARTIFACTS
@@ -442,6 +547,8 @@ Resources:
             Value: changeme
           - Name: BROKER_ENDPOINT
             Value: !Ref DefaultBrokerEndpoint
+          - Name: BROKER_PORT
+            Value: !Ref DefaultBrokerPort
           - Name: IOT_ENDPOINT
             Value: !Ref IoTEndpoint
           - Name: CA_CERT
@@ -453,7 +560,7 @@ Resources:
       TimeoutInMinutes: 10
 
   # ═══════════════════════════════════════════════════════════════════════════
-  # SSM — Builder-Pi Access Role (for firmware flash commands)
+  # SSM — Builder-Pi Access Role
   # ═══════════════════════════════════════════════════════════════════════════
 
   BuilderPiSsmRole:
@@ -477,7 +584,24 @@ Resources:
               - Effect: Allow
                 Action:
                   - s3:GetObject
-                Resource: !Sub '${FirmwareBucket.Arn}/*'
+                  - s3:ListBucket
+                Resource:
+                  - !GetAtt FirmwareBucket.Arn
+                  - !Sub '${FirmwareBucket.Arn}/*'
+              - Effect: Allow
+                Action:
+                  - execute-api:Invoke
+                Resource:
+                  - !Sub 'arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${BuilderApi}/*'
+              - Effect: Allow
+                Action:
+                  - codebuild:BatchGetBuilds
+                Resource: !GetAtt FirmwareBuildProject.Arn
+              - Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:Scan
+                Resource: !GetAtt DeviceRegistryTable.Arn
               - Effect: Allow
                 Action:
                   - logs:CreateLogGroup
@@ -487,7 +611,7 @@ Resources:
 
 Outputs:
   ApiEndpoint:
-    Description: Builder API endpoint
+    Description: Builder API endpoint (set in builder-pi config.json)
     Value: !Sub 'https://${BuilderApi}.execute-api.${AWS::Region}.amazonaws.com/prod'
 
   FirmwareBucketName:
@@ -509,3 +633,11 @@ Outputs:
   ImageBuilderProjectName:
     Description: CodeBuild project for building the Docker image (run once)
     Value: !Ref ImageBuilderProject
+
+  PrivateCAArn:
+    Description: Private CA ARN used for device certificates
+    Value: !Ref PrivateCAArn
+
+  BuilderPiInstanceId:
+    Description: SSM Instance ID of the builder-pi
+    Value: !Ref BuilderPiInstanceId

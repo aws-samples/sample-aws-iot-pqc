@@ -2,6 +2,7 @@ AWSTemplateFormatVersion: '2010-09-09'
 Description: >
   PQC MQTT Broker — Containerized Mosquitto with OpenSSL 3.5 + ML-KEM,
   running on ECS Fargate behind an NLB, with certificates from Private CA.
+  Includes a CodeBuild pipeline to build the container image from S3 source.
 
 Parameters:
   VpcId:
@@ -19,8 +20,19 @@ Parameters:
 
   BrokerImageUri:
     Type: String
-    Description: ECR image URI for the Mosquitto PQC container
+    Description: ECR image URI for the Mosquitto PQC container (auto-populated by build)
     Default: ''
+
+  TriggerBuild:
+    Type: String
+    Description: Set to 'true' to trigger a CodeBuild run on stack create/update
+    Default: 'true'
+    AllowedValues:
+      - 'true'
+      - 'false'
+
+Conditions:
+  ShouldTriggerBuild: !Equals [!Ref TriggerBuild, 'true']
 
 Resources:
 
@@ -34,6 +46,205 @@ Resources:
       RepositoryName: pqc-workshop-mosquitto-broker
       ImageScanningConfiguration:
         ScanOnPush: true
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # S3 Bucket — Source files for CodeBuild
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  BrokerSourceBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub 'pqc-workshop-broker-source-${AWS::AccountId}'
+      VersioningConfiguration:
+        Status: Enabled
+      LifecycleConfiguration:
+        Rules:
+          - Id: ExpireOldVersions
+            Status: Enabled
+            NoncurrentVersionExpiration:
+              NoncurrentDays: 30
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # CodeBuild — Build broker container image
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  ImageBuilderRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: pqc-workshop-broker-image-builder
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codebuild.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: CodeBuildBasePolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/pqc-workshop-broker-image-build*'
+              - Effect: Allow
+                Action:
+                  - ecr:GetAuthorizationToken
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - ecr:BatchCheckLayerAvailability
+                  - ecr:CompleteLayerUpload
+                  - ecr:InitiateLayerUpload
+                  - ecr:PutImage
+                  - ecr:UploadLayerPart
+                  - ecr:GetDownloadUrlForLayer
+                  - ecr:BatchGetImage
+                Resource: !GetAtt BrokerEcrRepository.Arn
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:GetObjectVersion
+                  - s3:ListBucket
+                  - s3:GetBucketLocation
+                Resource:
+                  - !GetAtt BrokerSourceBucket.Arn
+                  - !Sub '${BrokerSourceBucket.Arn}/*'
+
+  BrokerBuildProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: pqc-workshop-broker-image-build
+      Description: Builds the Mosquitto PQC broker container image
+      ServiceRole: !GetAtt ImageBuilderRole.Arn
+      TimeoutInMinutes: 30
+      Source:
+        Type: S3
+        Location: !Sub '${BrokerSourceBucket}/broker-image/'
+      Artifacts:
+        Type: NO_ARTIFACTS
+      Environment:
+        Type: LINUX_CONTAINER
+        ComputeType: BUILD_GENERAL1_LARGE
+        Image: aws/codebuild/standard:7.0
+        PrivilegedMode: true
+        EnvironmentVariables:
+          - Name: ACCOUNT_ID
+            Value: !Ref AWS::AccountId
+          - Name: AWS_DEFAULT_REGION
+            Value: !Ref AWS::Region
+          - Name: ECR_REPO_NAME
+            Value: pqc-workshop-mosquitto-broker
+      LogsConfig:
+        CloudWatchLogs:
+          Status: ENABLED
+          GroupName: !Sub '/aws/codebuild/pqc-workshop-broker-image-build'
+
+  # ─── Build Trigger Lambda ──────────────────────────────────────────────────
+  # Triggers CodeBuild as a Custom Resource on stack create/update
+
+  BuildTriggerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: pqc-workshop-broker-build-trigger
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: TriggerBuild
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - codebuild:StartBuild
+                  - codebuild:BatchGetBuilds
+                Resource: !GetAtt BrokerBuildProject.Arn
+
+  BuildTriggerFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: pqc-workshop-broker-build-trigger
+      Runtime: python3.12
+      Handler: index.handler
+      Timeout: 900
+      Role: !GetAtt BuildTriggerRole.Arn
+      Environment:
+        Variables:
+          PROJECT_NAME: !Ref BrokerBuildProject
+      Code:
+        ZipFile: |
+          """
+          Triggers a CodeBuild project and waits for completion.
+          Used as a CloudFormation Custom Resource to build the broker image
+          during stack deployment.
+          """
+          import boto3
+          import time
+          import os
+          import cfnresponse
+
+          codebuild = boto3.client('codebuild')
+
+          def handler(event, context):
+              try:
+                  if event['RequestType'] == 'Delete':
+                      cfnresponse.send(event, context, cfnresponse.SUCCESS, {})
+                      return
+
+                  project = os.environ['PROJECT_NAME']
+                  print(f"Starting build for project: {project}")
+
+                  resp = codebuild.start_build(projectName=project)
+                  build_id = resp['build']['id']
+                  print(f"Build started: {build_id}")
+
+                  # Poll for completion (max ~14 minutes to stay within Lambda timeout)
+                  for _ in range(170):
+                      time.sleep(5)
+                      builds = codebuild.batch_get_builds(ids=[build_id])
+                      status = builds['builds'][0]['buildStatus']
+                      phase = builds['builds'][0].get('currentPhase', 'UNKNOWN')
+                      print(f"  Status: {status}, Phase: {phase}")
+
+                      if status == 'SUCCEEDED':
+                          cfnresponse.send(event, context, cfnresponse.SUCCESS, {
+                              'BuildId': build_id,
+                              'Status': 'SUCCEEDED'
+                          })
+                          return
+                      elif status in ('FAILED', 'FAULT', 'TIMED_OUT', 'STOPPED'):
+                          cfnresponse.send(event, context, cfnresponse.FAILED, {
+                              'Error': f'Build {status}: {build_id}'
+                          })
+                          return
+
+                  cfnresponse.send(event, context, cfnresponse.FAILED, {
+                      'Error': f'Build timed out (Lambda timeout): {build_id}'
+                  })
+              except Exception as e:
+                  print(f"Error: {e}")
+                  cfnresponse.send(event, context, cfnresponse.FAILED, {'Error': str(e)})
+
+  TriggerBrokerBuild:
+    Type: Custom::TriggerBuild
+    Condition: ShouldTriggerBuild
+    DependsOn:
+      - BrokerBuildProject
+      - BrokerEcrRepository
+    Properties:
+      ServiceToken: !GetAtt BuildTriggerFunction.Arn
+      # Change this value to force a rebuild on stack update
+      BuildVersion: '1'
 
   # ═══════════════════════════════════════════════════════════════════════════
   # AWS Private CA — Certificate Authority
@@ -132,6 +343,9 @@ Resources:
                   - !Ref BrokerCACertSecret
                   - !Ref BrokerCertSecret
                   - !Ref BrokerKeySecret
+                  - !Ref BridgeCertSecret
+                  - !Ref BridgeKeySecret
+                  - !Ref BridgeRootCASecret
               - Effect: Allow
                 Action:
                   - logs:CreateLogStream
@@ -204,6 +418,12 @@ Resources:
               Value: !Ref IoTEndpoint
             - Name: GREENGRASS_THING
               Value: pqc-workshop-broker
+            - Name: BRIDGE_CERT_SECRET
+              Value: !Ref BridgeCertSecret
+            - Name: BRIDGE_KEY_SECRET
+              Value: !Ref BridgeKeySecret
+            - Name: BRIDGE_ROOT_CA_SECRET
+              Value: !Ref BridgeRootCASecret
           LogConfiguration:
             LogDriver: awslogs
             Options:
@@ -426,6 +646,250 @@ Resources:
     Properties:
       ServiceToken: !GetAtt CertProvisionerFunction.Arn
 
+  # ═══════════════════════════════════════════════════════════════════════════
+  # IoT Core Bridge — Thing, Certificate, Policy for Mosquitto→IoT Core bridge
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  # Secrets to hold the IoT Core bridge credentials
+  BridgeCertSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: pqc-broker/bridge-cert
+      Description: IoT Core certificate for Mosquitto bridge
+
+  BridgeKeySecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: pqc-broker/bridge-key
+      Description: IoT Core private key for Mosquitto bridge
+
+  BridgeRootCASecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: pqc-broker/bridge-root-ca
+      Description: Amazon Root CA for IoT Core TLS
+
+  # Lambda to provision IoT Core Thing + Certificate + Policy and store in Secrets Manager
+  BridgeProvisionerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: pqc-workshop-bridge-provisioner
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: BridgeProvisionerPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - iot:CreateThing
+                  - iot:CreateKeysAndCertificate
+                  - iot:CreatePolicy
+                  - iot:AttachThingPrincipal
+                  - iot:AttachPolicy
+                  - iot:DescribeEndpoint
+                  - iot:DeleteThing
+                  - iot:DeleteCertificate
+                  - iot:DeletePolicy
+                  - iot:DetachThingPrincipal
+                  - iot:DetachPolicy
+                  - iot:UpdateCertificate
+                  - iot:ListThingPrincipals
+                  - iot:ListTargetsForPolicy
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - secretsmanager:PutSecretValue
+                  - secretsmanager:UpdateSecret
+                Resource:
+                  - !Ref BridgeCertSecret
+                  - !Ref BridgeKeySecret
+                  - !Ref BridgeRootCASecret
+
+  BridgeProvisionerFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: pqc-workshop-bridge-provisioner
+      Runtime: python3.12
+      Handler: index.handler
+      Timeout: 60
+      Role: !GetAtt BridgeProvisionerRole.Arn
+      Environment:
+        Variables:
+          BRIDGE_CERT_SECRET: !Ref BridgeCertSecret
+          BRIDGE_KEY_SECRET: !Ref BridgeKeySecret
+          BRIDGE_ROOT_CA_SECRET: !Ref BridgeRootCASecret
+          IOT_ENDPOINT: !Ref IoTEndpoint
+      Code:
+        ZipFile: |
+          """
+          Provisions an IoT Core Thing with certificate for the Mosquitto bridge.
+          Creates: Thing, Certificate, Policy, stores creds in Secrets Manager.
+          """
+          import boto3
+          import os
+          import json
+          import urllib.request
+          import cfnresponse
+
+          iot = boto3.client('iot')
+          secrets = boto3.client('secretsmanager')
+
+          THING_NAME = 'pqc-workshop-broker-bridge'
+          POLICY_NAME = 'pqc-workshop-broker-bridge-policy'
+          AMAZON_ROOT_CA_URL = 'https://www.amazontrust.com/repository/AmazonRootCA1.pem'
+
+          def handler(event, context):
+              try:
+                  if event['RequestType'] == 'Delete':
+                      # Clean up IoT resources
+                      try:
+                          cleanup_iot_resources()
+                      except Exception as e:
+                          print(f"Cleanup warning: {e}")
+                      cfnresponse.send(event, context, cfnresponse.SUCCESS, {})
+                      return
+
+                  region = os.environ.get('AWS_REGION', 'us-east-1')
+                  account_id = context.invoked_function_arn.split(':')[4]
+
+                  # Step 1: Create IoT Thing
+                  print(f"Creating IoT Thing: {THING_NAME}")
+                  try:
+                      iot.create_thing(thingName=THING_NAME)
+                  except iot.exceptions.ResourceAlreadyExistsException:
+                      print(f"Thing {THING_NAME} already exists")
+
+                  # Step 2: Create keys and certificate
+                  print("Creating IoT certificate...")
+                  cert_resp = iot.create_keys_and_certificate(setAsActive=True)
+                  cert_arn = cert_resp['certificateArn']
+                  cert_id = cert_resp['certificateId']
+                  cert_pem = cert_resp['certificatePem']
+                  key_pem = cert_resp['keyPair']['PrivateKey']
+                  print(f"Certificate created: {cert_id}")
+
+                  # Step 3: Create IoT Policy (allows bridge pub/sub)
+                  print(f"Creating IoT Policy: {POLICY_NAME}")
+                  policy_doc = {
+                      "Version": "2012-10-17",
+                      "Statement": [
+                          {
+                              "Effect": "Allow",
+                              "Action": "iot:Connect",
+                              "Resource": f"arn:aws:iot:{region}:{account_id}:client/{THING_NAME}*"
+                          },
+                          {
+                              "Effect": "Allow",
+                              "Action": "iot:Publish",
+                              "Resource": [
+                                  f"arn:aws:iot:{region}:{account_id}:topic/dt/*",
+                                  f"arn:aws:iot:{region}:{account_id}:topic/$aws/things/*/shadow/*"
+                              ]
+                          },
+                          {
+                              "Effect": "Allow",
+                              "Action": "iot:Subscribe",
+                              "Resource": [
+                                  f"arn:aws:iot:{region}:{account_id}:topicfilter/cmd/*",
+                                  f"arn:aws:iot:{region}:{account_id}:topicfilter/$aws/things/*/shadow/*"
+                              ]
+                          },
+                          {
+                              "Effect": "Allow",
+                              "Action": "iot:Receive",
+                              "Resource": [
+                                  f"arn:aws:iot:{region}:{account_id}:topic/cmd/*",
+                                  f"arn:aws:iot:{region}:{account_id}:topic/$aws/things/*/shadow/*"
+                              ]
+                          }
+                      ]
+                  }
+                  try:
+                      iot.create_policy(
+                          policyName=POLICY_NAME,
+                          policyDocument=json.dumps(policy_doc)
+                      )
+                  except iot.exceptions.ResourceAlreadyExistsException:
+                      print(f"Policy {POLICY_NAME} already exists")
+
+                  # Step 4: Attach policy and thing to certificate
+                  iot.attach_policy(policyName=POLICY_NAME, target=cert_arn)
+                  iot.attach_thing_principal(thingName=THING_NAME, principal=cert_arn)
+                  print("Policy and Thing attached to certificate")
+
+                  # Step 5: Download Amazon Root CA
+                  print("Downloading Amazon Root CA...")
+                  root_ca = urllib.request.urlopen(AMAZON_ROOT_CA_URL).read().decode()
+
+                  # Step 6: Store in Secrets Manager
+                  print("Storing credentials in Secrets Manager...")
+                  secrets.put_secret_value(
+                      SecretId=os.environ['BRIDGE_CERT_SECRET'],
+                      SecretString=cert_pem
+                  )
+                  secrets.put_secret_value(
+                      SecretId=os.environ['BRIDGE_KEY_SECRET'],
+                      SecretString=key_pem
+                  )
+                  secrets.put_secret_value(
+                      SecretId=os.environ['BRIDGE_ROOT_CA_SECRET'],
+                      SecretString=root_ca
+                  )
+
+                  cfnresponse.send(event, context, cfnresponse.SUCCESS, {
+                      'ThingName': THING_NAME,
+                      'CertificateArn': cert_arn,
+                      'CertificateId': cert_id
+                  })
+
+              except Exception as e:
+                  print(f"Error: {e}")
+                  import traceback
+                  traceback.print_exc()
+                  cfnresponse.send(event, context, cfnresponse.FAILED, {'Error': str(e)})
+
+          def cleanup_iot_resources():
+              """Best-effort cleanup of IoT resources on stack deletion."""
+              # List and detach principals from thing
+              try:
+                  principals = iot.list_thing_principals(thingName=THING_NAME)
+                  for principal in principals.get('principals', []):
+                      iot.detach_thing_principal(thingName=THING_NAME, principal=principal)
+                      cert_id = principal.split('/')[-1]
+                      # Detach policies
+                      targets = iot.list_targets_for_policy(policyName=POLICY_NAME)
+                      for target in targets.get('targets', []):
+                          iot.detach_policy(policyName=POLICY_NAME, target=target)
+                      # Deactivate and delete cert
+                      iot.update_certificate(certificateId=cert_id, newStatus='INACTIVE')
+                      iot.delete_certificate(certificateId=cert_id)
+              except Exception as e:
+                  print(f"Principal cleanup: {e}")
+              # Delete policy and thing
+              try:
+                  iot.delete_policy(policyName=POLICY_NAME)
+              except Exception as e:
+                  print(f"Policy delete: {e}")
+              try:
+                  iot.delete_thing(thingName=THING_NAME)
+              except Exception as e:
+                  print(f"Thing delete: {e}")
+
+  # Trigger bridge provisioning
+  ProvisionBridge:
+    Type: Custom::ProvisionBridge
+    Properties:
+      ServiceToken: !GetAtt BridgeProvisionerFunction.Arn
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Outputs
 # ─────────────────────────────────────────────────────────────────────────────
@@ -449,3 +913,11 @@ Outputs:
   BrokerClusterName:
     Description: ECS cluster name
     Value: !Ref BrokerCluster
+
+  BrokerSourceBucketName:
+    Description: S3 bucket for broker Docker source files
+    Value: !Ref BrokerSourceBucket
+
+  CodeBuildProjectName:
+    Description: CodeBuild project for building broker image
+    Value: !Ref BrokerBuildProject

@@ -6,12 +6,17 @@ ESP32 device registration and firmware flashing.
 
 Access at http://<builder-pi-ip>:8080
 
-Features:
-  - Auto-detects USB-connected ESP32 devices (up to 4)
-  - Shows device serial number and status
-  - Allows operator to trigger registration + flash pipeline
-  - Displays real-time progress log per device
-  - Configurable WiFi, broker, and endpoint settings
+Flow:
+  1. Operator plugs ESP32 into builder-pi USB
+  2. GUI auto-detects device and shows serial number
+  3. Operator clicks "Register & Flash"
+  4. Lambda registers device (cert from Private CA) and triggers CodeBuild
+  5. CodeBuild compiles classical firmware with device-specific certs
+  6. Builder-pi downloads firmware.merged.bin from S3
+  7. arduino-cli upload flashes the device
+  8. Device boots, connects to broker
+
+Future OTA updates (PQC firmware) delivered via presigned S3 URL over MQTT.
 """
 
 import json
@@ -20,28 +25,30 @@ import threading
 import time
 import requests
 import boto3
-import botocore.session
 from flask import Flask, render_template, jsonify, request
 
 from device_manager import DeviceManager
 
 
 def get_fresh_boto3_session():
-    """Create a fresh boto3 session that fetches current instance credentials.
-    SSM managed instances rotate credentials frequently, so we must not
-    cache sessions across operations."""
+    """Create a fresh boto3 session with current instance credentials.
+    SSM managed instances rotate credentials frequently."""
     return boto3.session.Session(region_name=load_config().get('region', 'us-east-1'))
+
 
 # ─── Configuration ───────────────────────────────────────────────────────────
 CONFIG_FILE = os.path.join(os.path.dirname(__file__), 'config.json')
+
 
 def load_config():
     with open(CONFIG_FILE, 'r') as f:
         return json.load(f)
 
+
 def save_config(config):
     with open(CONFIG_FILE, 'w') as f:
         json.dump(config, f, indent=2)
+
 
 config = load_config()
 
@@ -50,7 +57,6 @@ app = Flask(__name__)
 device_manager = DeviceManager(config)
 
 # Background thread for periodic port scanning
-scan_thread = None
 scan_running = True
 
 
@@ -103,7 +109,7 @@ def handle_config():
 
 @app.route('/api/register', methods=['POST'])
 def register_device():
-    """Trigger device registration for a specific port."""
+    """Trigger device registration and firmware build+flash pipeline."""
     data = request.json
     port = data.get('port')
 
@@ -117,7 +123,7 @@ def register_device():
     if slot.status not in ('ready', 'registered', 'done', 'error'):
         return jsonify({'error': f'Device is busy: {slot.status}'}), 400
 
-    # Start registration in background thread
+    # Start registration pipeline in background
     thread = threading.Thread(
         target=_registration_pipeline,
         args=(port,),
@@ -128,36 +134,9 @@ def register_device():
     return jsonify({'success': True, 'message': f'Registration started for {slot.thing_name}'})
 
 
-@app.route('/api/deregister', methods=['POST'])
-def deregister_device():
-    """Deregister a device — cleans up IoT Core, certs, policies, S3."""
-    data = request.json
-    port = data.get('port')
-
-    if not port or port not in device_manager.devices:
-        return jsonify({'error': 'Invalid or unknown port'}), 400
-
-    slot = device_manager.devices[port]
-    if not slot.serial_number:
-        return jsonify({'error': 'Device serial not detected'}), 400
-
-    slot.log('Deregistering device...')
-    slot.status = 'registering'
-
-    # Call deregister API in background
-    thread = threading.Thread(
-        target=_deregister_pipeline,
-        args=(port,),
-        daemon=True
-    )
-    thread.start()
-
-    return jsonify({'success': True, 'message': f'Deregistration started for {slot.thing_name}'})
-
-
 @app.route('/api/reflash', methods=['POST'])
 def reflash_device():
-    """Reflash a registered device with existing firmware from S3."""
+    """Re-flash a registered device with existing firmware from S3."""
     data = request.json
     port = data.get('port')
 
@@ -171,7 +150,6 @@ def reflash_device():
     if slot.status not in ('registered', 'ready', 'done', 'error'):
         return jsonify({'error': f'Device is busy: {slot.status}'}), 400
 
-    # Start reflash in background thread
     thread = threading.Thread(
         target=_reflash_pipeline,
         args=(port,),
@@ -180,6 +158,51 @@ def reflash_device():
     thread.start()
 
     return jsonify({'success': True, 'message': f'Reflash started for {slot.thing_name}'})
+
+
+@app.route('/api/deregister', methods=['POST'])
+def deregister_device():
+    """Deregister a device — calls the API Gateway deregister endpoint."""
+    data = request.json
+    port = data.get('port')
+
+    if not port or port not in device_manager.devices:
+        return jsonify({'error': 'Invalid or unknown port'}), 400
+
+    slot = device_manager.devices[port]
+    if not slot.serial_number:
+        return jsonify({'error': 'Device serial not detected'}), 400
+
+    slot.log('Deregistering device...')
+
+    try:
+        api_url = f"{config['api_endpoint']}/deregister"
+        payload = {'serialNumber': slot.serial_number}
+
+        session = get_fresh_boto3_session()
+        credentials = session.get_credentials().get_frozen_credentials()
+
+        from botocore.auth import SigV4Auth
+        from botocore.awsrequest import AWSRequest
+
+        aws_request = AWSRequest(method='POST', url=api_url,
+                                 data=json.dumps(payload),
+                                 headers={'Content-Type': 'application/json'})
+        SigV4Auth(credentials, 'execute-api', config['region']).add_auth(aws_request)
+        response = requests.post(api_url, json=payload,
+                                 headers=dict(aws_request.headers), timeout=30)
+
+        if response.status_code == 200:
+            slot.log('Device deregistered successfully')
+            slot.status = 'ready'
+            slot.is_registered = False
+            return jsonify({'success': True, 'message': f'Deregistered {slot.thing_name}'})
+        else:
+            slot.log(f'Deregister failed: {response.text}')
+            return jsonify({'error': f'Deregister API returned {response.status_code}', 'details': response.text}), 500
+    except Exception as e:
+        slot.log(f'ERROR: Deregister failed: {e}')
+        return jsonify({'error': str(e)}), 500
 
 
 @app.route('/api/serial/<path:port>')
@@ -207,18 +230,21 @@ def force_scan():
 # ─── Registration Pipeline ───────────────────────────────────────────────────
 
 def _registration_pipeline(port: str):
-    """Execute the full registration → build → flash → verify pipeline."""
+    """Execute the full registration -> build -> download -> flash -> verify pipeline."""
     slot = device_manager.devices.get(port)
     if not slot:
         return
 
-    slot.status = 'registering'
+    slot.status = 'registered'
     slot.error = None
     slot.log('Starting registration pipeline...')
 
+    # Stop serial monitor during flash
+    device_manager.stop_serial_monitor(port)
+
     try:
-        # Step 1: Call the registration API
-        slot.log(f'Calling registration API for serial={slot.serial_number}')
+        # Step 1: Call the device-registrar API
+        slot.log(f'Registering device serial={slot.serial_number}')
         api_url = f"{config['api_endpoint']}/register"
 
         payload = {
@@ -229,24 +255,19 @@ def _registration_pipeline(port: str):
             'firmwareVersion': config['firmware_version']
         }
 
-        # Use IAM auth via SigV4 (builder-pi has SSM role with API access)
+        # Use SigV4 auth (builder-pi has SSM role with API access)
         session = get_fresh_boto3_session()
         credentials = session.get_credentials().get_frozen_credentials()
-        if credentials:
-            from botocore.auth import SigV4Auth
-            from botocore.awsrequest import AWSRequest
 
-            aws_request = AWSRequest(method='POST', url=api_url,
-                                     data=json.dumps(payload),
-                                     headers={'Content-Type': 'application/json'})
-            SigV4Auth(credentials, 'execute-api', config['region']).add_auth(aws_request)
-            response = requests.post(api_url,
-                                     json=payload,
-                                     headers=dict(aws_request.headers),
-                                     timeout=30)
-        else:
-            # Fallback: direct call (for testing without IAM)
-            response = requests.post(api_url, json=payload, timeout=30)
+        from botocore.auth import SigV4Auth
+        from botocore.awsrequest import AWSRequest
+
+        aws_request = AWSRequest(method='POST', url=api_url,
+                                 data=json.dumps(payload),
+                                 headers={'Content-Type': 'application/json'})
+        SigV4Auth(credentials, 'execute-api', config['region']).add_auth(aws_request)
+        response = requests.post(api_url, json=payload,
+                                 headers=dict(aws_request.headers), timeout=30)
 
         if response.status_code != 200:
             slot.status = 'error'
@@ -256,38 +277,29 @@ def _registration_pipeline(port: str):
 
         result = response.json()
         slot.build_id = result.get('buildId')
-        slot.log(f'Registration successful! Build ID: {slot.build_id}')
+        slot.log(f'Registered! Build ID: {slot.build_id}')
+        slot.is_registered = True
 
         # Step 2: Wait for CodeBuild to complete
         slot.status = 'building'
-        slot.log('Waiting for firmware build...')
+        slot.log('Waiting for firmware compilation...')
 
-        firmware_path = _wait_for_build(slot)
-        if not firmware_path:
+        if not _wait_for_build(slot):
             slot.status = 'error'
-            slot.error = 'Build failed or timed out'
+            slot.error = 'Firmware build failed or timed out'
             slot.log(f'ERROR: {slot.error}')
             return
 
+        slot.log('Firmware build complete!')
+
         # Step 3: Download firmware from S3
-        slot.log(f'Downloading firmware from S3...')
-        local_dir = f'/tmp/firmware_{slot.serial_number}'
-        os.makedirs(local_dir, exist_ok=True)
-        session = get_fresh_boto3_session()
-        s3 = session.client('s3')
-        s3_prefix = f'{slot.serial_number}/{config["firmware_version"]}/'
+        firmware_dir = device_manager.download_firmware(slot)
+        if not firmware_dir:
+            slot.status = 'error'
+            return
 
-        for filename in ['bootloader.bin', 'app.bin', 'boot_app0.bin', 'partitions.bin']:
-            s3_key = s3_prefix + filename
-            local_path = os.path.join(local_dir, filename)
-            try:
-                s3.download_file(config['firmware_bucket'], s3_key, local_path)
-                slot.log(f'Downloaded: {filename}')
-            except Exception as e:
-                slot.log(f'WARN: {filename} not available: {e}')
-
-        # Step 4: Flash firmware
-        success = device_manager.flash_firmware(port, local_dir)
+        # Step 4: Flash firmware via arduino-cli upload
+        success = device_manager.flash_firmware(port, firmware_dir)
         if not success:
             slot.status = 'error'
             return
@@ -296,9 +308,8 @@ def _registration_pipeline(port: str):
         time.sleep(3)  # Wait for device to reset after flash
         device_manager.verify_boot(port, timeout=45)
 
-        # Cleanup
-        import shutil
-        shutil.rmtree(local_dir, ignore_errors=True)
+        # Start serial monitor for ongoing observation
+        device_manager.start_serial_monitor(port)
 
     except Exception as e:
         slot.status = 'error'
@@ -306,15 +317,13 @@ def _registration_pipeline(port: str):
         slot.log(f'ERROR: Pipeline failed: {e}')
 
 
-def _wait_for_build(slot: 'DeviceSlot', timeout: int = 600) -> bool:
-    """Poll CodeBuild until the build completes.
-    Also checks S3 for the app.bin as a fallback — if the binary exists,
-    the build succeeded even if CodeBuild reports FAILED due to non-critical
-    post_build steps."""
+def _wait_for_build(slot, timeout: int = 600) -> bool:
+    """Poll CodeBuild until the build completes."""
     if not slot.build_id:
         return False
 
-    codebuild = get_fresh_boto3_session().client('codebuild')
+    session = get_fresh_boto3_session()
+    codebuild = session.client('codebuild')
     start = time.time()
 
     while time.time() - start < timeout:
@@ -329,18 +338,12 @@ def _wait_for_build(slot: 'DeviceSlot', timeout: int = 600) -> bool:
             status = build['buildStatus']
             phase = build.get('currentPhase', 'UNKNOWN')
 
-            slot.log(f'Build status: {status} (phase: {phase})')
+            slot.log(f'Build: {status} (phase: {phase})')
 
             if status == 'SUCCEEDED':
                 return True
             elif status in ('FAILED', 'FAULT', 'TIMED_OUT', 'STOPPED'):
-                # Check if the app binary actually made it to S3
-                # (build may report FAILED due to non-critical post_build commands)
-                slot.log(f'Build reported {status}, checking S3 for binary...')
-                if _check_firmware_in_s3(slot):
-                    slot.log('Binary found in S3 — treating as success')
-                    return True
-                slot.log(f'Build failed with status: {status}')
+                slot.log(f'Build failed: {status}')
                 return False
 
         except Exception as e:
@@ -348,101 +351,31 @@ def _wait_for_build(slot: 'DeviceSlot', timeout: int = 600) -> bool:
 
         time.sleep(15)
 
-    # Timeout — check S3 one last time
-    slot.log('Build poll timed out, checking S3...')
-    if _check_firmware_in_s3(slot):
-        slot.log('Binary found in S3 — treating as success')
-        return True
     slot.log('Build timed out waiting')
     return False
 
 
-def _check_firmware_in_s3(slot):
-    """Check if the app.bin exists in S3 for this device."""
-    try:
-        s3 = get_fresh_boto3_session().client('s3')
-        s3_key = f'{slot.serial_number}/{config["firmware_version"]}/app.bin'
-        s3.head_object(Bucket=config['firmware_bucket'], Key=s3_key)
-        return True
-    except Exception:
-        return False
-
-
-def _deregister_pipeline(port: str):
-    """Deregister a device via the API."""
-    slot = device_manager.devices.get(port)
-    if not slot:
-        return
-
-    slot.log('Calling deregister API...')
-    try:
-        api_url = f"{config['api_endpoint']}/deregister"
-        payload = {'serialNumber': slot.serial_number}
-
-        session = get_fresh_boto3_session()
-        credentials = session.get_credentials().get_frozen_credentials()
-        from botocore.auth import SigV4Auth
-        from botocore.awsrequest import AWSRequest
-
-        aws_request = AWSRequest(method='POST', url=api_url,
-                                 data=json.dumps(payload),
-                                 headers={'Content-Type': 'application/json'})
-        SigV4Auth(credentials, 'execute-api', config['region']).add_auth(aws_request)
-        response = requests.post(api_url, json=payload,
-                                 headers=dict(aws_request.headers), timeout=30)
-
-        if response.status_code == 200:
-            result = response.json()
-            slot.log(f"Deregistered: {result.get('message', 'OK')}")
-            slot.status = 'ready'
-            slot.is_registered = False
-            slot.thing_name = f'esp32-{slot.serial_number}'
-        else:
-            slot.log(f"ERROR: Deregister failed: {response.text}")
-            slot.status = 'error'
-            slot.error = f'Deregister API returned {response.status_code}'
-    except Exception as e:
-        slot.log(f'ERROR: {e}')
-        slot.status = 'error'
-        slot.error = str(e)
-
-
 def _reflash_pipeline(port: str):
-    """Reflash a device with existing firmware from S3 (no re-registration)."""
+    """Re-flash a device with existing firmware from S3 (no re-registration)."""
     slot = device_manager.devices.get(port)
     if not slot:
         return
 
-    slot.status = 'flashing'
     slot.error = None
     slot.log('Starting reflash (using existing firmware in S3)...')
 
+    # Stop serial monitor during flash
+    device_manager.stop_serial_monitor(port)
+
     try:
-        # Download firmware from S3
-        local_dir = f'/tmp/firmware_{slot.serial_number}'
-        os.makedirs(local_dir, exist_ok=True)
-        session = get_fresh_boto3_session()
-        s3 = session.client('s3')
-        s3_prefix = f'{slot.serial_number}/{config["firmware_version"]}/'
-
-        for filename in ['bootloader.bin', 'app.bin', 'boot_app0.bin', 'partitions.bin']:
-            s3_key = s3_prefix + filename
-            local_path = os.path.join(local_dir, filename)
-            try:
-                s3.download_file(config['firmware_bucket'], s3_key, local_path)
-                slot.log(f'Downloaded: {filename}')
-            except Exception as e:
-                slot.log(f'WARN: {filename} not available: {e}')
-
-        # Check we have at least the app binary
-        if not os.path.exists(os.path.join(local_dir, 'app.bin')):
+        # Download firmware
+        firmware_dir = device_manager.download_firmware(slot)
+        if not firmware_dir:
             slot.status = 'error'
-            slot.error = 'No firmware found in S3. Register the device first.'
-            slot.log('ERROR: app.bin not found in S3')
             return
 
         # Flash
-        success = device_manager.flash_firmware(port, local_dir)
+        success = device_manager.flash_firmware(port, firmware_dir)
         if not success:
             slot.status = 'error'
             return
@@ -451,9 +384,8 @@ def _reflash_pipeline(port: str):
         time.sleep(3)
         device_manager.verify_boot(port, timeout=45)
 
-        # Cleanup
-        import shutil
-        shutil.rmtree(local_dir, ignore_errors=True)
+        # Restart serial monitor
+        device_manager.start_serial_monitor(port)
 
     except Exception as e:
         slot.status = 'error'
