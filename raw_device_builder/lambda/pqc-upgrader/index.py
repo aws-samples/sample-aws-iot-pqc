@@ -20,6 +20,7 @@ Environment variables:
 """
 
 import boto3
+from botocore.config import Config
 import hashlib
 import json
 import os
@@ -27,7 +28,17 @@ import time
 
 dynamodb = boto3.resource('dynamodb')
 codebuild = boto3.client('codebuild')
-s3 = boto3.client('s3')
+# Use a region-specific S3 endpoint with SigV4 so presigned URLs point at
+# s3.<region>.amazonaws.com. The global s3.amazonaws.com endpoint can return a
+# 307 redirect on GET for a regional bucket, which the device's minimal HTTP
+# client does not follow (it saw Content-Length: 0 from the redirect).
+_S3_REGION = os.environ.get('AWS_REGION', 'us-east-1')
+s3 = boto3.client(
+    's3',
+    region_name=_S3_REGION,
+    endpoint_url=f'https://s3.{_S3_REGION}.amazonaws.com',
+    config=Config(signature_version='s3v4', s3={'addressing_style': 'virtual'})
+)
 iot_data = boto3.client('iot-data', endpoint_url=f"https://{os.environ['IOT_ENDPOINT']}")
 
 TABLE_NAME = os.environ['REGISTRY_TABLE']
@@ -140,7 +151,12 @@ def trigger_pqc_build(serial_number, device):
         # The key difference: we compile aws_iot_pqc_esp32.ino instead of classical.
 
         broker_endpoint = device.get('brokerEndpoint', os.environ.get('DEFAULT_BROKER_ENDPOINT', ''))
-        wifi_ssid = device.get('wifiSsid', '')
+        # WiFi credentials: the registry entry is recreated from telemetry, which
+        # does not include the WiFi password, so device.get('wifiPassword') is
+        # usually empty. Fall back to the workshop defaults from env vars so the
+        # PQC firmware can still associate to WiFi after the OTA reboot.
+        wifi_ssid = device.get('wifiSsid') or os.environ.get('DEFAULT_WIFI_SSID', '')
+        wifi_password = device.get('wifiPassword') or os.environ.get('DEFAULT_WIFI_PASSWORD', '')
 
         # Get certs from Private CA (same cert works for PQC — the CA is the same)
         acm_pca = boto3.client('acm-pca')
@@ -203,7 +219,7 @@ def trigger_pqc_build(serial_number, device):
                 {'name': 'FIRMWARE_VERSION', 'value': PQC_VERSION, 'type': 'PLAINTEXT'},
                 {'name': 'FIRMWARE_VARIANT', 'value': 'pqc', 'type': 'PLAINTEXT'},
                 {'name': 'WIFI_SSID', 'value': wifi_ssid, 'type': 'PLAINTEXT'},
-                {'name': 'WIFI_PASSWORD', 'value': device.get('wifiPassword', ''), 'type': 'PLAINTEXT'},
+                {'name': 'WIFI_PASSWORD', 'value': wifi_password, 'type': 'PLAINTEXT'},
                 {'name': 'BROKER_ENDPOINT', 'value': broker_endpoint, 'type': 'PLAINTEXT'},
                 {'name': 'BROKER_PORT', 'value': '8883', 'type': 'PLAINTEXT'},
                 {'name': 'IOT_ENDPOINT', 'value': os.environ['IOT_ENDPOINT'], 'type': 'PLAINTEXT'},

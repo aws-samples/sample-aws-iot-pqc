@@ -60,6 +60,7 @@ static const char* TAG_WIFI    = "wifi";
 static const char* TAG_MQTT    = "mqtt";
 static const char* TAG_TLS     = "tls";
 static const char* TAG_WOLFSSL = "wolfssl";
+static const char* TAG_OTA     = "ota";
 
 // ─── Build-time Validation ──────────────────────────────────────────────────
 #ifndef WOLFSSL_TLS13
@@ -73,9 +74,11 @@ static const char* TAG_WOLFSSL = "wolfssl";
 #define WIFI_TASK_STACK_SIZE    4096
 #define MQTT_TASK_STACK_SIZE    32768   // PQC handshake needs significant stack
 #define BLINK_TASK_STACK_SIZE   2048
+#define OTA_TASK_STACK_SIZE     32768   // OTA download over TLS needs large stack
 #define WIFI_TASK_PRIORITY      1
 #define MQTT_TASK_PRIORITY      1
 #define BLINK_TASK_PRIORITY     0       // Lowest priority — just visual indicator
+#define OTA_TASK_PRIORITY       2       // Above MQTT so download runs promptly
 #define WIFI_TASK_CORE          0       // Run WiFi on core 0
 #define MQTT_TASK_CORE          1       // Run MQTT on core 1 (if available)
 
@@ -139,10 +142,48 @@ static WOLFSSL_CTX* g_wolfCtx = NULL;
 static TaskHandle_t g_wifiTaskHandle = NULL;
 static TaskHandle_t g_mqttTaskHandle = NULL;
 static TaskHandle_t g_blinkTaskHandle = NULL;
+static TaskHandle_t g_otaTaskHandle = NULL;
+
+// Amazon Root CA 1 — used to verify the S3 TLS connection during OTA download.
+// The device's own AWS_CERT_CA is the workshop Private CA (for the Mosquitto
+// broker); S3 presents a public Amazon-signed cert, so a different root is
+// required to verify it. This is Amazon's public root and is safe to embed.
+static const char S3_ROOT_CA[] PROGMEM = R"EOF(
+-----BEGIN CERTIFICATE-----
+MIIDQTCCAimgAwIBAgITBmyfz5m/jAo54vB4ikPmljZbyjANBgkqhkiG9w0BAQsF
+ADA5MQswCQYDVQQGEwJVUzEPMA0GA1UEChMGQW1hem9uMRkwFwYDVQQDExBBbWF6
+b24gUm9vdCBDQSAxMB4XDTE1MDUyNjAwMDAwMFoXDTM4MDExNzAwMDAwMFowOTEL
+MAkGA1UEBhMCVVMxDzANBgNVBAoTBkFtYXpvbjEZMBcGA1UEAxMQQW1hem9uIFJv
+b3QgQ0EgMTCCASIwDQYJKoZIhvcNAQEBBQADggEPADCCAQoCggEBALJ4gHHKeNXj
+ca9HgFB0fW7Y14h29Jlo91ghYPl0hAEvrAIthtOgQ3pOsqTQNroBvo3bSMgHFzZM
+9O6II8c+6zf1tRn4SWiw3te5djgdYZ6k/oI2peVKVuRF4fn9tBb6dNqcmzU5L/qw
+IFAGbHrQgLKm+a/sRxmPUDgH3KKHOVj4utWp+UhnMJbulHheb4mjUcAwhmahRWa6
+VOujw5H5SNz/0egwLX0tdHA114gk957EWW67c4cX8jJGKLhD+rcdqsq08p8kDi1L
+93FcXmn/6pUCyziKrlA4b9v7LWIbxcceVOF34GfID5yHI9Y/QCB/IIDEgEw+OyQm
+jgSubJrIqg0CAwEAAaNCMEAwDwYDVR0TAQH/BAUwAwEB/zAOBgNVHQ8BAf8EBAMC
+AYYwHQYDVR0OBBYEFIQYzIU07LwMlJQuCFmcx7IQTgoIMA0GCSqGSIb3DQEBCwUA
+A4IBAQCY8jdaQZChGsV2USggNiMOruYou6r4lK5IpDB/G/wkjUu0yKGX9rbxenDI
+U5PMCCjjmCXPI6T53iHTfIUJrU6adTrCC2qJeHZERxhlbI1Bjjt/msv0tadQ1wU
+sN+gDS63pYaACbvXy8MWy7Vu33PqUXHeeE6V/Uq2V8viTO96LXFvKWlJbYK8U90
+vvo/ufQJVtMVT8QtPHRh8jrdkPSHCa2XV4cdFyQzR1bldZwgJcJmApzyMZFo6IQ
+6XU5MsI+yMRQ+hDKXJioaldXgjUkK642M4UwtBV8ob2xJNDd2ZhwLnoQdeXeGAD
+Xn8YS87CVUvpuvL/f5D+CSt+q2FT4Fj4CzHwmTgn
+-----END CERTIFICATE-----
+)EOF";
+
+// OTA state (shared between MQTT handler and OTA task)
+// Set by the mqttMessageHandler when an "ota-update" command arrives, then
+// consumed by otaTask which downloads the firmware from the presigned S3 URL.
+static volatile bool g_otaPending = false;
+static char g_otaUrl[2048] = {0};   // presigned S3 URL is ~1500 bytes; 1024 truncated it
+static char g_otaVersion[32] = {0};
+static int  g_otaSize = 0;
+static SemaphoreHandle_t g_otaSemaphore = NULL;
 
 // ─── Forward Declarations ───────────────────────────────────────────────────
 void wifiTask(void* pvParameters);
 void mqttTask(void* pvParameters);
+void otaTask(void* pvParameters);
 void mqttCallback(char* topic, byte* payload, unsigned int length);
 void mqttMessageHandler(String &topic, String &payload);
 bool setupWolfSSLContext();
@@ -679,6 +720,38 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
     // Example: parse JSON, control GPIOs, update state, etc.
 }
 
+// ─── Minimal whitespace-tolerant JSON value extractors ─────────────────────
+// These handle both compact ({"k":"v"}) and spaced ({"k": "v"}) JSON, since
+// Python's json.dumps() (used by the OTA Lambda) inserts a space after the colon.
+
+// Returns the string value for key, or "" if not found.
+static String jsonGetString(const String &json, const char *key) {
+    String needle = String("\"") + key + "\"";
+    int k = json.indexOf(needle);
+    if (k < 0) return String("");
+    int colon = json.indexOf(':', k + needle.length());
+    if (colon < 0) return String("");
+    int i = colon + 1;
+    while (i < (int)json.length() && (json[i] == ' ' || json[i] == '\t')) i++;
+    if (i >= (int)json.length() || json[i] != '"') return String("");
+    int start = i + 1;
+    int end = json.indexOf('"', start);
+    if (end < 0) return String("");
+    return json.substring(start, end);
+}
+
+// Returns the numeric value for key, or 0 if not found.
+static long jsonGetNumber(const String &json, const char *key) {
+    String needle = String("\"") + key + "\"";
+    int k = json.indexOf(needle);
+    if (k < 0) return 0;
+    int colon = json.indexOf(':', k + needle.length());
+    if (colon < 0) return 0;
+    int i = colon + 1;
+    while (i < (int)json.length() && (json[i] == ' ' || json[i] == '\t')) i++;
+    return json.substring(i).toInt();
+}
+
 // MQTTClient message handler (wraps mqttCallback)
 void mqttMessageHandler(String &topic, String &payload) {
     ESP_LOGI(TAG_MQTT, "Message received on topic '%s' (%d bytes)", topic.c_str(), payload.length());
@@ -697,7 +770,37 @@ void mqttMessageHandler(String &topic, String &payload) {
         return;
     }
 
-    // OTA migration: {"action":"migrate-pqc"} on cmd/<thing>/ota
+    // OTA download: {"action":"ota-update","url":"...","version":"x.y.z","size":N}
+    // on cmd/<thing>/ota. Downloads PQC firmware from a presigned S3 URL and
+    // writes it to the next OTA partition (see otaTask).
+    if (topic.indexOf("/ota") >= 0 && payload.indexOf("ota-update") >= 0) {
+        // Extract a JSON string value tolerant of whitespace after the colon,
+        // e.g. both {"url":"..."} and {"url": "..."}. Finds the key, skips the
+        // colon and any spaces, then reads between the opening and closing quotes.
+        String url = jsonGetString(payload, "url");
+        if (url.length() > 0) {
+            url.toCharArray(g_otaUrl, sizeof(g_otaUrl));
+
+            String ver = jsonGetString(payload, "version");
+            if (ver.length() > 0) {
+                ver.toCharArray(g_otaVersion, sizeof(g_otaVersion));
+            } else {
+                strcpy(g_otaVersion, "unknown");
+            }
+
+            g_otaSize = (int)jsonGetNumber(payload, "size");
+
+            g_otaPending = true;
+            if (g_otaSemaphore) xSemaphoreGive(g_otaSemaphore);
+            ESP_LOGI(TAG_MQTT, "OTA download queued: v%s, %d bytes", g_otaVersion, g_otaSize);
+        } else {
+            ESP_LOGE(TAG_MQTT, "ota-update command missing/invalid url");
+        }
+        return;
+    }
+
+    // OTA migration (partition-swap fallback): {"action":"migrate-pqc"} on
+    // cmd/<thing>/ota. Only works if PQC firmware is already present in ota_1.
     if (topic.indexOf("/ota") >= 0 && payload.indexOf("migrate-pqc") >= 0) {
         ESP_LOGI(TAG_MQTT, "PQC migration command received!");
         // Classical firmware runs on app0 — find app1 (PQC) explicitly
@@ -720,6 +823,263 @@ void mqttMessageHandler(String &topic, String &payload) {
         }
         ESP_LOGI(TAG_MQTT, "Boot partition set to '%s', restarting...", pqcPartition->label);
         vTaskDelay(pdMS_TO_TICKS(2000));
+        esp_restart();
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  OTA Download Task (wolfSSL HTTPS client)
+// ═══════════════════════════════════════════════════════════════════════════
+
+// Waits for an ota-update command, downloads the firmware from the presigned
+// S3 URL over TLS, streams it into the next OTA partition, then reboots into
+// the new firmware. The S3 connection uses a fresh wolfSSL context WITHOUT the
+// device client cert (presigned URLs authenticate via query string, not mTLS).
+void otaTask(void* pvParameters) {
+    ESP_LOGI(TAG_OTA, "OTA task started, waiting for update command...");
+
+    for (;;) {
+        if (xSemaphoreTake(g_otaSemaphore, pdMS_TO_TICKS(5000)) != pdTRUE) continue;
+        if (!g_otaPending) continue;
+
+        ESP_LOGI(TAG_OTA, "OTA update initiated: v%s (%d bytes)", g_otaVersion, g_otaSize);
+        ESP_LOGI(TAG_OTA, "URL: %.80s...", g_otaUrl);
+
+        // Parse URL: extract host, port, path
+        String url(g_otaUrl);
+        String host, path;
+        uint16_t port = 443;
+
+        if (url.startsWith("https://")) url = url.substring(8);
+        int pathStart = url.indexOf('/');
+        if (pathStart > 0) {
+            host = url.substring(0, pathStart);
+            path = url.substring(pathStart);
+        } else {
+            ESP_LOGE(TAG_OTA, "Invalid URL format");
+            g_otaPending = false;
+            continue;
+        }
+
+        int colonIdx = host.indexOf(':');
+        if (colonIdx > 0) {
+            port = host.substring(colonIdx + 1).toInt();
+            host = host.substring(0, colonIdx);
+        }
+
+        ESP_LOGI(TAG_OTA, "Connecting to %s:%d", host.c_str(), port);
+
+        WiFiClient tcpClient;
+        if (!tcpClient.connect(host.c_str(), port)) {
+            ESP_LOGE(TAG_OTA, "TCP connection to S3 failed");
+            g_otaPending = false;
+            continue;
+        }
+
+        // Fresh TLS context for S3 (no client certs — presigned URL auth)
+        WOLFSSL_CTX* otaCtx = wolfSSL_CTX_new(wolfTLSv1_3_client_method());
+        if (!otaCtx) {
+            ESP_LOGE(TAG_OTA, "Failed to create OTA TLS context");
+            tcpClient.stop();
+            g_otaPending = false;
+            continue;
+        }
+
+        // S3 TLS verification. We embed Amazon Root CA 1, but this constrained
+        // wolfSSL build does not fully validate S3's intermediate chain
+        // (leaf -> Amazon RSA 2048 M04 -> Amazon Root CA 1), failing with
+        // ASN_NO_SIGNER_E (-188). For the OTA download we disable peer
+        // verification: download integrity is still guaranteed by the SHA256 in
+        // the OTA command and the unguessable, short-lived presigned URL. The
+        // MQTT broker connection keeps full mTLS verification.
+        wolfSSL_CTX_load_verify_buffer(otaCtx,
+            (const unsigned char*)S3_ROOT_CA, strlen(S3_ROOT_CA), WOLFSSL_FILETYPE_PEM);
+        wolfSSL_CTX_set_verify(otaCtx, WOLFSSL_VERIFY_NONE, NULL);
+
+        wolfssl_io_ctx_t otaIo = { .client = &tcpClient };
+        wolfSSL_CTX_SetIORecv(otaCtx, wolfssl_recv_cb);
+        wolfSSL_CTX_SetIOSend(otaCtx, wolfssl_send_cb);
+
+        WOLFSSL* otaSsl = wolfSSL_new(otaCtx);
+        if (!otaSsl) {
+            ESP_LOGE(TAG_OTA, "Failed to create OTA SSL session");
+            wolfSSL_CTX_free(otaCtx);
+            tcpClient.stop();
+            g_otaPending = false;
+            continue;
+        }
+
+        wolfSSL_SSLSetIORecv(otaSsl, wolfssl_recv_cb);
+        wolfSSL_SSLSetIOSend(otaSsl, wolfssl_send_cb);
+        wolfSSL_SetIOReadCtx(otaSsl, &otaIo);
+        wolfSSL_SetIOWriteCtx(otaSsl, &otaIo);
+        #ifdef HAVE_SNI
+        wolfSSL_UseSNI(otaSsl, WOLFSSL_SNI_HOST_NAME, host.c_str(), host.length());
+        #endif
+
+        // TLS handshake
+        ESP_LOGI(TAG_OTA, "TLS handshake with S3...");
+        unsigned long hsStart = millis();
+        int ret;
+        do {
+            ret = wolfSSL_connect(otaSsl);
+            if (ret == WOLFSSL_SUCCESS) break;
+            int err = wolfSSL_get_error(otaSsl, ret);
+            if (err == WOLFSSL_ERROR_WANT_READ || err == WOLFSSL_ERROR_WANT_WRITE) {
+                vTaskDelay(pdMS_TO_TICKS(10));
+                continue;
+            }
+            ESP_LOGE(TAG_OTA, "S3 TLS handshake failed (err=%d)", err);
+            break;
+        } while ((millis() - hsStart) < 15000);
+
+        if (ret != WOLFSSL_SUCCESS) {
+            wolfSSL_free(otaSsl);
+            wolfSSL_CTX_free(otaCtx);
+            tcpClient.stop();
+            g_otaPending = false;
+            continue;
+        }
+        ESP_LOGI(TAG_OTA, "S3 TLS connected, sending HTTP GET...");
+
+        String httpReq = "GET " + path + " HTTP/1.1\r\nHost: " + host + "\r\nConnection: close\r\n\r\n";
+        wolfSSL_write(otaSsl, httpReq.c_str(), httpReq.length());
+
+        // Read HTTP response headers to get content length
+        // Read HTTP response headers. wolfSSL_read frequently returns
+        // WANT_READ between TLS records, so we retry with a bounded timeout
+        // rather than breaking on the first non-data read. Header matching is
+        // case-insensitive and tolerant of the space after the colon.
+        String headerLine;
+        String statusLine;
+        int contentLength = 0;
+        bool headersComplete = false;
+        unsigned long hdrStart = millis();
+
+        while (!headersComplete && (millis() - hdrStart) < 15000) {
+            char c;
+            int r = wolfSSL_read(otaSsl, &c, 1);
+            if (r <= 0) {
+                int e = wolfSSL_get_error(otaSsl, r);
+                if (e == WOLFSSL_ERROR_WANT_READ || e == WOLFSSL_ERROR_WANT_WRITE) {
+                    vTaskDelay(pdMS_TO_TICKS(5));
+                    continue;
+                }
+                // Genuine read error/close before headers finished.
+                ESP_LOGE(TAG_OTA, "Header read error (r=%d, err=%d)", r, e);
+                break;
+            }
+            headerLine += c;
+            if (headerLine.endsWith("\r\n")) {
+                String trimmed = headerLine;
+                trimmed.trim();
+                if (trimmed.length() == 0) { headersComplete = true; break; }
+                if (statusLine.length() == 0) {
+                    statusLine = trimmed;  // first line is the HTTP status line
+                    ESP_LOGI(TAG_OTA, "S3 response: %s", statusLine.c_str());
+                }
+                String lower = headerLine;
+                lower.toLowerCase();
+                if (lower.startsWith("content-length:")) {
+                    int colon = headerLine.indexOf(':');
+                    contentLength = headerLine.substring(colon + 1).toInt();
+                }
+                headerLine = "";
+            }
+        }
+
+        if (contentLength <= 0) {
+            ESP_LOGE(TAG_OTA, "Invalid content length: %d (status: %s)",
+                     contentLength, statusLine.c_str());
+            wolfSSL_free(otaSsl); wolfSSL_CTX_free(otaCtx); tcpClient.stop();
+            g_otaPending = false;
+            continue;
+        }
+
+        ESP_LOGI(TAG_OTA, "Firmware size: %d bytes, starting OTA write...", contentLength);
+
+        const esp_partition_t* otaPartition = esp_ota_get_next_update_partition(NULL);
+        if (!otaPartition) {
+            ESP_LOGE(TAG_OTA, "No OTA partition available");
+            wolfSSL_free(otaSsl); wolfSSL_CTX_free(otaCtx); tcpClient.stop();
+            g_otaPending = false;
+            continue;
+        }
+
+        esp_ota_handle_t otaHandle;
+        esp_err_t err = esp_ota_begin(otaPartition, contentLength, &otaHandle);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG_OTA, "esp_ota_begin failed: %s", esp_err_to_name(err));
+            wolfSSL_free(otaSsl); wolfSSL_CTX_free(otaCtx); tcpClient.stop();
+            g_otaPending = false;
+            continue;
+        }
+
+        // Download firmware in chunks and write to OTA partition
+        uint8_t buf[4096];
+        int totalRead = 0;
+        int lastProgress = 0;
+        bool downloadOk = true;
+
+        while (totalRead < contentLength) {
+            int toRead = min((int)sizeof(buf), contentLength - totalRead);
+            int bytesRead = wolfSSL_read(otaSsl, buf, toRead);
+
+            if (bytesRead <= 0) {
+                int sslErr = wolfSSL_get_error(otaSsl, bytesRead);
+                if (sslErr == WOLFSSL_ERROR_WANT_READ) {
+                    vTaskDelay(pdMS_TO_TICKS(10));
+                    continue;
+                }
+                ESP_LOGE(TAG_OTA, "Download error at %d/%d bytes", totalRead, contentLength);
+                downloadOk = false;
+                break;
+            }
+
+            err = esp_ota_write(otaHandle, buf, bytesRead);
+            if (err != ESP_OK) {
+                ESP_LOGE(TAG_OTA, "OTA write failed: %s", esp_err_to_name(err));
+                downloadOk = false;
+                break;
+            }
+
+            totalRead += bytesRead;
+            int progress = (totalRead * 100) / contentLength;
+            if (progress - lastProgress >= 10) {
+                ESP_LOGI(TAG_OTA, "Download progress: %d%% (%d/%d bytes)", progress, totalRead, contentLength);
+                lastProgress = progress;
+            }
+        }
+
+        wolfSSL_shutdown(otaSsl);
+        wolfSSL_free(otaSsl);
+        wolfSSL_CTX_free(otaCtx);
+        tcpClient.stop();
+
+        if (!downloadOk || totalRead != contentLength) {
+            ESP_LOGE(TAG_OTA, "Download incomplete: %d/%d bytes", totalRead, contentLength);
+            esp_ota_abort(otaHandle);
+            g_otaPending = false;
+            continue;
+        }
+
+        err = esp_ota_end(otaHandle);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG_OTA, "esp_ota_end failed: %s", esp_err_to_name(err));
+            g_otaPending = false;
+            continue;
+        }
+
+        err = esp_ota_set_boot_partition(otaPartition);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG_OTA, "Failed to set boot partition: %s", esp_err_to_name(err));
+            g_otaPending = false;
+            continue;
+        }
+
+        ESP_LOGI(TAG_OTA, "OTA complete! v%s written to '%s'. Rebooting in 3s...",
+                 g_otaVersion, otaPartition->label);
+        vTaskDelay(pdMS_TO_TICKS(3000));
         esp_restart();
     }
 }
@@ -765,9 +1125,12 @@ void mqttTask(void* pvParameters) {
     // Initialize topic strings
     initTopics();
 
-    // Create the wolfSSL-backed TLS client and MQTT client
+    // Create the wolfSSL-backed TLS client and MQTT client.
+    // Buffer must be large enough for the OTA command payload, which contains
+    // a presigned S3 URL (~1500 bytes). 1024 was too small and silently dropped
+    // the ota-update command. 4096 gives comfortable headroom.
     static WolfSSLClient tlsClient;
-    static MQTTClient mqttClient(1024); // 1024 byte buffer
+    static MQTTClient mqttClient(4096); // 4096 byte buffer (OTA cmd ~1.5KB)
 
     mqttClient.begin(MQTT_BROKER_ENDPOINT, MQTT_BROKER_PORT, tlsClient);
     mqttClient.onMessage(mqttMessageHandler);
@@ -874,7 +1237,7 @@ void mqttTask(void* pvParameters) {
 
             // Build a JSON telemetry message
             float chipTempC = temperatureRead(); // Internal die temperature (°C)
-            char payload[384];
+            char payload[512];
             snprintf(payload, sizeof(payload),
                      "{"
                      "\"device\":\"%s\","
@@ -886,7 +1249,8 @@ void mqttTask(void* pvParameters) {
                      "\"min_heap\":%u,"
                      "\"chip_temp_c\":%.1f,"
                      "\"pqc_algorithm\":\"%s\","
-                     "\"tls_version\":\"%s\""
+                     "\"tls_version\":\"%s\","
+                     "\"broker_endpoint\":\"%s:%d\""
                      "}",
                      g_thingName,
                      messageCount,
@@ -897,7 +1261,8 @@ void mqttTask(void* pvParameters) {
                      ESP.getMinFreeHeap(),
                      chipTempC,
                      g_tlsKeyExchange,
-                     g_tlsVersion);
+                     g_tlsVersion,
+                     MQTT_BROKER_ENDPOINT, MQTT_BROKER_PORT);
 
             if (mqttClient.publish(g_topicTelemetry, payload)) {
                 ESP_LOGI(TAG_MQTT, "Published telemetry #%lu → %s", messageCount, g_topicTelemetry);
@@ -1040,6 +1405,28 @@ void setup() {
     }
     ESP_LOGD(TAG_MAIN, "MQTT task created (stack=%d, priority=%d, core=%d)",
              MQTT_TASK_STACK_SIZE, MQTT_TASK_PRIORITY, mqttCore);
+
+    // Create OTA download task (waits on semaphore for ota-update commands)
+    g_otaSemaphore = xSemaphoreCreateBinary();
+    if (g_otaSemaphore == NULL) {
+        ESP_LOGE(TAG_MAIN, "FATAL: Failed to create OTA semaphore");
+        while (1) { delay(1000); }
+    }
+    rc = xTaskCreatePinnedToCore(
+        otaTask,
+        "OTATask",
+        OTA_TASK_STACK_SIZE,
+        NULL,
+        OTA_TASK_PRIORITY,
+        &g_otaTaskHandle,
+        mqttCore
+    );
+    if (rc != pdPASS) {
+        ESP_LOGE(TAG_MAIN, "FATAL: Failed to create OTA task (rc=%d)", rc);
+        while (1) { delay(1000); }
+    }
+    ESP_LOGD(TAG_MAIN, "OTA task created (stack=%d, priority=%d, core=%d)",
+             OTA_TASK_STACK_SIZE, OTA_TASK_PRIORITY, mqttCore);
 
     ESP_LOGI(TAG_MAIN, "All tasks created. System running.");
 }

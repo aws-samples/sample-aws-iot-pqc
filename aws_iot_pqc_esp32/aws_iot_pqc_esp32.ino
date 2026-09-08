@@ -799,7 +799,7 @@ void mqttTask(void* pvParameters) {
 
     // Create the wolfSSL-backed TLS client and MQTT client
     static WolfSSLClient tlsClient;
-    static MQTTClient mqttClient(1024); // 1024 byte buffer
+    static MQTTClient mqttClient(4096); // 4096 byte buffer (OTA cmd ~1.5KB)
 
     mqttClient.begin(MQTT_BROKER_ENDPOINT, MQTT_BROKER_PORT, tlsClient);
     mqttClient.onMessage(mqttMessageHandler);

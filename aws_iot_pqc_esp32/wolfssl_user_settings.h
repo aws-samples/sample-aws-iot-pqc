@@ -113,7 +113,7 @@
 #define WOLFSSL_SMALL_STACK_CACHE
 
 // Increase max handshake message size for PQC (Kyber keys are larger)
-#define MAX_CERTIFICATE_SZ   4096
+#define MAX_CERTIFICATE_SZ   8192
 #define LARGE_STATIC_BUFFERS
 
 // ─── Disable Unused Features (save flash/RAM) ──────────────────────────────

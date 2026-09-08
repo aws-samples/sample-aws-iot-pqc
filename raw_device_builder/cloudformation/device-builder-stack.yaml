@@ -16,6 +16,15 @@ Parameters:
     Description: Default WiFi SSID for devices
     Default: clarmouth-4-24
 
+  DefaultWifiPassword:
+    Type: String
+    Description: >-
+      Default WiFi password for devices. Used by the PQC upgrader Lambda as a
+      fallback when the device registry entry lacks wifiPassword (the registry
+      entry is recreated from telemetry, which does not carry the password).
+    NoEcho: true
+    Default: changeme
+
   DefaultBrokerEndpoint:
     Type: String
     Description: MQTT broker endpoint (NLB DNS or Pi IP for local testing)
@@ -208,12 +217,21 @@ Resources:
               - Effect: Allow
                 Action:
                   - codebuild:StartBuild
+                  - codebuild:BatchGetBuilds
                 Resource: !GetAtt FirmwareBuildProject.Arn
               - Effect: Allow
                 Action:
                   - s3:PutObject
                   - s3:GetObject
                 Resource: !Sub '${FirmwareBucket.Arn}/*'
+              # Used by the PQC upgrader Lambda (which shares this role) to
+              # publish the OTA command to cmd/<thing>/ota via IoT Core. Note
+              # the IAM action is iot:Publish even though the SDK client is
+              # iot-data; iot-data:Publish is not a valid action.
+              - Effect: Allow
+                Action:
+                  - iot:Publish
+                Resource: !Sub 'arn:aws:iot:${AWS::Region}:${AWS::AccountId}:topic/cmd/*'
 
   # ═══════════════════════════════════════════════════════════════════════════
   # Lambda — Device Registrar
@@ -241,6 +259,50 @@ Resources:
           # Placeholder — deploy real code from lambda/device-registrar/index.py
           def handler(event, context):
               return {'statusCode': 200, 'body': 'placeholder'}
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # Lambda — PQC Upgrader
+  # Triggered by the dashboard "Migrate to PQC" button (via AppSync
+  # migrateFirmware). Builds the PQC firmware variant with the device's certs
+  # and WiFi credentials, generates a presigned S3 URL, and publishes the
+  # ota-update command to cmd/<thing>/ota. Shares the device-registrar role
+  # (which grants iot:Publish, codebuild, acm-pca, dynamodb, s3).
+  # Real code is deployed from lambda/pqc-upgrader/index.py.
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  PqcUpgraderFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: pqc-workshop-pqc-upgrader
+      Runtime: python3.12
+      Handler: index.handler
+      # Builds PQC firmware synchronously and waits for CodeBuild (up to 5 min).
+      Timeout: 360
+      Role: !GetAtt DeviceRegistrarRole.Arn
+      Environment:
+        Variables:
+          REGISTRY_TABLE: !Ref DeviceRegistryTable
+          FIRMWARE_BUCKET: !Sub '${FirmwareBucketName}-${AWS::AccountId}'
+          BUILD_PROJECT: !Ref FirmwareBuildProject
+          IOT_ENDPOINT: !Ref IoTEndpoint
+          PRIVATE_CA_ARN: !Ref PrivateCAArn
+          DEFAULT_WIFI_SSID: !Ref DefaultWifiSsid
+          DEFAULT_WIFI_PASSWORD: !Ref DefaultWifiPassword
+          DEFAULT_BROKER_ENDPOINT: !Ref DefaultBrokerEndpoint
+      Code:
+        ZipFile: |
+          # Placeholder — deploy real code from lambda/pqc-upgrader/index.py
+          def handler(event, context):
+              return {'statusCode': 200, 'body': 'placeholder'}
+
+  # Allow AppSync to invoke the PQC upgrader Lambda (the dashboard stack's
+  # migrateFirmware resolver targets this function).
+  PqcUpgraderAppSyncPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref PqcUpgraderFunction
+      Action: lambda:InvokeFunction
+      Principal: appsync.amazonaws.com
 
   # ═══════════════════════════════════════════════════════════════════════════
   # Lambda — Device Deregistrar
@@ -613,6 +675,12 @@ Outputs:
   ApiEndpoint:
     Description: Builder API endpoint (set in builder-pi config.json)
     Value: !Sub 'https://${BuilderApi}.execute-api.${AWS::Region}.amazonaws.com/prod'
+
+  PqcUpgraderFunctionArn:
+    Description: PQC upgrader Lambda ARN (targeted by the dashboard migrateFirmware resolver)
+    Value: !GetAtt PqcUpgraderFunction.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-PqcUpgraderFunctionArn'
 
   FirmwareBucketName:
     Description: S3 bucket for firmware artifacts
