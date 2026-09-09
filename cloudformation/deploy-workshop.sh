@@ -13,10 +13,14 @@
 #     4. builds + syncs the v2 dashboard (a build step CFN can't do)
 #
 # Usage:
-#   ./deploy-workshop.sh <aws-region> --vpc-id <vpc-xxxx> --subnets <subnet-a,subnet-b> [--device-count N]
+#   ./deploy-workshop.sh <aws-region> --vpc-id <vpc-xxxx> --subnets <subnet-a,subnet-b> [--profile NAME] [--device-count N]
 #
-# Example:
-#   ./deploy-workshop.sh us-east-1 --vpc-id vpc-0abc --subnets subnet-01,subnet-02
+# Example (A-B testing against a specific account profile):
+#   ./deploy-workshop.sh us-east-1 --profile pqc-b --vpc-id vpc-0abc --subnets subnet-01,subnet-02
+#
+# --profile is optional: when given it targets that named AWS CLI profile for
+# every aws call; when omitted the ambient/default credentials are used. Set up
+# profiles with `ada credentials update --profile <name> --account <id> --role Admin`.
 #
 # REMAINING MANUAL STEPS (cannot be done by CloudFormation — see README):
 #   - One-time firmware Docker image build (ImageBuilderProject output)
@@ -34,10 +38,12 @@ AWS_REGION="${1:-us-east-1}"; shift || true
 DEVICE_COUNT="100"
 VPC_ID=""
 SUBNETS=""
+PROFILE=""
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --vpc-id) VPC_ID="$2"; shift 2 ;;
         --subnets) SUBNETS="$2"; shift 2 ;;
+        --profile) PROFILE="$2"; shift 2 ;;
         --device-count) DEVICE_COUNT="$2"; shift 2 ;;
         *) echo "[ERROR] Unknown argument: $1"; exit 1 ;;
     esac
@@ -45,8 +51,14 @@ done
 
 if [[ -z "$VPC_ID" || -z "$SUBNETS" ]]; then
     echo "[ERROR] --vpc-id and --subnets are required (the broker NLB/ECS need them)."
-    echo "  Example: $0 $AWS_REGION --vpc-id vpc-0abc --subnets subnet-01,subnet-02"
+    echo "  Example: $0 $AWS_REGION --profile pqc-b --vpc-id vpc-0abc --subnets subnet-01,subnet-02"
     exit 1
+fi
+
+# When --profile is given, export AWS_PROFILE so every aws call in this script
+# targets that account. Exported (not per-command) so nested tools inherit it.
+if [[ -n "$PROFILE" ]]; then
+    export AWS_PROFILE="$PROFILE"
 fi
 
 TEMPLATE_PREFIX="pqc-workshop"
@@ -55,17 +67,28 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 V2_FRONTEND="$PROJECT_ROOT/raw_device_builder/dashboard-v2/frontend"
 
 export AWS_DEFAULT_REGION="$AWS_REGION"
+CALLER_ARN=$(aws sts get-caller-identity --query Arn --output text)
 ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
 ARTIFACTS_BUCKET="pqc-workshop-cfn-${ACCOUNT_ID}-${AWS_REGION}"
 
 echo "═══════════════════════════════════════════════════════════════"
 echo "  PQC Workshop — Full Stack Deployment (single master)"
 echo "═══════════════════════════════════════════════════════════════"
+echo "  Profile:          ${PROFILE:-<ambient/default credentials>}"
+echo "  Target account:   $ACCOUNT_ID"
+echo "  Caller identity:  $CALLER_ARN"
 echo "  Region:           $AWS_REGION"
 echo "  VPC / subnets:    $VPC_ID / $SUBNETS"
 echo "  Devices:          $DEVICE_COUNT"
 echo "  Artifacts bucket: $ARTIFACTS_BUCKET"
 echo ""
+# Safety guard: confirm the target account before any writes. Skip with
+# CONFIRM_DEPLOY=yes for non-interactive/CI use.
+if [[ "${CONFIRM_DEPLOY:-}" != "yes" && -t 0 ]]; then
+    read -r -p "  Deploy to account $ACCOUNT_ID? [y/N] " reply
+    [[ "$reply" == "y" || "$reply" == "Y" ]] || { echo "Aborted."; exit 1; }
+    echo ""
+fi
 
 # ─── Ensure the artifacts bucket exists ──────────────────────────────────────
 if ! aws s3 ls "s3://$ARTIFACTS_BUCKET" >/dev/null 2>&1; then
@@ -143,9 +166,11 @@ echo "════════════════════════�
 echo "  Dashboard:  $(get_out DashboardURL)"
 echo "  Broker:     $(get_out BrokerEndpoint):8883"
 echo ""
+PROFILE_ARG=""
+[[ -n "$PROFILE" ]] && PROFILE_ARG=" --profile $PROFILE"
 echo "REMAINING MANUAL STEPS:"
 echo "  1. Build the firmware image once (needed before any device build):"
-echo "       aws codebuild start-build --project-name $(get_out FirmwareImageBuilderProject)"
+echo "       aws codebuild start-build --project-name $(get_out FirmwareImageBuilderProject)${PROFILE_ARG}"
 echo "  2. Register the Builder-Pi via SSM (see raw_device_builder/bundle-for-builder-pi.sh)"
-echo "  3. Validate:  ./check_setup_status.sh --region $AWS_REGION"
+echo "  3. Validate:  ./check_setup_status.sh --region $AWS_REGION${PROFILE_ARG}"
 echo ""

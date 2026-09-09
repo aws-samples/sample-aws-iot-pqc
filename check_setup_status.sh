@@ -23,7 +23,10 @@
 #     ElasticLoadBalancing, ACM-PCA, Logs.
 #
 # Usage:
-#   ./check_setup_status.sh [--region REGION]
+#   ./check_setup_status.sh [--region REGION] [--profile NAME]
+#
+# --profile targets a named AWS CLI profile for every aws call (useful for A-B
+# testing across accounts). Omit to use ambient/default credentials.
 #
 # Copyright 2024-2026 Amazon.com, Inc. or its affiliates. All Rights Reserved.
 # SPDX-License-Identifier: MIT-0
@@ -33,6 +36,7 @@ set -euo pipefail
 
 # ─── Defaults ────────────────────────────────────────────────────────────────
 REGION="${AWS_DEFAULT_REGION:-us-east-1}"
+PROFILE=""
 
 # Live stack names (the workshop deploys these; names are fixed).
 BROKER_STACK="pqc-workshop-broker-container"
@@ -42,9 +46,11 @@ DEVICE_BUILDER_STACK="pqc-workshop-device-builder"
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --region) REGION="$2"; shift 2 ;;
+        --profile) PROFILE="$2"; shift 2 ;;
         --help|-h)
-            echo "Usage: $0 [--region REGION]"
+            echo "Usage: $0 [--region REGION] [--profile NAME]"
             echo "  --region   AWS region (default: us-east-1 or AWS_DEFAULT_REGION)"
+            echo "  --profile  Named AWS CLI profile to use (default: ambient credentials)"
             exit 0
             ;;
         *)
@@ -53,6 +59,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 export AWS_DEFAULT_REGION="$REGION"
+[[ -n "$PROFILE" ]] && export AWS_PROFILE="$PROFILE"
 
 # ─── Counters ────────────────────────────────────────────────────────────────
 PASS=0; WARN=0; FAIL=0
