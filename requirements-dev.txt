@@ -5,3 +5,7 @@
 pytest>=8.0
 moto[all]>=5.0
 boto3>=1.34
+# CloudFormation template linting (structural validation without deploying).
+# W3002 warnings for `Code: <local path>` are expected — those paths are
+# resolved by `aws cloudformation package` at deploy time.
+cfn-lint>=1.0
