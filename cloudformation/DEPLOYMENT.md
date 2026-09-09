@@ -21,7 +21,104 @@ CloudFormation owns the ordering: the broker consumes the VPC from
 `BrokerStack.Outputs.PrivateCAArn` and `BrokerStack.Outputs.BrokerEndpoint`, so
 the broker is fully created before the device-builder stack runs.
 
-### VPC: create one, or bring your own
+---
+
+## Deployment sequence
+
+Run these steps in order. Steps 1–3 stand up the cloud infrastructure; steps 4–6
+are the pieces CloudFormation cannot do (build a container image, build a
+frontend, register software on physical hardware). Replace `<region>` throughout
+(e.g. `us-east-1`), and add `--profile <name>` if you use a named AWS CLI profile.
+
+### 1. Prerequisites
+
+- AWS CLI v2, configured with credentials for the target account (Admin or
+  equivalent — the stacks create IAM roles, ECS, NLB, Private CA, VPC, etc.).
+- Node.js + npm on the deploy host (the dashboard is built locally in step 3).
+- Docker is **not** required locally — container images are built in CodeBuild.
+
+### 2. (Self-hosted only) package the templates — SKIP for Workshop Studio
+
+Self-hosted deploys use `deploy-workshop.sh`, which packages the templates for
+you, so you can skip straight to step 3. Run `package.sh` only when staging
+assets for **Workshop Studio** (see "Workshop Studio" below).
+
+### 3. Deploy the stack + build the broker image + build the dashboard
+
+```bash
+cd cloudformation
+
+# Option A — let the stack create its own VPC (recommended; required for
+# Workshop Studio / Control Tower accounts that have no usable default VPC):
+./deploy-workshop.sh <region> [--profile <name>] [--device-count 100]
+
+# Option B — bring your own VPC (pass BOTH flags; needs >=2 subnets in >=2 AZs):
+./deploy-workshop.sh <region> [--profile <name>] --vpc-id <vpc-xxxx> --subnets <subnet-a,subnet-b>
+```
+
+Pass NEITHER `--vpc-id`/`--subnets` (Option A) or BOTH (Option B); passing only
+one is rejected. The script confirms the target account before any writes (set
+`CONFIRM_DEPLOY=yes` to skip the prompt in automation).
+
+`deploy-workshop.sh` performs the full sequence automatically:
+
+1. package each child template's Lambda code and upload the children to the
+   templates bucket;
+2. deploy the master stack (with `BrokerTriggerBuild=false`, so the broker's
+   in-stack image build is skipped and its ECS service stays at `DesiredCount:
+   0`);
+3. stage the broker + firmware Docker build contexts to S3, build the broker
+   container image in CodeBuild, then scale the broker ECS service to 1 task;
+4. build + sync the v2 dashboard and invalidate CloudFront;
+5. print the outputs (dashboard URL, broker endpoint) and the remaining steps.
+
+Approximate duration: ~10–11 minutes (CloudFormation create ~6 min + broker
+image build ~3–4 min).
+
+When it finishes, the cloud side is fully up: broker running behind the NLB and
+the dashboard served from CloudFront.
+
+### 4. Build the firmware builder image (one-time, required before flashing)
+
+The per-device firmware compile runs in a CodeBuild image that must exist in ECR
+first. `deploy-workshop.sh` has already staged its build source, so just start
+the build (the project name is the `FirmwareImageBuilderProject` stack output —
+`pqc-workshop-build-image`):
+
+```bash
+aws codebuild start-build --project-name pqc-workshop-build-image [--profile <name>]
+```
+
+Wait for it to reach `SUCCEEDED` before flashing any device. Until this
+completes, device registration/flashing cannot compile firmware.
+
+### 5. Register the Builder-Pi (on the physical Raspberry Pi)
+
+This runs on the Pi itself, not the deploy host. From this repo, generate the
+bundle and copy it to the Pi:
+
+```bash
+raw_device_builder/bundle-for-builder-pi.sh
+```
+
+Then on the Pi, run the bundle's `setup-all.sh`. It installs the SSM agent
+(registering the Pi as an SSM managed instance using the stack's activation) and
+the `workshop-builder` CLI. After this the Pi appears in
+`aws ssm describe-instance-information`.
+
+### 6. Validate readiness
+
+```bash
+./check_setup_status.sh --region <region> [--profile <name>]
+```
+
+Before steps 4 and 5 are complete, expect warnings for the firmware image and the
+Builder-Pi — that is normal. Once both are done and at least one device has
+connected, the check should pass clean.
+
+---
+
+## VPC: create one, or bring your own
 
 The master takes a `CreateVpc` parameter (default `true`):
 
@@ -37,77 +134,15 @@ Either way the broker gets **VPC endpoints** (ECR api/dkr, Secrets Manager,
 CloudWatch Logs interface + an S3 gateway) so its Fargate task pulls the image
 and secrets over private AWS networking rather than depending on public egress.
 
-### Broker container image: a two-pass build
+## Why the broker image build is a separate step
 
 CloudFormation cannot upload a Docker build context, and the broker's image-build
-CodeBuild reads its source from a bucket the broker stack itself creates. To avoid
-that chicken-and-egg, the master template takes a `BrokerTriggerBuild` parameter
-(default `false`). `deploy-workshop.sh` therefore:
-
-1. deploys the stack with `BrokerTriggerBuild=false` — this creates all infra
-   (including the empty broker source bucket) but skips the in-stack image build;
-   the broker ECS service ships at `DesiredCount: 0`, so nothing needs the image yet;
-2. uploads the Docker build contexts to their now-existing source buckets;
-3. starts the broker image-build CodeBuild, waits for it, then scales the broker
-   ECS service to 1 task.
-
-## One-command deploy (self-hosted)
-
-```bash
-cd cloudformation
-
-# Create a VPC (default; best for Workshop Studio / fresh accounts):
-./deploy-workshop.sh <region> [--profile NAME] [--device-count 100]
-
-# Or bring your own VPC (pass BOTH flags):
-./deploy-workshop.sh <region> [--profile NAME] --vpc-id <vpc-xxxx> --subnets <subnet-a,subnet-b>
-```
-
-Omit both `--vpc-id` and `--subnets` to have the stack create its own VPC; pass
-both to reuse an existing one. Passing only one is rejected.
-
-The script runs five steps:
-
-1. package each child template's Lambda code (`aws cloudformation package`) and
-   upload the packaged children to the templates bucket;
-2. deploy the single master stack (with `BrokerTriggerBuild=false`);
-3. stage the broker + firmware Docker build contexts to S3, build the broker
-   container image, and scale the broker ECS service up;
-4. build + sync the v2 dashboard (a build step CloudFormation cannot do);
-5. print the remaining manual steps.
-
-`--profile NAME` targets a named AWS CLI profile for every call (useful for
-multi-account testing); it prints the resolved account + caller ARN and asks for
-confirmation before any writes (bypass with `CONFIRM_DEPLOY=yes`).
-
-**Approximate duration: ~10-11 minutes.** The CloudFormation create is ~6 min
-(BrokerStack ~3.5 min, then DeviceBuilderStack ~2.5 min serialized after it), and
-the post-deploy broker Docker image build adds ~3-4 min.
-
-## Workshop Studio
-
-1. Stage the assets (packages the network + all workshop children + uploads them):
-   ```bash
-   ./package.sh <region> <ws-assets-bucket> pqc-workshop
-   ```
-2. Point Workshop Studio content provisioning at:
-   `cloudformation/pqc-workshop-main.yaml`
-3. Supply parameters:
-   - `TemplateBucketName` = `<ws-assets-bucket>`
-   - `TemplateBucketPrefix` = `pqc-workshop`
-   - `CreateVpc` = `true` (default) — the stack builds its own VPC, so no VPC
-     prep is needed in the Workshop Studio account
-   - `VpcId` / `SubnetIds` — leave empty when `CreateVpc=true`; set them (and
-     `CreateVpc=false`) only to bring your own VPC
-   - `DeviceCount` (optional, default 100)
-
-> **Note:** deploying the master directly (Workshop Studio) leaves
-> `BrokerTriggerBuild=false`, so the broker container image is **not** built and
-> the v2 dashboard is **not** built/synced automatically — those are the local
-> steps `deploy-workshop.sh` performs. After a direct master deploy you must
-> stage the broker Docker context, run the broker image build, scale the broker
-> service to 1, and build+sync the dashboard yourself (or run the relevant part
-> of `deploy-workshop.sh`).
+CodeBuild reads its source from a bucket the broker stack itself creates —
+a chicken-and-egg. So the master ships `BrokerTriggerBuild=false`: the stack
+creates all infrastructure (including the empty broker source bucket) with the
+broker ECS service at `DesiredCount: 0`, and `deploy-workshop.sh` step 3 then
+uploads the build context, builds the image, and scales the service to 1. This
+is why the image build lives in the deploy script, not in the stack.
 
 ## Inputs
 
@@ -117,109 +152,39 @@ the post-deploy broker Docker image build adds ~3-4 min.
 | `CreateVpc` | Optional (default `true`) | `true` = stack builds its own VPC; `false` = bring your own |
 | `VpcId` | Only if `CreateVpc=false` | Existing VPC for the PQC broker (ECS Fargate + NLB) |
 | `SubnetIds` | Only if `CreateVpc=false` | ≥2 subnets across ≥2 AZs for the NLB + ECS tasks |
+| `DeviceCount` | Optional (default 100) | Dashboard scaling hint |
 
-## Remaining manual steps (cannot be done by CloudFormation)
+## Workshop Studio
 
-These are inherent limitations — CloudFormation cannot build container images,
-build a frontend, or register software on physical hardware.
+Workshop Studio deploys the master template directly (it does not run
+`deploy-workshop.sh`), so the operator must perform the deploy script's post-stack
+steps by hand.
 
-1. **One-time firmware Docker image build.** Before any device firmware can be
-   built, the firmware build image must exist in ECR. After the stack deploys,
-   run the image-builder CodeBuild project once (its name is the
-   `FirmwareImageBuilderProject` stack output):
+1. Stage the assets (packages the network + workshop children and uploads them):
    ```bash
-   aws codebuild start-build --project-name <FirmwareImageBuilderProject>
+   ./package.sh <region> <ws-assets-bucket> pqc-workshop
    ```
-   (The **broker** container image is built + pushed by `deploy-workshop.sh`
-   step 3; only the **firmware** build image needs this separate one-time run.
-   If you deploy the master directly rather than via `deploy-workshop.sh`, you
-   must build the broker image yourself too — see the Workshop Studio note.)
+2. Point Workshop Studio content provisioning at
+   `cloudformation/pqc-workshop-main.yaml` with parameters:
+   - `TemplateBucketName` = `<ws-assets-bucket>`
+   - `TemplateBucketPrefix` = `pqc-workshop`
+   - `CreateVpc` = `true` (default; no VPC prep needed in the account)
+   - `VpcId` / `SubnetIds` = leave empty unless `CreateVpc=false`
+   - `DeviceCount` (optional, default 100)
+3. **After the stack completes**, do the steps `deploy-workshop.sh` would have
+   done, in this order:
+   1. stage the broker Docker build context to the broker source bucket and start
+      the broker image build (CodeBuild `pqc-workshop-broker-image-build`); wait
+      for `SUCCEEDED`;
+   2. scale the broker service up:
+      ```bash
+      aws ecs update-service --cluster pqc-workshop-broker \
+        --service pqc-workshop-broker --desired-count 1
+      ```
+   3. build the v2 dashboard, sync it to the dashboard S3 bucket, and invalidate
+      CloudFront.
+4. Then continue with the shared steps 4–6 above (firmware image build,
+   Builder-Pi registration, validate).
 
-2. **v2 dashboard build + sync.** `deploy-workshop.sh` does this for you (builds
-   the Vite app, injects the AppSync/Cognito/API config from stack outputs,
-   syncs to S3, invalidates CloudFront). If you deploy the master template
-   directly (e.g. via Workshop Studio) rather than through `deploy-workshop.sh`,
-   run that build+sync step afterward.
-
-3. **Builder-Pi SSM registration.** Installing and registering the SSM agent on
-   the physical Raspberry Pi is on-device. Use
-   `raw_device_builder/bundle-for-builder-pi.sh` to generate the bundle, then run
-   its `setup-all.sh` on the Pi. This also installs the `workshop-builder` CLI.
-
-## Broker image + service scaling
-
-The broker ECS service ships at `DesiredCount: 0`, so no task runs during the
-CloudFormation deploy. `deploy-workshop.sh` builds and pushes the broker image
-(step 3) and only then scales the service to 1 task — so the image always exists
-before the first task starts. If you deploy the master directly, scale the
-service up yourself after building the image:
-
-```bash
-aws ecs update-service --cluster pqc-workshop-broker \
-  --service pqc-workshop-broker --desired-count 1
-```
-
-## Validate
-
-```bash
-./check_setup_status.sh --region <region> [--profile NAME]
-```
-
----
-
-## Validation status — account 569757034460 (as of 2026-07-15)
-
-This section is a point-in-time record of the `refactor-deployment` branch being
-validated in test account **569757034460** (`us-east-1`, profile `pqc-b`), using
-the **create-its-own-VPC** path (`./deploy-workshop.sh us-east-1 --profile pqc-b`,
-no `--vpc-id`). It records exactly what is done and what is not.
-
-### Done (verified live)
-
-- **Master stack `pqc-workshop`:** `CREATE_COMPLETE`. All nested stacks created:
-  `NetworkStack`, `BrokerStack`, `DeviceBuilderStack`, `DeviceStack`,
-  `SSMActivationStack`, `DashboardStack`.
-- **VPC:** created by `NetworkStack` — `vpc-0b84a1a6a34bef02f` (CIDR
-  `10.20.0.0/16`, two public subnets across two AZs, IGW). The broker runs in
-  this VPC (not the default).
-- **VPC endpoints:** ECR api/dkr, Secrets Manager, CloudWatch Logs (interface) +
-  S3 (gateway) created in the workshop VPC.
-- **Broker container image:** built by `deploy-workshop.sh` step 3 and pushed to
-  ECR `pqc-workshop-mosquitto-broker`.
-- **Broker service:** ECS Fargate `pqc-workshop-broker` scaled to 1 —
-  desired 1 / running 1, task healthy in the NLB target group.
-  Endpoint: `pqc-broker-nlb-f713aef3b6027e11.elb.us-east-1.amazonaws.com:8883`.
-- **v2 dashboard:** built + synced to S3 + CloudFront invalidated by
-  `deploy-workshop.sh` step 4.
-  URL: `https://d2flrb40wnodyl.cloudfront.net`.
-- **Firmware image build source:** staged to
-  `s3://pqc-workshop-firmware-569757034460/source/` — `Dockerfile`,
-  `buildspec-image.yml`, `wolfssl_user_settings_arduino.h`,
-  `partitions_pqc_workshop.csv` (all present).
-
-### Not done yet (the next steps)
-
-1. **Firmware Docker image build — NOT run.** ECR repo
-   `pqc-workshop-firmware-builder` currently has **0 images**. The build source
-   is staged (above), so it is ready to run. Run once:
-   ```bash
-   aws codebuild start-build --project-name pqc-workshop-build-image --profile pqc-b
-   ```
-   Until this succeeds, no per-device firmware can be compiled.
-
-2. **Builder-Pi SSM registration — NOT done.** No SSM managed instances are
-   registered in the account (`aws ssm describe-instance-information` is empty).
-   This is on-device work on the physical Raspberry Pi: generate the bundle with
-   `raw_device_builder/bundle-for-builder-pi.sh` and run its `setup-all.sh` on
-   the Pi (installs the SSM agent + the `workshop-builder` CLI). Cannot be done
-   from the deploy host.
-
-3. **Validate readiness** (run any time; warnings expected until 1 + 2 above):
-   ```bash
-   ./check_setup_status.sh --region us-east-1 --profile pqc-b
-   ```
-
-### Not applicable to this validation
-
-- No ESP32 devices have been flashed/connected (expected — depends on step 1 +
-  the Builder-Pi).
+> The simplest way to get the exact commands for 3.i–3.iii is to read the
+> corresponding sections of `deploy-workshop.sh`.
