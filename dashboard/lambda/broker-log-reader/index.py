@@ -5,7 +5,9 @@ Queries CloudWatch Logs for the Mosquitto broker log, optionally filtered
 by device name. Returns the most recent log entries.
 
 Environment variables:
-  LOG_GROUP_NAME — CloudWatch log group (default: /pqc-workshop/mosquitto-broker)
+  LOG_GROUP_NAME — CloudWatch log group (default: /pqc-workshop/broker-container,
+                   the live ECS Fargate broker; the legacy Raspberry-Pi group
+                   /pqc-workshop/mosquitto-broker is retired).
 """
 
 import boto3
@@ -15,7 +17,7 @@ import time
 
 logs_client = boto3.client('logs')
 
-LOG_GROUP = os.environ.get('LOG_GROUP_NAME', '/pqc-workshop/mosquitto-broker')
+LOG_GROUP = os.environ.get('LOG_GROUP_NAME', '/pqc-workshop/broker-container')
 
 
 def handler(event, context):

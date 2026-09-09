@@ -254,11 +254,7 @@ Resources:
           DEFAULT_WIFI_SSID: !Ref DefaultWifiSsid
           DEFAULT_BROKER_ENDPOINT: !Ref DefaultBrokerEndpoint
           PRIVATE_CA_ARN: !Ref PrivateCAArn
-      Code:
-        ZipFile: |
-          # Placeholder — deploy real code from lambda/device-registrar/index.py
-          def handler(event, context):
-              return {'statusCode': 200, 'body': 'placeholder'}
+      Code: ../lambda/device-registrar
 
   # ═══════════════════════════════════════════════════════════════════════════
   # PQC Migration — Step Functions workflow (replaces the synchronous
@@ -583,11 +579,7 @@ Resources:
         Variables:
           REGISTRY_TABLE: !Ref DeviceRegistryTable
           FIRMWARE_BUCKET: !Sub '${FirmwareBucketName}-${AWS::AccountId}'
-      Code:
-        ZipFile: |
-          # Placeholder — deploy real code from lambda/device-deregistrar/index.py
-          def handler(event, context):
-              return {'statusCode': 200, 'body': 'placeholder'}
+      Code: ../lambda/device-deregistrar
 
   # ═══════════════════════════════════════════════════════════════════════════
   # Lambda — Firmware Pusher (generates presigned URLs for OTA)
@@ -643,11 +635,7 @@ Resources:
           FIRMWARE_BUCKET: !Sub '${FirmwareBucketName}-${AWS::AccountId}'
           IOT_ENDPOINT: !Ref IoTEndpoint
           REGISTRY_TABLE: !Ref DeviceRegistryTable
-      Code:
-        ZipFile: |
-          # Placeholder — deploy real code from lambda/firmware-pusher/index.py
-          def handler(event, context):
-              return {'statusCode': 200, 'body': 'placeholder'}
+      Code: ../lambda/firmware-pusher
 
   # ═══════════════════════════════════════════════════════════════════════════
   # API Gateway — Builder-Pi API
