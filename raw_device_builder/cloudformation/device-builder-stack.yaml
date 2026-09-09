@@ -261,23 +261,26 @@ Resources:
               return {'statusCode': 200, 'body': 'placeholder'}
 
   # ═══════════════════════════════════════════════════════════════════════════
-  # Lambda — PQC Upgrader
-  # Triggered by the dashboard "Migrate to PQC" button (via AppSync
-  # migrateFirmware). Builds the PQC firmware variant with the device's certs
-  # and WiFi credentials, generates a presigned S3 URL, and publishes the
-  # ota-update command to cmd/<thing>/ota. Shares the device-registrar role
-  # (which grants iot:Publish, codebuild, acm-pca, dynamodb, s3).
-  # Real code is deployed from lambda/pqc-upgrader/index.py.
+  # PQC Migration — Step Functions workflow (replaces the synchronous
+  # pqc-upgrader Lambda). The dashboard "Migrate to PQC" button invokes the
+  # StartMigration Lambda (via AppSync), which starts this state machine:
+  #   SetStatusBuilding -> PrepareBuild -> (WaitForBuild) -> SetStatusPushing
+  #   -> PublishOta -> SetStatusRebooting, with a Catch -> SetStatusFailed.
+  # The long build wait uses the CodeBuild .sync integration, so no Lambda
+  # blocks on the build and AppSync never times out. Live progress is written to
+  # the dashboard device table (migrationStatus), surfaced by the dashboard poll.
+  # Lambda code is packaged from lambda/* by `aws cloudformation package`.
   # ═══════════════════════════════════════════════════════════════════════════
 
-  PqcUpgraderFunction:
+  # Work step 1: registry lookup, issue cert, start CodeBuild. Shares the
+  # device-registrar role (acm-pca, codebuild, dynamodb, s3).
+  PrepareBuildFunction:
     Type: AWS::Lambda::Function
     Properties:
-      FunctionName: pqc-workshop-pqc-upgrader
+      FunctionName: pqc-workshop-prepare-build
       Runtime: python3.12
       Handler: index.handler
-      # Builds PQC firmware synchronously and waits for CodeBuild (up to 5 min).
-      Timeout: 360
+      Timeout: 60
       Role: !GetAtt DeviceRegistrarRole.Arn
       Environment:
         Variables:
@@ -289,20 +292,238 @@ Resources:
           DEFAULT_WIFI_SSID: !Ref DefaultWifiSsid
           DEFAULT_WIFI_PASSWORD: !Ref DefaultWifiPassword
           DEFAULT_BROKER_ENDPOINT: !Ref DefaultBrokerEndpoint
-      Code:
-        ZipFile: |
-          # Placeholder — deploy real code from lambda/pqc-upgrader/index.py
-          def handler(event, context):
-              return {'statusCode': 200, 'body': 'placeholder'}
+      Code: ../lambda/prepare-build
 
-  # Allow AppSync to invoke the PQC upgrader Lambda (the dashboard stack's
-  # migrateFirmware resolver targets this function).
-  PqcUpgraderAppSyncPermission:
+  # Work step 2: presign regional S3 URL, publish cmd/<thing>/ota, mark registry.
+  PublishOtaFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: pqc-workshop-publish-ota
+      Runtime: python3.12
+      Handler: index.handler
+      Timeout: 30
+      Role: !GetAtt DeviceRegistrarRole.Arn
+      Environment:
+        Variables:
+          REGISTRY_TABLE: !Ref DeviceRegistryTable
+          FIRMWARE_BUCKET: !Sub '${FirmwareBucketName}-${AWS::AccountId}'
+          IOT_ENDPOINT: !Ref IoTEndpoint
+      Code: ../lambda/publish-ota
+
+  # AppSync target: starts the state machine and returns immediately.
+  StartMigrationRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: pqc-workshop-start-migration
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: StartExecution
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: states:StartExecution
+                Resource: !Ref PqcMigrationStateMachine
+
+  StartMigrationFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: pqc-workshop-start-migration
+      Runtime: python3.12
+      Handler: index.handler
+      Timeout: 10
+      Role: !GetAtt StartMigrationRole.Arn
+      Environment:
+        Variables:
+          STATE_MACHINE_ARN: !Ref PqcMigrationStateMachine
+      Code: ../lambda/start-migration
+
+  # Allow AppSync (dashboard migrateFirmware resolver) to invoke StartMigration.
+  StartMigrationAppSyncPermission:
     Type: AWS::Lambda::Permission
     Properties:
-      FunctionName: !Ref PqcUpgraderFunction
+      FunctionName: !Ref StartMigrationFunction
       Action: lambda:InvokeFunction
       Principal: appsync.amazonaws.com
+
+  # IAM role for the state machine: write migrationStatus to the dashboard
+  # device table, run the build, invoke the two task Lambdas.
+  PqcMigrationStateMachineRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: pqc-workshop-pqc-migration
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: states.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: MigrationOrchestration
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - codebuild:StartBuild
+                  - codebuild:BatchGetBuilds
+                  - codebuild:StopBuild
+                Resource: !GetAtt FirmwareBuildProject.Arn
+              # CodeBuild .sync uses EventBridge managed rules to get completion.
+              - Effect: Allow
+                Action:
+                  - events:PutTargets
+                  - events:PutRule
+                  - events:DescribeRule
+                Resource: !Sub 'arn:aws:events:${AWS::Region}:${AWS::AccountId}:rule/StepFunctionsGetEventsForCodeBuildStartBuildRule'
+              - Effect: Allow
+                Action:
+                  - dynamodb:UpdateItem
+                Resource: !Sub 'arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/pqc-workshop-devices'
+              - Effect: Allow
+                Action:
+                  - lambda:InvokeFunction
+                Resource:
+                  - !GetAtt PrepareBuildFunction.Arn
+                  - !GetAtt PublishOtaFunction.Arn
+
+  PqcMigrationStateMachine:
+    Type: AWS::StepFunctions::StateMachine
+    Properties:
+      StateMachineName: pqc-workshop-pqc-migration
+      StateMachineType: STANDARD
+      RoleArn: !GetAtt PqcMigrationStateMachineRole.Arn
+      # ASL definition is inlined and templated. The ${...} tokens are resolved
+      # by DefinitionSubstitutions; the $.xxx JSONPath tokens are left intact
+      # because they are not of the ${..} form Fn::Sub interprets.
+      DefinitionSubstitutions:
+        DeviceTableName: pqc-workshop-devices
+        BuildProjectName: !Ref FirmwareBuildProject
+        PrepareBuildFunctionArn: !GetAtt PrepareBuildFunction.Arn
+        PublishOtaFunctionArn: !GetAtt PublishOtaFunction.Arn
+      DefinitionString: |
+        {
+          "Comment": "PQC migration workflow: build PQC firmware, push OTA, report live migrationStatus.",
+          "StartAt": "SetStatusBuilding",
+          "States": {
+            "SetStatusBuilding": {
+              "Type": "Task",
+              "Resource": "arn:aws:states:::dynamodb:updateItem",
+              "Parameters": {
+                "TableName": "${DeviceTableName}",
+                "Key": { "thingName": { "S.$": "$.thingName" } },
+                "UpdateExpression": "SET migrationStatus = :s REMOVE migrationError",
+                "ExpressionAttributeValues": { ":s": { "S": "building" } }
+              },
+              "ResultPath": null,
+              "Next": "PrepareBuild",
+              "Catch": [ { "ErrorEquals": ["States.ALL"], "ResultPath": "$.error", "Next": "SetStatusFailed" } ]
+            },
+            "PrepareBuild": {
+              "Type": "Task",
+              "Resource": "arn:aws:states:::lambda:invoke",
+              "Parameters": {
+                "FunctionName": "${PrepareBuildFunctionArn}",
+                "Payload": { "thingName.$": "$.thingName" }
+              },
+              "ResultSelector": {
+                "thingName.$": "$.Payload.thingName",
+                "serialNumber.$": "$.Payload.serialNumber",
+                "s3Key.$": "$.Payload.s3Key",
+                "buildNeeded.$": "$.Payload.buildNeeded",
+                "buildId.$": "$.Payload.buildId"
+              },
+              "ResultPath": "$.prepare",
+              "Next": "BuildNeeded?",
+              "Catch": [ { "ErrorEquals": ["States.ALL"], "ResultPath": "$.error", "Next": "SetStatusFailed" } ]
+            },
+            "BuildNeeded?": {
+              "Type": "Choice",
+              "Choices": [ { "Variable": "$.prepare.buildNeeded", "BooleanEquals": true, "Next": "WaitForBuild" } ],
+              "Default": "SetStatusPushing"
+            },
+            "WaitForBuild": {
+              "Type": "Task",
+              "Resource": "arn:aws:states:::codebuild:startBuild.sync",
+              "Parameters": {
+                "ProjectName": "${BuildProjectName}",
+                "EnvironmentVariablesOverride": [
+                  { "Name": "DEVICE_SERIAL", "Value.$": "$.prepare.serialNumber", "Type": "PLAINTEXT" },
+                  { "Name": "FIRMWARE_VARIANT", "Value": "pqc", "Type": "PLAINTEXT" }
+                ]
+              },
+              "ResultPath": null,
+              "Next": "SetStatusPushing",
+              "Catch": [ { "ErrorEquals": ["States.ALL"], "ResultPath": "$.error", "Next": "SetStatusFailed" } ]
+            },
+            "SetStatusPushing": {
+              "Type": "Task",
+              "Resource": "arn:aws:states:::dynamodb:updateItem",
+              "Parameters": {
+                "TableName": "${DeviceTableName}",
+                "Key": { "thingName": { "S.$": "$.thingName" } },
+                "UpdateExpression": "SET migrationStatus = :s",
+                "ExpressionAttributeValues": { ":s": { "S": "pushing-ota" } }
+              },
+              "ResultPath": null,
+              "Next": "PublishOta",
+              "Catch": [ { "ErrorEquals": ["States.ALL"], "ResultPath": "$.error", "Next": "SetStatusFailed" } ]
+            },
+            "PublishOta": {
+              "Type": "Task",
+              "Resource": "arn:aws:states:::lambda:invoke",
+              "Parameters": {
+                "FunctionName": "${PublishOtaFunctionArn}",
+                "Payload": {
+                  "thingName.$": "$.thingName",
+                  "serialNumber.$": "$.prepare.serialNumber",
+                  "s3Key.$": "$.prepare.s3Key"
+                }
+              },
+              "ResultPath": "$.publish",
+              "Next": "SetStatusRebooting",
+              "Catch": [ { "ErrorEquals": ["States.ALL"], "ResultPath": "$.error", "Next": "SetStatusFailed" } ]
+            },
+            "SetStatusRebooting": {
+              "Type": "Task",
+              "Resource": "arn:aws:states:::dynamodb:updateItem",
+              "Parameters": {
+                "TableName": "${DeviceTableName}",
+                "Key": { "thingName": { "S.$": "$.thingName" } },
+                "UpdateExpression": "SET migrationStatus = :s",
+                "ExpressionAttributeValues": { ":s": { "S": "rebooting" } }
+              },
+              "ResultPath": null,
+              "Next": "Succeed"
+            },
+            "Succeed": { "Type": "Succeed" },
+            "SetStatusFailed": {
+              "Type": "Task",
+              "Resource": "arn:aws:states:::dynamodb:updateItem",
+              "Parameters": {
+                "TableName": "${DeviceTableName}",
+                "Key": { "thingName": { "S.$": "$.thingName" } },
+                "UpdateExpression": "SET migrationStatus = :s, migrationError = :e",
+                "ExpressionAttributeValues": {
+                  ":s": { "S": "failed" },
+                  ":e": { "S.$": "States.Format('{}', $.error.Cause)" }
+                }
+              },
+              "ResultPath": null,
+              "Next": "Fail"
+            },
+            "Fail": { "Type": "Fail", "Error": "PqcMigrationFailed", "Cause": "See migrationError on the device record." }
+          }
+        }
 
   # ═══════════════════════════════════════════════════════════════════════════
   # Lambda — Device Deregistrar
@@ -676,11 +897,17 @@ Outputs:
     Description: Builder API endpoint (set in builder-pi config.json)
     Value: !Sub 'https://${BuilderApi}.execute-api.${AWS::Region}.amazonaws.com/prod'
 
-  PqcUpgraderFunctionArn:
-    Description: PQC upgrader Lambda ARN (targeted by the dashboard migrateFirmware resolver)
-    Value: !GetAtt PqcUpgraderFunction.Arn
+  StartMigrationFunctionArn:
+    Description: StartMigration Lambda ARN (targeted by the dashboard migrateFirmware resolver)
+    Value: !GetAtt StartMigrationFunction.Arn
     Export:
-      Name: !Sub '${AWS::StackName}-PqcUpgraderFunctionArn'
+      Name: !Sub '${AWS::StackName}-StartMigrationFunctionArn'
+
+  PqcMigrationStateMachineArn:
+    Description: PQC migration Step Functions state machine ARN
+    Value: !Ref PqcMigrationStateMachine
+    Export:
+      Name: !Sub '${AWS::StackName}-PqcMigrationStateMachineArn'
 
   FirmwareBucketName:
     Description: S3 bucket for firmware artifacts

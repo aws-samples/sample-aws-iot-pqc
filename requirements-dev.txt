@@ -1,0 +1,7 @@
+# Development / test dependencies for the workshop's Python components
+# (Lambda handlers, Step Functions definition tests, Builder-Pi CLI).
+# Install into a virtualenv:  python3 -m venv .venv && . .venv/bin/activate
+#                             pip install -r requirements-dev.txt
+pytest>=8.0
+moto[all]>=5.0
+boto3>=1.34

@@ -123,6 +123,8 @@ Resources:
           uptimeSec: Int
           messageId: Int
           lastSeen: String
+          migrationStatus: String
+          migrationError: String
         }
 
         type MessageLogEntry {
@@ -261,8 +263,9 @@ Resources:
                   - !GetAtt CommandPublisherFunction.Arn
                   # The PQC upgrader Lambda is defined in the device-builder
                   # stack; reference it by its fixed name to avoid cross-stack
-                  # coupling. The migrateFirmware resolver invokes it.
-                  - !Sub 'arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:pqc-workshop-pqc-upgrader'
+                  # coupling. The migrateFirmware resolver invokes it to start the
+                  # PQC migration Step Functions workflow (returns immediately).
+                  - !Sub 'arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:pqc-workshop-start-migration'
 
   LambdaDataSource:
     Type: AWS::AppSync::DataSource
@@ -274,17 +277,18 @@ Resources:
       LambdaConfig:
         LambdaFunctionArn: !GetAtt CommandPublisherFunction.Arn
 
-  # Data source for the PQC upgrader Lambda (device-builder stack). Used by the
-  # migrateFirmware resolver so the "Migrate to PQC" button builds + pushes OTA.
-  PqcUpgraderDataSource:
+  # Data source for the StartMigration Lambda (device-builder stack). Used by the
+  # migrateFirmware resolver: the "Migrate to PQC" button starts the Step
+  # Functions migration workflow and returns immediately (no 30s timeout).
+  StartMigrationDataSource:
     Type: AWS::AppSync::DataSource
     Properties:
       ApiId: !GetAtt DeviceApi.ApiId
-      Name: PqcUpgraderSource
+      Name: StartMigrationSource
       Type: AWS_LAMBDA
       ServiceRoleArn: !GetAtt AppSyncLambdaRole.Arn
       LambdaConfig:
-        LambdaFunctionArn: !Sub 'arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:pqc-workshop-pqc-upgrader'
+        LambdaFunctionArn: !Sub 'arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:pqc-workshop-start-migration'
 
   # ─── AppSync Resolvers ─────────────────────────────────────────────────────
 
@@ -373,9 +377,9 @@ Resources:
       ApiId: !GetAtt DeviceApi.ApiId
       TypeName: Mutation
       FieldName: migrateFirmware
-      # Targets the PQC upgrader Lambda (builds PQC firmware + pushes OTA),
-      # not the command publisher.
-      DataSourceName: !GetAtt PqcUpgraderDataSource.Name
+      # Targets the StartMigration Lambda, which starts the Step Functions
+      # migration workflow and returns immediately.
+      DataSourceName: !GetAtt StartMigrationDataSource.Name
       Runtime:
         Name: APPSYNC_JS
         RuntimeVersion: 1.0.0

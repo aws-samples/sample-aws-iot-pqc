@@ -18,6 +18,8 @@ export const LIST_DEVICES = `
       uptimeSec
       messageId
       lastSeen
+      migrationStatus
+      migrationError
     }
   }
 `;

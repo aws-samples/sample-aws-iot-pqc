@@ -508,3 +508,22 @@ per-item confirmed (C3).
   v2 is what works and is in use; v1 frontend is the redundant one.
 - **CLI shares impl with Flask GUI** (rejected: standalone CLI scripts). Shared
   `builder_core` prevents GUI/CLI drift.
+- **Stay on raw CloudFormation** (rejected: rewrite the deployment in AWS CDK
+  (Python)). CDK's Lambda-bundling and typed Step Functions constructs would be
+  ergonomic, and the whole stack could be Python. But for this project the costs
+  outweigh the benefits: (1) CDK requires `cdk bootstrap` in every fresh Workshop
+  Studio account — an extra prerequisite and failure mode that works against the
+  "smooth, minimal-prerequisite fresh deploy" goal, whereas raw CFN +
+  `cloudformation package` needs only an artifacts bucket; (2) it would be a
+  full rewrite of ~10 working, hard-won templates (broker task def, CodeBuild
+  image wiring, Private CA, wolfSSL-baked build), re-introducing risk into
+  exactly the fragile components we must not destabilize; (3) CDK adds a
+  Node/CDK-CLI toolchain dependency to the deploy environment (today only the AWS
+  CLI is needed); (4) it does not address the actual root cause of this session's
+  rework — manually-created resources drifting from IaC and placeholder Lambda
+  stubs — which the single-source-of-truth discipline fixes regardless of
+  language. The two real CDK wins (automatic Lambda code packaging, explicit
+  cross-stack references) are already captured here via `cloudformation package`
+  (4a) and export/import (4d). CDK is worth revisiting later as its own
+  deliberate migration (with the working CFN as the reference) if the templates
+  begin to hurt from repetition — not bundled into this reliability push.

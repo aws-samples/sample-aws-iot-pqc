@@ -1,0 +1,124 @@
+{
+  "Comment": "PQC migration workflow: build PQC firmware, push OTA, and report live migrationStatus to the device record. Long build wait is handled by the CodeBuild .sync integration, not a Lambda.",
+  "StartAt": "SetStatusBuilding",
+  "States": {
+    "SetStatusBuilding": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::dynamodb:updateItem",
+      "Parameters": {
+        "TableName": "${DeviceTableName}",
+        "Key": { "thingName": { "S.$": "$.thingName" } },
+        "UpdateExpression": "SET migrationStatus = :s REMOVE migrationError",
+        "ExpressionAttributeValues": { ":s": { "S": "building" } }
+      },
+      "ResultPath": null,
+      "Next": "PrepareBuild",
+      "Catch": [ { "ErrorEquals": ["States.ALL"], "ResultPath": "$.error", "Next": "SetStatusFailed" } ]
+    },
+
+    "PrepareBuild": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${PrepareBuildFunctionArn}",
+        "Payload": { "thingName.$": "$.thingName" }
+      },
+      "ResultSelector": {
+        "thingName.$": "$.Payload.thingName",
+        "serialNumber.$": "$.Payload.serialNumber",
+        "s3Key.$": "$.Payload.s3Key",
+        "buildNeeded.$": "$.Payload.buildNeeded",
+        "buildId.$": "$.Payload.buildId"
+      },
+      "ResultPath": "$.prepare",
+      "Next": "BuildNeeded?",
+      "Catch": [ { "ErrorEquals": ["States.ALL"], "ResultPath": "$.error", "Next": "SetStatusFailed" } ]
+    },
+
+    "BuildNeeded?": {
+      "Type": "Choice",
+      "Choices": [
+        { "Variable": "$.prepare.buildNeeded", "BooleanEquals": true, "Next": "WaitForBuild" }
+      ],
+      "Default": "SetStatusPushing"
+    },
+
+    "WaitForBuild": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::codebuild:startBuild.sync",
+      "Parameters": {
+        "ProjectName": "${BuildProjectName}",
+        "EnvironmentVariablesOverride": [
+          { "Name": "DEVICE_SERIAL", "Value.$": "$.prepare.serialNumber", "Type": "PLAINTEXT" },
+          { "Name": "FIRMWARE_VARIANT", "Value": "pqc", "Type": "PLAINTEXT" }
+        ]
+      },
+      "ResultPath": null,
+      "Next": "SetStatusPushing",
+      "Catch": [ { "ErrorEquals": ["States.ALL"], "ResultPath": "$.error", "Next": "SetStatusFailed" } ]
+    },
+
+    "SetStatusPushing": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::dynamodb:updateItem",
+      "Parameters": {
+        "TableName": "${DeviceTableName}",
+        "Key": { "thingName": { "S.$": "$.thingName" } },
+        "UpdateExpression": "SET migrationStatus = :s",
+        "ExpressionAttributeValues": { ":s": { "S": "pushing-ota" } }
+      },
+      "ResultPath": null,
+      "Next": "PublishOta",
+      "Catch": [ { "ErrorEquals": ["States.ALL"], "ResultPath": "$.error", "Next": "SetStatusFailed" } ]
+    },
+
+    "PublishOta": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${PublishOtaFunctionArn}",
+        "Payload": {
+          "thingName.$": "$.thingName",
+          "serialNumber.$": "$.prepare.serialNumber",
+          "s3Key.$": "$.prepare.s3Key"
+        }
+      },
+      "ResultPath": "$.publish",
+      "Next": "SetStatusRebooting",
+      "Catch": [ { "ErrorEquals": ["States.ALL"], "ResultPath": "$.error", "Next": "SetStatusFailed" } ]
+    },
+
+    "SetStatusRebooting": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::dynamodb:updateItem",
+      "Parameters": {
+        "TableName": "${DeviceTableName}",
+        "Key": { "thingName": { "S.$": "$.thingName" } },
+        "UpdateExpression": "SET migrationStatus = :s",
+        "ExpressionAttributeValues": { ":s": { "S": "rebooting" } }
+      },
+      "ResultPath": null,
+      "Next": "Succeed"
+    },
+
+    "Succeed": { "Type": "Succeed" },
+
+    "SetStatusFailed": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::dynamodb:updateItem",
+      "Parameters": {
+        "TableName": "${DeviceTableName}",
+        "Key": { "thingName": { "S.$": "$.thingName" } },
+        "UpdateExpression": "SET migrationStatus = :s, migrationError = :e",
+        "ExpressionAttributeValues": {
+          ":s": { "S": "failed" },
+          ":e": { "S.$": "States.Format('{}', $.error.Cause)" }
+        }
+      },
+      "ResultPath": null,
+      "Next": "Fail"
+    },
+
+    "Fail": { "Type": "Fail", "Error": "PqcMigrationFailed", "Cause": "See migrationError on the device record." }
+  }
+}

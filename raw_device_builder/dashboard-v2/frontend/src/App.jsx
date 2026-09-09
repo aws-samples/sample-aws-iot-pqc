@@ -79,6 +79,17 @@ async function apiCall(path, method = 'GET', body = null) {
 
 // ─── Device Card ─────────────────────────────────────────────────────────────
 
+// Human-readable labels for the live migration status the Step Functions
+// workflow writes to the device record (surfaced via the 5s poll).
+const MIGRATION_LABELS = {
+  building: 'Building PQC firmware…',
+  'pushing-ota': 'Pushing OTA…',
+  rebooting: 'Rebooting into PQC…',
+  failed: 'Migration failed',
+  done: 'Migration complete',
+};
+const MIGRATION_IN_PROGRESS = ['building', 'pushing-ota', 'rebooting'];
+
 function DeviceCard({ device, onCommand, onShowLog, onBuildPqc }) {
   const [ledOn, setLedOn] = useState(true);
   const isPqc = device.pqcAlgorithm &&
@@ -86,6 +97,7 @@ function DeviceCard({ device, onCommand, onShowLog, onBuildPqc }) {
   const lastSeenDate = device.lastSeen ? new Date(device.lastSeen) : null;
   const isStale = lastSeenDate ? (Date.now() - lastSeenDate.getTime() > 90000) : true;
   const isOnline = device.status === 'online' && !isStale;
+  const migrating = MIGRATION_IN_PROGRESS.includes(device.migrationStatus);
 
   return (
     <div className={`device-card ${isPqc ? 'pqc' : 'classical'} ${isOnline ? 'online' : 'offline'}`}>
@@ -136,7 +148,12 @@ function DeviceCard({ device, onCommand, onShowLog, onBuildPqc }) {
         <button onClick={() => { const cmd = ledOn ? 'led-off' : 'led-on'; onCommand(device.thingName, cmd, 'control'); setLedOn(!ledOn); }} title="Toggle LED">
           💡 {ledOn ? 'LED Off' : 'LED On'}
         </button>
-        {!isPqc && isOnline && (
+        {!isPqc && isOnline && migrating && (
+          <button className="migrate-btn migrating" disabled title="Migration in progress">
+            <span className="spinner" aria-hidden="true"></span> {MIGRATION_LABELS[device.migrationStatus]}
+          </button>
+        )}
+        {!isPqc && isOnline && !migrating && (
           <button className="migrate-btn" onClick={() => onBuildPqc(device.thingName)} title="Build and push PQC firmware">
             🚀 Upgrade to PQC
           </button>
@@ -147,6 +164,11 @@ function DeviceCard({ device, onCommand, onShowLog, onBuildPqc }) {
           </button>
         )}
       </div>
+      {device.migrationStatus === 'failed' && device.migrationError && (
+        <div className="migration-error" title={device.migrationError}>
+          ⚠️ {device.migrationError.length > 120 ? device.migrationError.slice(0, 120) + '…' : device.migrationError}
+        </div>
+      )}
     </div>
   );
 }
@@ -240,14 +262,13 @@ function App() {
     );
     if (!confirmed) return;
 
-    showMessage(`Building PQC firmware for ${thingName}...`);
-
-    // Trigger the migrate-pqc command via AppSync (which publishes to cmd/<thing>/ota)
+    // Starts the async Step Functions migration; returns immediately. Live
+    // progress then appears on the device card (migrationStatus) via the poll.
     const data = await appSyncQuery(MIGRATE_FIRMWARE, { thingName });
     if (data && data.migrateFirmware && data.migrateFirmware.success) {
-      showMessage(`PQC migration triggered for ${thingName}. Device will reboot shortly.`);
+      showMessage(`PQC migration started for ${thingName}. Watch the card for progress.`);
     } else {
-      showMessage(`Failed to trigger PQC migration for ${thingName}`);
+      showMessage(`Failed to start PQC migration for ${thingName}`);
     }
   };
 
