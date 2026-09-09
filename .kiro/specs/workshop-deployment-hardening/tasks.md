@@ -287,3 +287,15 @@ Branch: `refactor-deployment`.
   except where a non-firmware config parameter is threaded through.
 - **Live safety:** all deploy/delete steps are explicit and operator-gated;
   implementation output is templates + code + tests validated locally.
+
+---
+## Future / Backlog (out of current scope)
+- [ ] Move the v2 dashboard build into AWS (CI/CD pipeline).
+  - Today `deploy-workshop.sh` runs `npm ci && npm run build` locally and then
+    syncs `build/` to S3, so the deploy host needs Node/npm and produces a
+    machine-dependent artifact. Move this into a pipeline (e.g. CodePipeline +
+    CodeBuild, or the existing CodeBuild pattern) so the dashboard is built in
+    the account and published to S3/CloudFront without a local toolchain.
+  - Acceptance: `deploy-workshop.sh` no longer needs local Node/npm; the
+    dashboard build + S3 sync + CloudFront invalidation run in AWS on deploy.
+  - Deferred by operator decision to keep the current local run moving.
