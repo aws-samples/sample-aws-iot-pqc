@@ -8,6 +8,10 @@
 
 # Generated bundles with credentials
 esp32-arduino-bundle/
+# Builder-Pi bundle is generated per-deployment by bundle-for-builder-pi.sh and
+# contains a live SSM activation code + deployment-specific config — never commit it.
+builder-pi-bundle/
+builder-pi-bundle.zip
 
 # Arduino CLI local data (toolchains, board packages — regenerable caches)
 data/

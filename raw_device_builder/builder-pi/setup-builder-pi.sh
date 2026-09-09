@@ -129,6 +129,14 @@ else
     echo "       WARNING: Could not find partitions directory"
 fi
 
+# Stage the wolfSSL PQC header from the bundle into $INSTALL_DIR (the bundle
+# ships it next to this script). This is what the apply step below copies into
+# the Arduino wolfSSL library.
+SCRIPT_SRC_DIR="$(cd "$(dirname "$0")" && pwd)"
+if [[ -f "$SCRIPT_SRC_DIR/wolfssl_user_settings_arduino.h" ]]; then
+    cp "$SCRIPT_SRC_DIR/wolfssl_user_settings_arduino.h" "$INSTALL_DIR/wolfssl_user_settings_arduino.h"
+fi
+
 # Apply wolfSSL user_settings.h for PQC support
 WOLFSSL_DIR=$(find "$ARDUINO_USER_DIR" -path "*/libraries/wolfssl/src" -type d 2>/dev/null | head -1)
 if [[ -z "$WOLFSSL_DIR" ]]; then
@@ -172,6 +180,27 @@ else
     echo "       [WARN] pyproject.toml not found next to setup script; skipping CLI install"
 fi
 
+# ─── Deploy the builder-pi app files into $APP_DIR ───────────────────────────
+# The GUI (app.py) and its config resolve config.json relative to the package
+# location (builder_core/config.py uses a __file__-relative path), and the
+# systemd unit runs `python3 app.py` from $APP_DIR. So the app package must be
+# co-located in $APP_DIR. Copy it from the bundle (next to this script).
+echo "       Deploying builder-app files to $APP_DIR"
+APP_FILES=(app.py device_manager.py config.json)
+for f in "${APP_FILES[@]}"; do
+    if [[ -f "$SCRIPT_SRC_DIR/$f" ]]; then
+        cp "$SCRIPT_SRC_DIR/$f" "$APP_DIR/"
+    else
+        echo "       [WARN] $f not found in bundle; GUI may not start"
+    fi
+done
+for d in builder_core templates static; do
+    if [[ -d "$SCRIPT_SRC_DIR/$d" ]]; then
+        rm -rf "$APP_DIR/$d"
+        cp -r "$SCRIPT_SRC_DIR/$d" "$APP_DIR/"
+    fi
+done
+
 # ─── Step 7: Setup udev rules for ESP32 USB access ──────────────────────────
 echo "[7/7] Configuring USB access for ESP32 devices..."
 cat > /etc/udev/rules.d/99-esp32.rules << 'UDEV'
@@ -213,19 +242,18 @@ echo "════════════════════════�
 echo "  Setup complete!"
 echo "═══════════════════════════════════════════════════════════════"
 echo ""
-echo "  Next steps:"
-echo "    1. Copy builder-pi app files to: $APP_DIR/"
-echo "       (app.py, device_manager.py, config.json, templates/, static/)"
+echo "  App files, wolfSSL PQC config, and the workshop-builder CLI are"
+echo "  already installed. Remaining steps:"
 echo ""
-echo "    2. Copy wolfssl_user_settings_arduino.h to: $INSTALL_DIR/"
+echo "    1. Confirm $APP_DIR/config.json has the right values"
+echo "       (api_endpoint, region, firmware_bucket are set by the bundle;"
+echo "        set wifi_ssid / wifi_password / broker_endpoint as needed)"
 echo ""
-echo "    3. Update config.json with your API Gateway URL"
-echo ""
-echo "    4. Start the GUI:"
+echo "    2. Start the GUI:"
 echo "       systemctl enable pqc-builder-gui"
 echo "       systemctl start pqc-builder-gui"
 echo ""
-echo "    5. Access at: http://$(hostname -I | awk '{print $1}'):8080"
+echo "    3. Access at: http://$(hostname -I | awk '{print $1}'):8080"
 echo ""
 echo "  Tools installed:"
 echo "    - arduino-cli $(arduino-cli version 2>/dev/null | grep -o 'v[0-9.]*' | head -1)"

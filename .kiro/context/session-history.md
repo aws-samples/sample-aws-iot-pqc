@@ -38,8 +38,8 @@ React Dashboard (S3 + CloudFront + Cognito guest auth)
 | Cognito Identity Pool | us-east-1:589e1d0a-9a61-4021-a7e9-643cd1899375 |
 | SSM Instance (Pi) | mi-0edb5bc536ce8b7fc |
 | Raspberry Pi IP | 192.168.1.90 |
-| WiFi SSID | clarmouth-4-24 (2.4GHz) |
-| WiFi Password | Piaggio727411! |
+| WiFi SSID | <redacted — set per deployment> |
+| WiFi Password | <redacted — see secrets, never commit> |
 | DynamoDB Devices Table | pqc-workshop-devices |
 | DynamoDB Message Log Table | pqc-workshop-message-log |
 | CloudWatch Broker Log | /pqc-workshop/mosquitto-broker |
@@ -60,7 +60,7 @@ React Dashboard (S3 + CloudFront + Cognito guest auth)
 cd arduino-cli && ./setup.sh
 
 # Regenerate bundle (copies latest .ino source + fetches certs from Pi via SSM)
-./esp32-flash/bundle-for-esp32.sh --wifi-ssid "clarmouth-4-24" --wifi-password 'Piaggio727411!' --broker-ip 192.168.1.90
+./esp32-flash/bundle-for-esp32.sh --wifi-ssid "<YOUR_SSID>" --wifi-password '<YOUR_WIFI_PASSWORD>' --broker-ip <BROKER_IP>
 
 # Build + flash dual-boot (MUST run from arduino-cli/ directory)
 cd arduino-cli && ./build.sh --dual-boot

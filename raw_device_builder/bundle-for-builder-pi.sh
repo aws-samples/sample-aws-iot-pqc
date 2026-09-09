@@ -205,17 +205,38 @@ mkdir -p "$BUNDLE_DIR"
 # Copy builder-pi application
 cp -r "$SCRIPT_DIR/builder-pi/"* "$BUNDLE_DIR/"
 
-# Update config with actual values
+# Bundle the wolfSSL PQC user_settings header so setup-builder-pi.sh can apply
+# it to the Arduino wolfSSL library (step 5). The header lives with the
+# firmware-builder pipeline sources (codebuild/), not in builder-pi/, so copy
+# it in explicitly. Without this, step 5 emits a "not found" warning and the
+# Pi's wolfSSL library keeps its default (non-PQC) settings.
+WOLFSSL_HEADER="$SCRIPT_DIR/codebuild/wolfssl_user_settings_arduino.h"
+if [[ -f "$WOLFSSL_HEADER" ]]; then
+    cp "$WOLFSSL_HEADER" "$BUNDLE_DIR/wolfssl_user_settings_arduino.h"
+    echo "       wolfSSL PQC header bundled"
+else
+    echo "       [WARN] wolfSSL header not found at $WOLFSSL_HEADER;"
+    echo "              step 5 on the Pi will warn and skip the PQC config."
+fi
+
+# Update config with actual, per-deployment values. Only these keys are
+# deployment-specific; everything else in config.json is a static default or a
+# field the operator sets in the GUI (wifi_ssid/wifi_password/broker_endpoint).
+# The firmware bucket is named pqc-workshop-firmware-<accountId> by the stack,
+# so derive it from the account the activation was created in.
+FIRMWARE_BUCKET="pqc-workshop-firmware-${ACCOUNT_ID}"
 python3 -c "
 import json
 with open('$BUNDLE_DIR/config.json', 'r') as f:
     config = json.load(f)
 config['api_endpoint'] = '$API_ENDPOINT'
 config['region'] = '$REGION'
+config['firmware_bucket'] = '$FIRMWARE_BUCKET'
 with open('$BUNDLE_DIR/config.json', 'w') as f:
     json.dump(config, f, indent=2)
-print('       config.json updated')
+print('       config.json updated (api_endpoint, region, firmware_bucket)')
 "
+echo "       firmware_bucket: $FIRMWARE_BUCKET"
 
 # Create SSM setup script with embedded activation credentials
 cat > "$BUNDLE_DIR/setup-ssm.sh" << 'SSMEOF'

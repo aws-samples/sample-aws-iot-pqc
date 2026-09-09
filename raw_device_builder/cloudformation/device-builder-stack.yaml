@@ -13,8 +13,8 @@ Parameters:
 
   DefaultWifiSsid:
     Type: String
-    Description: Default WiFi SSID for devices
-    Default: clarmouth-4-24
+    Description: Default WiFi SSID for devices (set per deployment)
+    Default: ''
 
   DefaultWifiPassword:
     Type: String
@@ -27,8 +27,10 @@ Parameters:
 
   DefaultBrokerEndpoint:
     Type: String
-    Description: MQTT broker endpoint (NLB DNS or Pi IP for local testing)
-    Default: '192.168.1.90'
+    Description: >-
+      MQTT broker endpoint (NLB DNS). In the master deploy this is passed from
+      the broker stack; set it explicitly for a standalone device-builder deploy.
+    Default: ''
 
   DefaultBrokerPort:
     Type: String
