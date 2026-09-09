@@ -299,3 +299,13 @@ Branch: `refactor-deployment`.
   - Acceptance: `deploy-workshop.sh` no longer needs local Node/npm; the
     dashboard build + S3 sync + CloudFront invalidation run in AWS on deploy.
   - Deferred by operator decision to keep the current local run moving.
+- [ ] ESP32 watchdog timer for stall/lockup detection + recovery (FIRMWARE).
+  - Add a hardware/task watchdog to the ESP32 firmware so a locked or stalled
+    process on the microcontroller is detected and the device recovers (e.g.
+    Task Watchdog Timer feeding from the WiFi/MQTT/main tasks, with a controlled
+    reset on timeout). Covers both firmware variants as appropriate.
+  - Acceptance: a hung task triggers a watchdog reset and the device reconnects
+    (WiFi + MQTT) without manual power-cycling; timeout windows are tunable.
+  - NOTE: firmware-domain work — out of scope for the deployment-hardening
+    effort; tracked here only so it is not lost. Should be done under a firmware
+    effort so as not to destabilise the firmware while AWS deploy work is ongoing.
