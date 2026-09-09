@@ -16,10 +16,15 @@
 #     5. prints remaining manual steps
 #
 # Usage:
-#   ./deploy-workshop.sh <aws-region> --vpc-id <vpc-xxxx> --subnets <subnet-a,subnet-b> [--profile NAME] [--device-count N]
+#   ./deploy-workshop.sh <aws-region> [--vpc-id <vpc-xxxx> --subnets <a,b>] [--profile NAME] [--device-count N]
 #
-# Example (A-B testing against a specific account profile):
-#   ./deploy-workshop.sh us-east-1 --profile pqc-b --vpc-id vpc-0abc --subnets subnet-01,subnet-02
+# VPC: pass BOTH --vpc-id and --subnets to deploy into an existing VPC, or pass
+# NEITHER to have the stack create its own VPC (2 public subnets across 2 AZs +
+# IGW). Creating a VPC is the right choice for Workshop Studio / Control Tower
+# accounts that have no usable default VPC.
+#
+#   Create a VPC:   ./deploy-workshop.sh us-east-1 --profile pqc-b
+#   Existing VPC:   ./deploy-workshop.sh us-east-1 --profile pqc-b --vpc-id vpc-0abc --subnets subnet-01,subnet-02
 #
 # --profile is optional: when given it targets that named AWS CLI profile for
 # every aws call; when omitted the ambient/default credentials are used. Set up
@@ -52,9 +57,18 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-if [[ -z "$VPC_ID" || -z "$SUBNETS" ]]; then
-    echo "[ERROR] --vpc-id and --subnets are required (the broker NLB/ECS need them)."
-    echo "  Example: $0 $AWS_REGION --profile pqc-b --vpc-id vpc-0abc --subnets subnet-01,subnet-02"
+# VPC mode: if neither --vpc-id nor --subnets is given, the stack creates its
+# own VPC (CreateVpc=true). If both are given, we use that existing VPC. Giving
+# only one is an error.
+if [[ -z "$VPC_ID" && -z "$SUBNETS" ]]; then
+    CREATE_VPC="true"
+elif [[ -n "$VPC_ID" && -n "$SUBNETS" ]]; then
+    CREATE_VPC="false"
+else
+    echo "[ERROR] Pass BOTH --vpc-id and --subnets to use an existing VPC, or"
+    echo "        NEITHER to have the stack create its own VPC."
+    echo "  Existing VPC: $0 $AWS_REGION --profile pqc-b --vpc-id vpc-0abc --subnets subnet-01,subnet-02"
+    echo "  Create a VPC: $0 $AWS_REGION --profile pqc-b"
     exit 1
 fi
 
@@ -81,7 +95,11 @@ echo "  Profile:          ${PROFILE:-<ambient/default credentials>}"
 echo "  Target account:   $ACCOUNT_ID"
 echo "  Caller identity:  $CALLER_ARN"
 echo "  Region:           $AWS_REGION"
-echo "  VPC / subnets:    $VPC_ID / $SUBNETS"
+if [[ "$CREATE_VPC" == "true" ]]; then
+    echo "  VPC:              <the stack will create its own VPC>"
+else
+    echo "  VPC / subnets:    $VPC_ID / $SUBNETS"
+fi
 echo "  Devices:          $DEVICE_COUNT"
 echo "  Artifacts bucket: $ARTIFACTS_BUCKET"
 echo ""
@@ -108,6 +126,7 @@ fi
 # expects it. All five children are nested by the master.
 echo "[1/5] Packaging + uploading nested child templates..."
 for pair in \
+    "$SCRIPT_DIR/network-stack.yaml:network-stack.yaml" \
     "$PROJECT_ROOT/broker-container/cloudformation/broker-container-stack.yaml:broker-container-stack.yaml" \
     "$PROJECT_ROOT/raw_device_builder/cloudformation/device-builder-stack.yaml:device-builder-stack.yaml" \
     "$SCRIPT_DIR/device-provisioning-stack.yaml:device-provisioning-stack.yaml" \
@@ -124,24 +143,29 @@ for pair in \
 done
 
 # ─── Discover route tables for the chosen subnets (S3 gateway VPC endpoint) ───
-# The broker's S3 gateway endpoint needs the route tables associated with the
-# task subnets. A subnet with no explicit association uses the VPC main table.
-echo "[*] Resolving route tables for the S3 gateway endpoint..."
-RT_IDS=""
-for sn in $(echo "$SUBNETS" | tr ',' ' '); do
-    rt=$(aws ec2 describe-route-tables \
-        --filters "Name=association.subnet-id,Values=$sn" \
-        --query 'RouteTables[0].RouteTableId' --output text 2>/dev/null)
-    if [[ -z "$rt" || "$rt" == "None" ]]; then
+# Build the VPC-related parameter overrides. When creating our own VPC, the
+# master derives VpcId/SubnetIds/RouteTableId from the nested network stack, so
+# we only set CreateVpc=true. For an existing VPC, resolve its route tables (for
+# the broker S3 gateway endpoint) and pass everything through.
+VPC_PARAMS="CreateVpc=$CREATE_VPC"
+if [[ "$CREATE_VPC" == "false" ]]; then
+    echo "[*] Resolving route tables for the S3 gateway endpoint..."
+    RT_IDS=""
+    for sn in $(echo "$SUBNETS" | tr ',' ' '); do
         rt=$(aws ec2 describe-route-tables \
-            --filters "Name=vpc-id,Values=$VPC_ID" "Name=association.main,Values=true" \
+            --filters "Name=association.subnet-id,Values=$sn" \
             --query 'RouteTables[0].RouteTableId' --output text 2>/dev/null)
-    fi
-    [[ -n "$rt" && "$rt" != "None" ]] && RT_IDS+="${RT_IDS:+,}$rt"
-done
-# de-duplicate
-RT_IDS=$(echo "$RT_IDS" | tr ',' '\n' | awk 'NF && !seen[$0]++' | paste -sd, -)
-echo "    route tables: ${RT_IDS:-<none found — S3 gateway endpoint will be skipped>}"
+        if [[ -z "$rt" || "$rt" == "None" ]]; then
+            rt=$(aws ec2 describe-route-tables \
+                --filters "Name=vpc-id,Values=$VPC_ID" "Name=association.main,Values=true" \
+                --query 'RouteTables[0].RouteTableId' --output text 2>/dev/null)
+        fi
+        [[ -n "$rt" && "$rt" != "None" ]] && RT_IDS+="${RT_IDS:+,}$rt"
+    done
+    RT_IDS=$(echo "$RT_IDS" | tr ',' '\n' | awk 'NF && !seen[$0]++' | paste -sd, -)
+    echo "    route tables: ${RT_IDS:-<none found — S3 gateway endpoint will be skipped>}"
+    VPC_PARAMS="$VPC_PARAMS VpcId=$VPC_ID SubnetIds=$SUBNETS BrokerRouteTableIds=$RT_IDS"
+fi
 
 # ─── Step 2: deploy the single master stack ──────────────────────────────────
 # BrokerTriggerBuild=false: the broker's container-image CodeBuild pulls its
@@ -149,19 +173,17 @@ echo "    route tables: ${RT_IDS:-<none found — S3 gateway endpoint will be sk
 # creates it. So we create the infra now WITHOUT the in-stack image build, then
 # stage the source and trigger the build in step 3 (below). The broker ECS
 # service ships at DesiredCount 0, so nothing needs the image mid-deploy.
-echo "[2/5] Deploying the master stack (nests all five children)..."
+echo "[2/5] Deploying the master stack (nests all children)..."
 aws cloudformation deploy \
     --template-file "$SCRIPT_DIR/pqc-workshop-main.yaml" \
     --stack-name "pqc-workshop" \
     --parameter-overrides \
         DeviceCount="$DEVICE_COUNT" \
-        VpcId="$VPC_ID" \
-        SubnetIds="$SUBNETS" \
         TemplateBucketName="$ARTIFACTS_BUCKET" \
         TemplateBucketPrefix="$TEMPLATE_PREFIX" \
         BrokerTriggerBuild=false \
         BrokerCreateVpcEndpoints=true \
-        BrokerRouteTableIds="$RT_IDS" \
+        $VPC_PARAMS \
     --capabilities CAPABILITY_NAMED_IAM CAPABILITY_AUTO_EXPAND \
     --tags Workshop=pqc-reinvent
 

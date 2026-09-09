@@ -69,6 +69,7 @@ echo ""
 # under templates/ where the parent stack expects it.
 echo "  Packaging nested templates (Lambda code included)..."
 for pair in \
+    "$SCRIPT_DIR/network-stack.yaml:network-stack.yaml" \
     "$PROJECT_ROOT/broker-container/cloudformation/broker-container-stack.yaml:broker-container-stack.yaml" \
     "$PROJECT_ROOT/raw_device_builder/cloudformation/device-builder-stack.yaml:device-builder-stack.yaml" \
     "$SCRIPT_DIR/device-provisioning-stack.yaml:device-provisioning-stack.yaml" \
@@ -94,11 +95,15 @@ echo "  1. Provisioning template:  cloudformation/pqc-workshop-main.yaml"
 echo "  2. Parameters:"
 echo "       TemplateBucketName   = $BUCKET_NAME"
 echo "       TemplateBucketPrefix = $S3_PREFIX"
-echo "       VpcId                = <the workshop VPC>        (required)"
-echo "       SubnetIds            = <>=2 subnets, 2+ AZs>     (required)"
+echo "       CreateVpc            = true   (default; the stack builds its own VPC)"
+echo "       VpcId / SubnetIds    = only when CreateVpc=false (bring your own VPC)"
 echo ""
-echo "The master template nests ALL FIVE stacks (broker-container, device-builder,"
-echo "device-provisioning, ssm-hybrid-activation, dashboard) — a single template"
+echo "For Workshop Studio accounts (no usable default VPC), leave CreateVpc=true"
+echo "and the stack provisions its own VPC (2 public subnets, 2 AZs, IGW)."
+echo ""
+echo "The master template nests the network + all five workshop stacks"
+echo "(broker-container, device-builder, device-provisioning, ssm-activation,"
+echo "dashboard) — a single template"
 echo "deploys everything CloudFormation can. Remaining manual steps after deploy:"
 echo "  - one-time firmware image build (FirmwareImageBuilderProject output)"
 echo "  - v2 dashboard build+sync (see deploy-workshop.sh step 3)"

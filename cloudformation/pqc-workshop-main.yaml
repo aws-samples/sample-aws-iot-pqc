@@ -50,23 +50,37 @@ Parameters:
       Templates at: <prefix>/templates/
       Lambda zips at: <prefix>/lambda/
 
-  # ─── Broker networking (required by the nested BrokerStack) ─────────────────
+  # ─── Broker networking ──────────────────────────────────────────────────────
+  CreateVpc:
+    Type: String
+    Default: 'true'
+    AllowedValues: ['true', 'false']
+    Description: >
+      When 'true' (default), the stack creates its own VPC (2 public subnets, 2
+      AZs, IGW) via the nested network stack and ignores VpcId/SubnetIds. Set
+      'false' to bring your own VPC — then VpcId + SubnetIds are required.
+
   VpcId:
-    Type: AWS::EC2::VPC::Id
-    Description: VPC to deploy the PQC broker (ECS Fargate + NLB) into.
+    Type: String
+    Default: ''
+    Description: >
+      Existing VPC id for the broker (only used when CreateVpc=false). Leave
+      empty when CreateVpc=true.
 
   SubnetIds:
-    Type: List<AWS::EC2::Subnet::Id>
+    Type: CommaDelimitedList
+    Default: ''
     Description: >
-      At least two subnets in different AZs for the broker NLB and ECS tasks.
+      Existing subnet ids (>=2, two AZs) for the broker (only used when
+      CreateVpc=false). Leave empty when CreateVpc=true.
 
   BrokerRouteTableIds:
     Type: CommaDelimitedList
     Default: ''
     Description: >
-      Route table IDs for the broker's S3 gateway VPC endpoint (needed for ECR
-      image-layer pulls when the task uses VPC endpoints). For a default VPC,
-      pass the main route table id. Leave empty to skip the S3 gateway endpoint.
+      Route table IDs for the broker's S3 gateway VPC endpoint (only used when
+      CreateVpc=false). When CreateVpc=true the created route table is used
+      automatically. Leave empty to skip the S3 gateway endpoint.
 
   BrokerCreateVpcEndpoints:
     Type: String
@@ -100,24 +114,40 @@ Parameters:
       triggers the image build as a post-deploy step. Set 'true' only if the
       source is already staged before deploy.
 
+Conditions:
+  ShouldCreateVpc: !Equals [!Ref CreateVpc, 'true']
+
 Resources:
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # Nested Stack: Network (self-contained VPC) — created only when CreateVpc=true
+  # ═══════════════════════════════════════════════════════════════════════════
+  NetworkStack:
+    Type: AWS::CloudFormation::Stack
+    Condition: ShouldCreateVpc
+    Properties:
+      TemplateURL: !Sub 'https://${TemplateBucketName}.s3.amazonaws.com/${TemplateBucketPrefix}/templates/network-stack.yaml'
+      Tags:
+        - Key: Workshop
+          Value: pqc-reinvent
 
   # ═══════════════════════════════════════════════════════════════════════════
   # Nested Stack: PQC Broker (ECS Fargate + NLB + Private CA)
   # Deployed first — it creates the Private CA that the device-builder stack
-  # needs to issue device certificates.
+  # needs to issue device certificates. Uses the created VPC (NetworkStack) when
+  # CreateVpc=true, otherwise the supplied VpcId/SubnetIds.
   # ═══════════════════════════════════════════════════════════════════════════
   BrokerStack:
     Type: AWS::CloudFormation::Stack
     Properties:
       TemplateURL: !Sub 'https://${TemplateBucketName}.s3.amazonaws.com/${TemplateBucketPrefix}/templates/broker-container-stack.yaml'
       Parameters:
-        VpcId: !Ref VpcId
-        SubnetIds: !Join [',', !Ref SubnetIds]
+        VpcId: !If [ShouldCreateVpc, !GetAtt NetworkStack.Outputs.VpcId, !Ref VpcId]
+        SubnetIds: !If [ShouldCreateVpc, !GetAtt NetworkStack.Outputs.SubnetIds, !Join [',', !Ref SubnetIds]]
+        RouteTableIds: !If [ShouldCreateVpc, !GetAtt NetworkStack.Outputs.RouteTableId, !Join [',', !Ref BrokerRouteTableIds]]
         IoTEndpoint: !Sub '${AWS::AccountId}-ats.iot.${AWS::Region}.amazonaws.com'
         TriggerBuild: !Ref BrokerTriggerBuild
         CreateVpcEndpoints: !Ref BrokerCreateVpcEndpoints
-        RouteTableIds: !Join [',', !Ref BrokerRouteTableIds]
       Tags:
         - Key: Workshop
           Value: pqc-reinvent
