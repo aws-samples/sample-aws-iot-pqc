@@ -165,9 +165,16 @@ aws s3 cp "$PROJECT_ROOT/raw_device_builder/codebuild/Dockerfile" \
     "s3://${FIRMWARE_BUCKET}/source/Dockerfile" >/dev/null
 aws s3 cp "$PROJECT_ROOT/raw_device_builder/codebuild/buildspec-image.yml" \
     "s3://${FIRMWARE_BUCKET}/source/buildspec-image.yml" >/dev/null
+# Known locations for the two extra context files (fall back to a repo search
+# that only skips the arduino-cli/data/ board-package cache, not arduino-cli/).
+declare -A EXTRA_SRC=(
+    [wolfssl_user_settings_arduino.h]="$PROJECT_ROOT/arduino-cli/wolfssl_user_settings_arduino.h"
+    [partitions_pqc_workshop.csv]="$PROJECT_ROOT/esp32-flash/partitions_pqc_workshop.csv"
+)
 for extra in wolfssl_user_settings_arduino.h partitions_pqc_workshop.csv; do
-    f=$(find "$PROJECT_ROOT" -name "$extra" -not -path '*/arduino-cli/*' 2>/dev/null | head -1)
-    if [[ -n "$f" ]]; then
+    f="${EXTRA_SRC[$extra]}"
+    [[ -f "$f" ]] || f=$(find "$PROJECT_ROOT" -name "$extra" -not -path '*/arduino-cli/data/*' 2>/dev/null | head -1)
+    if [[ -n "$f" && -f "$f" ]]; then
         echo "          - $extra"
         aws s3 cp "$f" "s3://${FIRMWARE_BUCKET}/source/$extra" >/dev/null
     else
