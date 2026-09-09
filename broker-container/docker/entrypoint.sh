@@ -22,8 +22,27 @@ REGION="${AWS_REGION:-us-east-1}"
 
 mkdir -p "$BRIDGE_CERT_DIR"
 
+# ─── Identify this broker instance in the logs ──────────────────────────────
+# Make the CloudWatch log content self-identifying so it is unambiguous WHICH
+# broker produced these logs. During the workshop debugging, a second (dead)
+# Raspberry-Pi broker logged elsewhere and reading the wrong group cost hours.
+# ECS injects task metadata at ECS_CONTAINER_METADATA_URI_V4.
+TASK_ARN="unknown"
+CLUSTER="unknown"
+if [[ -n "${ECS_CONTAINER_METADATA_URI_V4:-}" ]]; then
+    META="$(curl -fsS "${ECS_CONTAINER_METADATA_URI_V4}/task" 2>/dev/null || true)"
+    if [[ -n "$META" ]]; then
+        TASK_ARN="$(echo "$META" | python3 -c "import sys,json;print(json.load(sys.stdin).get('TaskARN','unknown'))" 2>/dev/null || echo unknown)"
+        CLUSTER="$(echo "$META" | python3 -c "import sys,json;print(json.load(sys.stdin).get('Cluster','unknown'))" 2>/dev/null || echo unknown)"
+    fi
+fi
+
 echo "═══════════════════════════════════════════════════════════════"
 echo "  Mosquitto PQC Broker — Container Startup"
+echo "  broker=pqc-workshop-broker-container (ECS Fargate)"
+echo "  cluster=${CLUSTER}"
+echo "  task=${TASK_ARN}"
+echo "  region=${REGION}  log_group=/pqc-workshop/broker-container"
 echo "═══════════════════════════════════════════════════════════════"
 
 # ─── Fetch device-facing certificates from Secrets Manager ───────────────────
