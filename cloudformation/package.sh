@@ -69,6 +69,8 @@ echo ""
 # under templates/ where the parent stack expects it.
 echo "  Packaging nested templates (Lambda code included)..."
 for pair in \
+    "$PROJECT_ROOT/broker-container/cloudformation/broker-container-stack.yaml:broker-container-stack.yaml" \
+    "$PROJECT_ROOT/raw_device_builder/cloudformation/device-builder-stack.yaml:device-builder-stack.yaml" \
     "$SCRIPT_DIR/device-provisioning-stack.yaml:device-provisioning-stack.yaml" \
     "$SCRIPT_DIR/ssm-hybrid-activation-stack.yaml:ssm-hybrid-activation-stack.yaml" \
     "$DASHBOARD_INFRA/dashboard-stack.yaml:dashboard-stack.yaml"; do
@@ -92,9 +94,13 @@ echo "  1. Provisioning template:  cloudformation/pqc-workshop-main.yaml"
 echo "  2. Parameters:"
 echo "       TemplateBucketName   = $BUCKET_NAME"
 echo "       TemplateBucketPrefix = $S3_PREFIX"
+echo "       VpcId                = <the workshop VPC>        (required)"
+echo "       SubnetIds            = <>=2 subnets, 2+ AZs>     (required)"
 echo ""
-echo "NOTE: pqc-workshop-main.yaml deploys device provisioning, the dashboard"
-echo "backend, v2 dashboard hosting and SSM activation. The broker-container and"
-echo "device-builder stacks (Private CA, CodeBuild, PQC migration) deploy"
-echo "separately — see deploy-workshop.sh for the full ordered deploy."
+echo "The master template nests ALL FIVE stacks (broker-container, device-builder,"
+echo "device-provisioning, ssm-hybrid-activation, dashboard) — a single template"
+echo "deploys everything CloudFormation can. Remaining manual steps after deploy:"
+echo "  - one-time firmware image build (FirmwareImageBuilderProject output)"
+echo "  - v2 dashboard build+sync (see deploy-workshop.sh step 3)"
+echo "  - Builder-Pi SSM registration on the physical Raspberry Pi"
 echo ""

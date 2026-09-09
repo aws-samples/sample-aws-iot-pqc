@@ -27,6 +27,8 @@ This spec hardens the deployment across six workstreams:
    backend.
 6. **Automated tests** — unit tests for Lambda handlers, the state machine
    definition, and the Builder-Pi CLI, tied to acceptance criteria.
+7. **Single master template for Workshop Studio** — the master template nests as
+   many stacks as possible so Workshop Studio can be pointed at one template.
 
 ### Established facts (verified against the live account 087195661091 / us-east-1)
 
@@ -336,6 +338,47 @@ command to run them.
 slow/fragile THEN they SHALL be kept separate from the fast unit-test suite and
 clearly marked as optional/integration, so the default test run stays fast and
 deterministic.
+
+---
+
+## Requirement 7 — Single master template for Workshop Studio
+
+**User story:** As a workshop author configuring Workshop Studio, I want to point
+the content-provisioning at a single master CloudFormation template that deploys
+as much of the workshop as possible, so that setup is simple and the number of
+manual/ordered steps is minimized.
+
+#### Acceptance criteria
+
+7.1. WHEN the workshop is provisioned THEN the master template
+(`pqc-workshop-main.yaml`) SHALL nest as many of the workshop stacks as possible
+as `AWS::CloudFormation::Stack` children, so a single template deploys them —
+including the broker-container and device-builder stacks that are currently
+deployed standalone.
+
+7.2. WHEN one nested stack depends on another's output (e.g. the device-builder
+stack needs the broker-container's Private CA ARN) THEN the dependency SHALL be
+expressed with native CloudFormation cross-stack references
+(`!GetAtt <Stack>.Outputs.<Name>`) and ordering (`DependsOn`), rather than a
+script passing values between separately-deployed stacks.
+
+7.3. WHEN the master template requires environment-specific inputs (e.g. VPC and
+subnets for the broker) THEN they SHALL be exposed as master parameters (with
+sensible defaults or documented as required), so Workshop Studio can supply them
+in one place.
+
+7.4. WHERE a step genuinely cannot be performed by CloudFormation alone (the
+one-time firmware Docker image build, the v2 dashboard build+sync, and the
+Builder-Pi SSM agent registration on physical hardware) THEN those steps MAY
+remain outside the master template, but SHALL be clearly documented as the
+remaining manual/post-deploy steps.
+
+7.5. WHEN the master template is used THEN it SHALL NOT reduce the correctness of
+a standalone deploy of any child stack (each child stack SHALL remain
+independently deployable for development/testing).
+
+7.6. WHEN the master template is validated THEN it SHALL pass cfn-lint with no
+errors and its nested references SHALL resolve to real child template outputs.
 
 ---
 

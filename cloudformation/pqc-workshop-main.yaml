@@ -50,7 +50,67 @@ Parameters:
       Templates at: <prefix>/templates/
       Lambda zips at: <prefix>/lambda/
 
+  # ─── Broker networking (required by the nested BrokerStack) ─────────────────
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: VPC to deploy the PQC broker (ECS Fargate + NLB) into.
+
+  SubnetIds:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: >
+      At least two subnets in different AZs for the broker NLB and ECS tasks.
+
+  # ─── Default device WiFi (used by the firmware build; overridable) ──────────
+  DefaultWifiSsid:
+    Type: String
+    Default: changeme
+    Description: Default WiFi SSID baked into device firmware builds.
+
+  DefaultWifiPassword:
+    Type: String
+    NoEcho: true
+    Default: changeme
+    Description: Default WiFi password baked into device firmware builds.
+
 Resources:
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # Nested Stack: PQC Broker (ECS Fargate + NLB + Private CA)
+  # Deployed first — it creates the Private CA that the device-builder stack
+  # needs to issue device certificates.
+  # ═══════════════════════════════════════════════════════════════════════════
+  BrokerStack:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: !Sub 'https://${TemplateBucketName}.s3.amazonaws.com/${TemplateBucketPrefix}/templates/broker-container-stack.yaml'
+      Parameters:
+        VpcId: !Ref VpcId
+        SubnetIds: !Join [',', !Ref SubnetIds]
+        IoTEndpoint: !Sub '${AWS::AccountId}-ats.iot.${AWS::Region}.amazonaws.com'
+      Tags:
+        - Key: Workshop
+          Value: pqc-reinvent
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # Nested Stack: Device Builder (builder API, CodeBuild, PQC migration)
+  # Depends on BrokerStack: consumes the Private CA ARN + broker NLB endpoint
+  # via native cross-stack references.
+  # ═══════════════════════════════════════════════════════════════════════════
+  DeviceBuilderStack:
+    # Ordering after BrokerStack is enforced by the !GetAtt references below
+    # (PrivateCAArn / BrokerEndpoint), so no explicit DependsOn is needed.
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: !Sub 'https://${TemplateBucketName}.s3.amazonaws.com/${TemplateBucketPrefix}/templates/device-builder-stack.yaml'
+      Parameters:
+        PrivateCAArn: !GetAtt BrokerStack.Outputs.PrivateCAArn
+        DefaultBrokerEndpoint: !GetAtt BrokerStack.Outputs.BrokerEndpoint
+        IoTEndpoint: !Sub '${AWS::AccountId}-ats.iot.${AWS::Region}.amazonaws.com'
+        DefaultWifiSsid: !Ref DefaultWifiSsid
+        DefaultWifiPassword: !Ref DefaultWifiPassword
+      Tags:
+        - Key: Workshop
+          Value: pqc-reinvent
 
   # ═══════════════════════════════════════════════════════════════════════════
   # Nested Stack: Device Auto-Registration (JIT via IoT Rule + Lambda)
@@ -93,6 +153,25 @@ Resources:
           Value: pqc-reinvent
 
 Outputs:
+  # ─── Broker + Device Builder ────────────────────────────────────────────────
+  BrokerEndpoint:
+    Description: PQC broker NLB endpoint (devices connect here on port 8883)
+    Value: !GetAtt BrokerStack.Outputs.BrokerEndpoint
+
+  PrivateCAArn:
+    Description: Private CA ARN issuing device certificates
+    Value: !GetAtt BrokerStack.Outputs.PrivateCAArn
+
+  BuilderApiEndpoint:
+    Description: Builder-Pi REST API endpoint (register/deregister/firmware)
+    Value: !GetAtt DeviceBuilderStack.Outputs.ApiEndpoint
+
+  FirmwareImageBuilderProject:
+    Description: >
+      One-time CodeBuild project that builds the firmware Docker image.
+      Run once after deploy: aws codebuild start-build --project-name <this>
+    Value: !GetAtt DeviceBuilderStack.Outputs.ImageBuilderProjectName
+
   # ─── Devices ──────────────────────────────────────────────────────────────
   DeviceCount:
     Description: Number of ESP32 devices provisioned

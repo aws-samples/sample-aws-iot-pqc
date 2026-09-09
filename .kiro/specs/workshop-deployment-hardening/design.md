@@ -448,6 +448,80 @@ excluded from the default fast run, documented as optional.
 
 ---
 
+## Workstream 7 — Single master template for Workshop Studio
+
+### Current state
+
+The master `pqc-workshop-main.yaml` nests only 3 stacks (device-provisioning,
+ssm-hybrid-activation, dashboard). The **broker-container** and **device-builder**
+stacks are deployed standalone by `deploy-workshop.sh`, which passes the
+broker's Private CA ARN into device-builder between separate deploys. Pointing
+Workshop Studio at the master alone would NOT deploy the broker or the
+builder/OTA backend, so the demo wouldn't work.
+
+### Target design
+
+Nest all five stacks under the master so a single template deploys everything
+CloudFormation can. The cross-stack dependency is expressed natively.
+
+```
+pqc-workshop-main.yaml (master)
+├── BrokerStack            → broker-container-stack.yaml   (Private CA, ECS PQC broker, NLB)
+├── DeviceBuilderStack     → device-builder-stack.yaml     (builder API, CodeBuild, migration)
+│     DependsOn: BrokerStack
+│     PrivateCAArn:        !GetAtt BrokerStack.Outputs.PrivateCAArn
+│     DefaultBrokerEndpoint: !GetAtt BrokerStack.Outputs.BrokerEndpoint
+├── DeviceStack            → device-provisioning-stack.yaml
+├── SSMActivationStack     → ssm-hybrid-activation-stack.yaml
+└── DashboardStack         → dashboard-stack.yaml
+```
+
+**Cross-stack references (7.2):** device-builder's `PrivateCAArn` and
+`DefaultBrokerEndpoint` come from `!GetAtt BrokerStack.Outputs.*` with a
+`DependsOn: BrokerStack`, replacing the script-passed values. `IoTEndpoint` is
+derived in the master (`${AWS::AccountId}-ats.iot.${AWS::Region}.amazonaws.com`)
+and passed to both.
+
+**New master parameters (7.3):** `VpcId` (`AWS::EC2::VPC::Id`) and `SubnetIds`
+(`List<AWS::EC2::Subnet::Id>`) for the broker's NLB/ECS, passed to `BrokerStack`.
+Documented as required inputs (Workshop Studio supplies them, or a default-VPC
+convenience can be documented).
+
+**Packaging (7.6):** because the broker and device-builder templates contain
+Lambda `Code:` local paths, the deploy tooling still runs `aws cloudformation
+package` on each child before uploading to the templates bucket the master
+references. `deploy-workshop.sh` becomes a thin wrapper that packages + uploads
+all five children then deploys the single master (instead of orchestrating the
+ordering itself — CloudFormation now owns the ordering via `DependsOn`).
+
+**Standalone deployability preserved (7.5):** each child template keeps its own
+parameters (with defaults), so it can still be deployed on its own for
+development. The master simply supplies those parameters via nested-stack
+`Parameters:`.
+
+### What stays manual (7.4 — documented, not hidden)
+
+CloudFormation cannot do these; they remain documented post-deploy steps:
+1. **One-time firmware Docker image build** — run the `pqc-workshop-build-image`
+   CodeBuild project once so the firmware build image exists in ECR. (The broker
+   image build is already auto-triggered by the broker stack's `TriggerBuild`.)
+2. **v2 dashboard build + sync** — build the Vite app and sync to its bucket +
+   invalidate CloudFront (a build tool + S3 sync, not expressible in plain CFN).
+   Kept in `deploy-workshop.sh`; could later become a CodeBuild custom resource.
+3. **Builder-Pi SSM agent registration** — installing/registering the SSM agent
+   on the physical Raspberry Pi is inherently on-device.
+
+### Chicken-and-egg note (broker image)
+
+The broker ECS service references the ECR image that the broker stack's own
+CodeBuild builds on create (`TriggerBuild=true`). On a truly cold account the
+service may start before the first image is pushed; this is existing behavior
+(not introduced by nesting) and self-heals once the image is available. Flagged
+so the deploy docs can note "the broker task may take one restart cycle on first
+deploy."
+
+---
+
 ## Deployment model (cross-cutting)
 
 ### Stacks (after this work)

@@ -240,6 +240,43 @@ Branch: `refactor-deployment`.
 
 ---
 
+## Phase 7 — Single master template for Workshop Studio
+
+- [ ] 7.1 Nest broker-container + device-builder under the master
+  - Add `BrokerStack` and `DeviceBuilderStack` as `AWS::CloudFormation::Stack`
+    children in `pqc-workshop-main.yaml`, sourced from the templates bucket.
+  - _Requirements: 7.1_
+
+- [ ] 7.2 Wire native cross-stack references + ordering
+  - `DeviceBuilderStack` gets `PrivateCAArn` and `DefaultBrokerEndpoint` from
+    `!GetAtt BrokerStack.Outputs.*` with `DependsOn: BrokerStack`; master derives
+    and passes `IoTEndpoint` to both. Remove the script-passed CA ARN.
+  - _Requirements: 7.2_
+
+- [ ] 7.3 Add master parameters for broker networking
+  - Add `VpcId` + `SubnetIds` master parameters, pass to `BrokerStack`; document
+    them as required Workshop Studio inputs.
+  - _Requirements: 7.3_
+
+- [ ] 7.4 Update deploy tooling to package all 5 children + deploy the master
+  - `deploy-workshop.sh`/`package.sh`: `cloudformation package` each of the five
+    child templates, upload to `templates/`, then deploy the single master (CFN
+    owns ordering via DependsOn). Keep v2 build/sync as the documented post step.
+  - _Requirements: 7.1, 7.4, 4.6_
+
+- [ ] 7.5 Document the remaining manual steps
+  - README/deploy docs: one-time firmware image build, v2 dashboard build+sync,
+    Builder-Pi SSM registration; plus the broker first-deploy image note.
+  - _Requirements: 7.4_
+
+- [ ] 7.6 Validate
+  - cfn-lint 0 errors on the master + all children; confirm nested `!GetAtt`
+    references resolve to real child outputs; confirm each child still deploys
+    standalone (params retain defaults). Re-run unit suite.
+  - _Requirements: 7.5, 7.6_
+
+---
+
 ## Notes
 
 - **Sequencing safety:** new migration resources (Phase 1) and v2 hosting (5.1)
