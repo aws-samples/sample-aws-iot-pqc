@@ -72,6 +72,18 @@ Parameters:
     Default: changeme
     Description: Default WiFi password baked into device firmware builds.
 
+  BrokerTriggerBuild:
+    Type: String
+    Default: 'false'
+    AllowedValues: ['true', 'false']
+    Description: >
+      Whether the broker stack builds its container image during stack create.
+      Kept 'false' for the orchestrated deploy: the broker's CodeBuild source
+      (the Docker build context) must be uploaded to the broker source bucket
+      AFTER the bucket exists, so deploy-workshop.sh stages the source and
+      triggers the image build as a post-deploy step. Set 'true' only if the
+      source is already staged before deploy.
+
 Resources:
 
   # ═══════════════════════════════════════════════════════════════════════════
@@ -87,6 +99,7 @@ Resources:
         VpcId: !Ref VpcId
         SubnetIds: !Join [',', !Ref SubnetIds]
         IoTEndpoint: !Sub '${AWS::AccountId}-ats.iot.${AWS::Region}.amazonaws.com'
+        TriggerBuild: !Ref BrokerTriggerBuild
       Tags:
         - Key: Workshop
           Value: pqc-reinvent
@@ -204,6 +217,10 @@ Outputs:
   DashboardBucketName:
     Description: S3 bucket for dashboard static files
     Value: !GetAtt DashboardStack.Outputs.DashboardBucketName
+
+  DashboardDistributionId:
+    Description: CloudFront distribution ID for the dashboard (for cache invalidation)
+    Value: !GetAtt DashboardStack.Outputs.DashboardDistributionId
 
   # ─── SSM Hybrid Activation ────────────────────────────────────────────────
   SSMActivationSecretName:

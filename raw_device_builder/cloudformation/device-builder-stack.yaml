@@ -374,13 +374,16 @@ Resources:
                   - codebuild:BatchGetBuilds
                   - codebuild:StopBuild
                 Resource: !GetAtt FirmwareBuildProject.Arn
-              # CodeBuild .sync uses EventBridge managed rules to get completion.
+              # CodeBuild .sync uses an EventBridge managed rule to get build
+              # completion. The rule name AWS creates is (singular) "Event":
+              # StepFunctionsGetEventForCodeBuildStartBuildRule — grant with a
+              # wildcard so it matches regardless of minor AWS naming variants.
               - Effect: Allow
                 Action:
                   - events:PutTargets
                   - events:PutRule
                   - events:DescribeRule
-                Resource: !Sub 'arn:aws:events:${AWS::Region}:${AWS::AccountId}:rule/StepFunctionsGetEventsForCodeBuildStartBuildRule'
+                Resource: !Sub 'arn:aws:events:${AWS::Region}:${AWS::AccountId}:rule/StepFunctionsGetEvent*ForCodeBuildStartBuildRule'
               - Effect: Allow
                 Action:
                   - dynamodb:UpdateItem

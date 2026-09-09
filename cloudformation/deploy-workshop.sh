@@ -8,9 +8,12 @@
 #   consumes BrokerStack's Private CA + NLB endpoint via cross-stack refs), so
 #   this script just:
 #     1. packages each child template's Lambda code (aws cloudformation package)
-#     2. uploads the packaged children to the templates bucket
-#     3. deploys the single master stack
+#        and uploads the packaged children to the templates bucket
+#     2. deploys the single master stack (broker image build deferred)
+#     3. stages the Docker build contexts to S3, builds the broker container
+#        image, and scales the broker ECS service up
 #     4. builds + syncs the v2 dashboard (a build step CFN can't do)
+#     5. prints remaining manual steps
 #
 # Usage:
 #   ./deploy-workshop.sh <aws-region> --vpc-id <vpc-xxxx> --subnets <subnet-a,subnet-b> [--profile NAME] [--device-count N]
@@ -103,7 +106,7 @@ fi
 # `cloudformation package` zips each Lambda Code: dir, uploads it, and rewrites
 # the template. The packaged child is placed where the master's TemplateURL
 # expects it. All five children are nested by the master.
-echo "[1/3] Packaging + uploading nested child templates..."
+echo "[1/5] Packaging + uploading nested child templates..."
 for pair in \
     "$PROJECT_ROOT/broker-container/cloudformation/broker-container-stack.yaml:broker-container-stack.yaml" \
     "$PROJECT_ROOT/raw_device_builder/cloudformation/device-builder-stack.yaml:device-builder-stack.yaml" \
@@ -121,7 +124,12 @@ for pair in \
 done
 
 # ─── Step 2: deploy the single master stack ──────────────────────────────────
-echo "[2/3] Deploying the master stack (nests all five children)..."
+# BrokerTriggerBuild=false: the broker's container-image CodeBuild pulls its
+# source from the broker source bucket, which does not exist until this stack
+# creates it. So we create the infra now WITHOUT the in-stack image build, then
+# stage the source and trigger the build in step 3 (below). The broker ECS
+# service ships at DesiredCount 0, so nothing needs the image mid-deploy.
+echo "[2/5] Deploying the master stack (nests all five children)..."
 aws cloudformation deploy \
     --template-file "$SCRIPT_DIR/pqc-workshop-main.yaml" \
     --stack-name "pqc-workshop" \
@@ -131,13 +139,71 @@ aws cloudformation deploy \
         SubnetIds="$SUBNETS" \
         TemplateBucketName="$ARTIFACTS_BUCKET" \
         TemplateBucketPrefix="$TEMPLATE_PREFIX" \
+        BrokerTriggerBuild=false \
     --capabilities CAPABILITY_NAMED_IAM CAPABILITY_AUTO_EXPAND \
     --tags Workshop=pqc-reinvent
 
-# ─── Step 3: build + sync the v2 dashboard (post-deploy build step) ──────────
-echo "[3/3] Building + deploying the v2 dashboard..."
 get_out() { aws cloudformation describe-stacks --stack-name pqc-workshop \
     --query "Stacks[0].Outputs[?OutputKey=='$1'].OutputValue | [0]" --output text; }
+
+# ─── Step 3: stage container build contexts + build the broker image ─────────
+# CloudFormation cannot upload a Docker build context, so we do it here now that
+# the source buckets exist.
+echo "[3/5] Staging build contexts + building the broker container image..."
+BROKER_SOURCE_BUCKET="pqc-workshop-broker-source-${ACCOUNT_ID}"
+FIRMWARE_BUCKET="pqc-workshop-firmware-${ACCOUNT_ID}"
+
+# Broker image build context (Dockerfile, buildspec.yml, entrypoint.sh, mosquitto.conf)
+echo "        - broker image source -> s3://${BROKER_SOURCE_BUCKET}/broker-image/"
+aws s3 cp "$PROJECT_ROOT/broker-container/docker/" \
+    "s3://${BROKER_SOURCE_BUCKET}/broker-image/" --recursive >/dev/null
+
+# Firmware builder image context (used by the MANUAL firmware image build below;
+# staged here so it is ready when the operator runs that one-time build).
+echo "        - firmware image source -> s3://${FIRMWARE_BUCKET}/source/"
+aws s3 cp "$PROJECT_ROOT/raw_device_builder/codebuild/Dockerfile" \
+    "s3://${FIRMWARE_BUCKET}/source/Dockerfile" >/dev/null
+aws s3 cp "$PROJECT_ROOT/raw_device_builder/codebuild/buildspec-image.yml" \
+    "s3://${FIRMWARE_BUCKET}/source/buildspec-image.yml" >/dev/null
+for extra in wolfssl_user_settings_arduino.h partitions_pqc_workshop.csv; do
+    f=$(find "$PROJECT_ROOT" -name "$extra" -not -path '*/arduino-cli/*' 2>/dev/null | head -1)
+    if [[ -n "$f" ]]; then
+        echo "          - $extra"
+        aws s3 cp "$f" "s3://${FIRMWARE_BUCKET}/source/$extra" >/dev/null
+    else
+        echo "          ! WARN: $extra not found; firmware image build may fail until it is staged"
+    fi
+done
+
+# Trigger the broker image build now that its source is in place, and wait.
+BROKER_BUILD_PROJECT=$(get_out CodeBuildProjectName 2>/dev/null || true)
+[[ -z "$BROKER_BUILD_PROJECT" || "$BROKER_BUILD_PROJECT" == "None" ]] && BROKER_BUILD_PROJECT="pqc-workshop-broker-image-build"
+echo "        - starting broker image build ($BROKER_BUILD_PROJECT)..."
+BUILD_ID=$(aws codebuild start-build --project-name "$BROKER_BUILD_PROJECT" \
+    --query 'build.id' --output text)
+echo "          build: $BUILD_ID (waiting for completion)"
+while true; do
+    st=$(aws codebuild batch-get-builds --ids "$BUILD_ID" \
+        --query 'builds[0].buildStatus' --output text)
+    case "$st" in
+        SUCCEEDED) echo "          broker image build SUCCEEDED"; break ;;
+        FAILED|FAULT|TIMED_OUT|STOPPED) echo "[ERROR] broker image build $st ($BUILD_ID)"; exit 1 ;;
+        *) sleep 15 ;;
+    esac
+done
+
+# Scale the broker ECS service up (it ships at DesiredCount 0). Now that an image
+# exists, one task can start and register with the NLB. The cluster and service
+# are both named pqc-workshop-broker.
+echo "        - scaling broker ECS service to 1 task..."
+if ! aws ecs update-service --cluster pqc-workshop-broker --service pqc-workshop-broker \
+        --desired-count 1 >/dev/null; then
+    echo "          WARN: could not scale the broker service; scale it manually with:"
+    echo "            aws ecs update-service --cluster pqc-workshop-broker --service pqc-workshop-broker --desired-count 1${PROFILE:+ --profile $PROFILE}"
+fi
+
+# ─── Step 4: build + sync the v2 dashboard (post-deploy build step) ──────────
+echo "[4/5] Building + deploying the v2 dashboard..."
 APPSYNC_ENDPOINT=$(get_out AppSyncEndpoint)
 IDENTITY_POOL=$(get_out CognitoIdentityPoolId)
 API_ENDPOINT=$(get_out BuilderApiEndpoint)
@@ -157,7 +223,11 @@ CONFIG
 
 ( cd "$V2_FRONTEND" && npm ci && npm run build )
 aws s3 sync "$V2_FRONTEND/build/" "s3://$DASH_BUCKET/" --delete
-aws cloudfront create-invalidation --distribution-id "$DASH_DIST" --paths '/*' >/dev/null
+if [[ -n "$DASH_DIST" && "$DASH_DIST" != "None" ]]; then
+    aws cloudfront create-invalidation --distribution-id "$DASH_DIST" --paths '/*' >/dev/null
+else
+    echo "  WARN: DashboardDistributionId output missing; skipping CloudFront invalidation."
+fi
 
 echo ""
 echo "═══════════════════════════════════════════════════════════════"
@@ -166,10 +236,13 @@ echo "════════════════════════�
 echo "  Dashboard:  $(get_out DashboardURL)"
 echo "  Broker:     $(get_out BrokerEndpoint):8883"
 echo ""
+echo "[5/5] Done."
 PROFILE_ARG=""
 [[ -n "$PROFILE" ]] && PROFILE_ARG=" --profile $PROFILE"
+echo ""
 echo "REMAINING MANUAL STEPS:"
-echo "  1. Build the firmware image once (needed before any device build):"
+echo "  1. Build the firmware image once (source already staged by this script;"
+echo "     needed before any device firmware build):"
 echo "       aws codebuild start-build --project-name $(get_out FirmwareImageBuilderProject)${PROFILE_ARG}"
 echo "  2. Register the Builder-Pi via SSM (see raw_device_builder/bundle-for-builder-pi.sh)"
 echo "  3. Validate:  ./check_setup_status.sh --region $AWS_REGION${PROFILE_ARG}"
