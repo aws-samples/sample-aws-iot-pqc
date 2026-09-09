@@ -155,6 +155,23 @@ pip3 install --no-cache-dir --break-system-packages \
     esptool \
     2>&1 | tail -3
 
+# Install the workshop-builder CLI so operators have a single, reviewable,
+# logged command surface over SSM (shares builder_core with the GUI). The CLI
+# source (cli.py, builder_core/, pyproject.toml) is bundled alongside this
+# script; install from whichever directory it lives in.
+CLI_SRC_DIR="$(cd "$(dirname "$0")" && pwd)"
+if [[ -f "$CLI_SRC_DIR/pyproject.toml" ]]; then
+    echo "       Installing workshop-builder CLI from $CLI_SRC_DIR"
+    pip3 install --no-cache-dir --break-system-packages "$CLI_SRC_DIR" 2>&1 | tail -3
+    # Persistent log directory for CLI operation transcripts.
+    mkdir -p /var/log/workshop-builder
+    command -v workshop-builder >/dev/null 2>&1 \
+        && echo "       workshop-builder installed: $(command -v workshop-builder)" \
+        || echo "       [WARN] workshop-builder not on PATH after install"
+else
+    echo "       [WARN] pyproject.toml not found next to setup script; skipping CLI install"
+fi
+
 # ─── Step 7: Setup udev rules for ESP32 USB access ──────────────────────────
 echo "[7/7] Configuring USB access for ESP32 devices..."
 cat > /etc/udev/rules.d/99-esp32.rules << 'UDEV'

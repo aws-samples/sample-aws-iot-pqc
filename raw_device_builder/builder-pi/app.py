@@ -28,26 +28,15 @@ import boto3
 from flask import Flask, render_template, jsonify, request
 
 from device_manager import DeviceManager
+# Shared implementation so the GUI and the workshop-builder CLI cannot drift.
+from builder_core import operations
+from builder_core.aws import fresh_session
+from builder_core.config import load_config, save_config
 
 
 def get_fresh_boto3_session():
-    """Create a fresh boto3 session with current instance credentials.
-    SSM managed instances rotate credentials frequently."""
-    return boto3.session.Session(region_name=load_config().get('region', 'us-east-1'))
-
-
-# ─── Configuration ───────────────────────────────────────────────────────────
-CONFIG_FILE = os.path.join(os.path.dirname(__file__), 'config.json')
-
-
-def load_config():
-    with open(CONFIG_FILE, 'r') as f:
-        return json.load(f)
-
-
-def save_config(config):
-    with open(CONFIG_FILE, 'w') as f:
-        json.dump(config, f, indent=2)
+    """Fresh boto3 session with current instance credentials (SSM rotates them)."""
+    return fresh_session(load_config().get('region', 'us-east-1'))
 
 
 config = load_config()
@@ -176,30 +165,15 @@ def deregister_device():
     slot.log('Deregistering device...')
 
     try:
-        api_url = f"{config['api_endpoint']}/deregister"
-        payload = {'serialNumber': slot.serial_number}
-
-        session = get_fresh_boto3_session()
-        credentials = session.get_credentials().get_frozen_credentials()
-
-        from botocore.auth import SigV4Auth
-        from botocore.awsrequest import AWSRequest
-
-        aws_request = AWSRequest(method='POST', url=api_url,
-                                 data=json.dumps(payload),
-                                 headers={'Content-Type': 'application/json'})
-        SigV4Auth(credentials, 'execute-api', config['region']).add_auth(aws_request)
-        response = requests.post(api_url, json=payload,
-                                 headers=dict(aws_request.headers), timeout=30)
-
-        if response.status_code == 200:
+        # Shared implementation with the CLI (builder_core.operations).
+        result = operations.deregister_device(config, slot.serial_number)
+        if result['success']:
             slot.log('Device deregistered successfully')
             slot.status = 'ready'
             slot.is_registered = False
             return jsonify({'success': True, 'message': f'Deregistered {slot.thing_name}'})
-        else:
-            slot.log(f'Deregister failed: {response.text}')
-            return jsonify({'error': f'Deregister API returned {response.status_code}', 'details': response.text}), 500
+        slot.log(f"Deregister failed: {result['message']}")
+        return jsonify({'error': result['message']}), 500
     except Exception as e:
         slot.log(f'ERROR: Deregister failed: {e}')
         return jsonify({'error': str(e)}), 500
