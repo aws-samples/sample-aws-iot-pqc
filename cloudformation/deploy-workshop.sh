@@ -168,7 +168,7 @@ aws s3 cp "$PROJECT_ROOT/raw_device_builder/codebuild/buildspec-image.yml" \
 # Known locations for the two extra context files (fall back to a repo search
 # that only skips the arduino-cli/data/ board-package cache, not arduino-cli/).
 declare -A EXTRA_SRC=(
-    [wolfssl_user_settings_arduino.h]="$PROJECT_ROOT/arduino-cli/wolfssl_user_settings_arduino.h"
+    [wolfssl_user_settings_arduino.h]="$PROJECT_ROOT/raw_device_builder/codebuild/wolfssl_user_settings_arduino.h"
     [partitions_pqc_workshop.csv]="$PROJECT_ROOT/esp32-flash/partitions_pqc_workshop.csv"
 )
 for extra in wolfssl_user_settings_arduino.h partitions_pqc_workshop.csv; do
