@@ -10,10 +10,12 @@ Description: >
     ./setup-ssm-agent.sh <aws-region> <stack-name>
 
 Parameters:
-  GreengrassThingName:
+  WorkshopInstanceName:
     Type: String
-    Default: pqc-workshop-greengrass-core
-    Description: Thing name for the Greengrass core device (used for naming)
+    Default: pqc-workshop-broker
+    Description: >
+      Base name used for SSM hybrid activation resource naming (role, activation
+      Lambda, and the activation secret). Formerly GreengrassThingName.
 
   RegistrationLimit:
     Type: Number
@@ -40,7 +42,7 @@ Resources:
   SSMManagedInstanceRole:
     Type: AWS::IAM::Role
     Properties:
-      RoleName: !Sub '${GreengrassThingName}-ssm-role'
+      RoleName: !Sub '${WorkshopInstanceName}-ssm-role'
       Description: >
         Role assumed by the Raspberry Pi SSM agent for Systems Manager
         hybrid activation (PQC workshop).
@@ -55,8 +57,9 @@ Resources:
         # Core SSM agent functionality (Session Manager, Run Command, Inventory)
         - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
       Policies:
-        # Allow the Pi to read its own Greengrass credentials from Secrets Manager
-        - PolicyName: ReadGreengrassCredentials
+        # Allow the Pi to read its own workshop secrets from Secrets Manager
+        # (e.g. the SSM activation credentials).
+        - PolicyName: ReadWorkshopSecrets
           PolicyDocument:
             Version: '2012-10-17'
             Statement:
@@ -64,7 +67,7 @@ Resources:
                 Action:
                   - secretsmanager:GetSecretValue
                 Resource:
-                  - !Sub 'arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:iot/${GreengrassThingName}/*'
+                  - !Sub 'arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:iot/${WorkshopInstanceName}/*'
               - Effect: Allow
                 Action:
                   - iot:DescribeEndpoint
@@ -81,12 +84,6 @@ Resources:
                   - iot:ListThings
                   - iot:ListThingPrincipals
                   - iot:GetPolicy
-                Resource: '*'
-              - Effect: Allow
-                Action:
-                  - greengrass:ListCoreDevices
-                  - greengrass:GetCoreDevice
-                  - greengrass:ListInstalledComponents
                 Resource: '*'
               - Effect: Allow
                 Action:
@@ -118,7 +115,7 @@ Resources:
   SSMActivationFunction:
     Type: AWS::Lambda::Function
     Properties:
-      FunctionName: !Sub '${GreengrassThingName}-ssm-activation'
+      FunctionName: !Sub '${WorkshopInstanceName}-ssm-activation'
       Description: Creates/deletes SSM hybrid activation and stores credentials
       Runtime: python3.12
       Handler: index.handler
@@ -126,7 +123,7 @@ Resources:
       Role: !GetAtt SSMActivationLambdaRole.Arn
       Environment:
         Variables:
-          THING_NAME: !Ref GreengrassThingName
+          THING_NAME: !Ref WorkshopInstanceName
           IAM_ROLE_NAME: !Ref SSMManagedInstanceRole
           REGISTRATION_LIMIT: !Ref RegistrationLimit
           EXPIRATION_DAYS: !Ref ActivationExpirationDays
@@ -233,7 +230,7 @@ Resources:
   SSMActivationLambdaRole:
     Type: AWS::IAM::Role
     Properties:
-      RoleName: !Sub '${GreengrassThingName}-ssm-activation-lambda-role'
+      RoleName: !Sub '${WorkshopInstanceName}-ssm-activation-lambda-role'
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:
@@ -266,7 +263,7 @@ Resources:
                   - secretsmanager:PutSecretValue
                   - secretsmanager:TagResource
                 Resource:
-                  - !Sub 'arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:iot/${GreengrassThingName}/ssm-activation*'
+                  - !Sub 'arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:iot/${WorkshopInstanceName}/ssm-activation*'
 
   SSMActivation:
     Type: Custom::SSMActivation
@@ -289,7 +286,7 @@ Outputs:
     Description: >
       Secrets Manager secret containing the activation ID and code.
       Retrieve with: aws secretsmanager get-secret-value --secret-id <this-value>
-    Value: !Sub 'iot/${GreengrassThingName}/ssm-activation'
+    Value: !Sub 'iot/${WorkshopInstanceName}/ssm-activation'
 
   SSMActivationId:
     Description: SSM Hybrid Activation ID

@@ -8,7 +8,7 @@
 #   BROKER_CERT_SECRET    — Secrets Manager ARN for broker cert
 #   BROKER_KEY_SECRET     — Secrets Manager ARN for broker private key
 #   IOT_ENDPOINT          — AWS IoT Core endpoint (for bridge)
-#   GREENGRASS_THING      — Thing name prefix (for bridge client ID)
+#   BROKER_NAME           — Broker name prefix (for bridge client ID)
 #   BRIDGE_CERT_SECRET    — Secrets Manager ARN for IoT Core bridge cert
 #   BRIDGE_KEY_SECRET     — Secrets Manager ARN for IoT Core bridge key
 #   BRIDGE_ROOT_CA_SECRET — Secrets Manager ARN for Amazon Root CA
@@ -114,7 +114,7 @@ fi
 echo "[3/4] Configuring IoT Core bridge..."
 
 if [[ -n "${IOT_ENDPOINT:-}" && "$BRIDGE_READY" == "true" ]]; then
-    BRIDGE_CLIENT_ID="${GREENGRASS_THING:-pqc-workshop-broker}-bridge"
+    BRIDGE_CLIENT_ID="${BROKER_NAME:-${GREENGRASS_THING:-pqc-workshop-broker}}-bridge"
     BRIDGE_UNIQUE_ID="${BRIDGE_CLIENT_ID}-$(date +%s)"
     cat > /mosquitto/config/conf.d/bridge.conf << BRIDGE_EOF
 # IoT Core MQTT Bridge — mTLS with IoT Core certificate

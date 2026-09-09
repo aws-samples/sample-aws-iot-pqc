@@ -11,11 +11,6 @@ Parameters:
     Default: esp32-
     Description: Prefix that device client IDs start with (for matching)
 
-  GreengrassThingName:
-    Type: String
-    Default: pqc-workshop-greengrass-core
-    Description: Greengrass core device Thing name (excluded from auto-registration)
-
 Resources:
 
   # ─── Thing Group for auto-registered devices ─────────────────────────────

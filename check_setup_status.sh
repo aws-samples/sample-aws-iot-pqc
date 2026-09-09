@@ -1,24 +1,29 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # ─────────────────────────────────────────────────────────────────────────────
 # check_setup_status.sh
 #
 # Validates the PQC workshop AWS environment is fully deployed and ready.
-# Run this after deploying the CloudFormation stacks to confirm all resources
-# are correctly provisioned and operational.
+# Reflects the CURRENT architecture:
+#   - ECS Fargate PQC broker (broker-container stack) behind an NLB, bridging to
+#     IoT Core; single CloudWatch log group /pqc-workshop/broker-container
+#   - Device-builder stack: registry table, builder API, CodeBuild, and the PQC
+#     migration Step Functions workflow (prepare-build + publish-ota +
+#     start-migration Lambdas)
+#   - Dashboard/backend: AppSync pqc-workshop-device-api, DynamoDB
+#     (pqc-workshop-devices, pqc-workshop-message-log), Cognito, telemetry/
+#     command/message-logger/broker-log-reader Lambdas, IoT rules
+#   - v2 "Firmware Manager" dashboard hosting (S3 + CloudFront)
+#
+# Greengrass has been removed from the workshop; this script no longer checks
+# for any Greengrass resources.
 #
 # Prerequisites:
-#   - AWS CLI v2 installed and configured
-#   - Valid AWS credentials in the session (env vars or profile)
-#   - Permissions: read-only access to IoT, Lambda, DynamoDB, AppSync,
-#     CloudFormation, CloudFront, S3, Cognito, Greengrass, SecretsManager
+#   - AWS CLI v2 configured with read-only access to IoT, Lambda, DynamoDB,
+#     AppSync, CloudFormation, CloudFront, S3, Cognito, StepFunctions, ECS,
+#     ElasticLoadBalancing, ACM-PCA, Logs.
 #
 # Usage:
-#   ./check_setup_status.sh [--region REGION] [--stack-name STACK_NAME]
-#
-# Examples:
-#   ./check_setup_status.sh
-#   ./check_setup_status.sh --region us-west-2
-#   ./check_setup_status.sh --stack-name my-pqc-workshop
+#   ./check_setup_status.sh [--region REGION]
 #
 # Copyright 2024-2026 Amazon.com, Inc. or its affiliates. All Rights Reserved.
 # SPDX-License-Identifier: MIT-0
@@ -28,58 +33,70 @@ set -euo pipefail
 
 # ─── Defaults ────────────────────────────────────────────────────────────────
 REGION="${AWS_DEFAULT_REGION:-us-east-1}"
-STACK_NAME="pqc-workshop"
+
+# Live stack names (the workshop deploys these; names are fixed).
+BROKER_STACK="pqc-workshop-broker-container"
+DEVICE_BUILDER_STACK="pqc-workshop-device-builder"
 
 # ─── Parse Arguments ─────────────────────────────────────────────────────────
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --region)
-            REGION="$2"
-            shift 2
-            ;;
-        --stack-name)
-            STACK_NAME="$2"
-            shift 2
-            ;;
+        --region) REGION="$2"; shift 2 ;;
         --help|-h)
-            echo "Usage: $0 [--region REGION] [--stack-name STACK_NAME]"
-            echo ""
-            echo "Options:"
-            echo "  --region       AWS region (default: us-east-1 or AWS_DEFAULT_REGION)"
-            echo "  --stack-name   CloudFormation stack name (default: pqc-workshop)"
-            echo ""
-            echo "Environment variables:"
-            echo "  AWS_DEFAULT_REGION   Fallback region if --region not specified"
+            echo "Usage: $0 [--region REGION]"
+            echo "  --region   AWS region (default: us-east-1 or AWS_DEFAULT_REGION)"
             exit 0
             ;;
         *)
-            echo "[ERROR] Unknown argument: $1"
-            echo "Run $0 --help for usage."
-            exit 1
-            ;;
+            echo "[ERROR] Unknown argument: $1"; echo "Run $0 --help for usage."; exit 1 ;;
     esac
 done
 
 export AWS_DEFAULT_REGION="$REGION"
 
 # ─── Counters ────────────────────────────────────────────────────────────────
-PASS=0
-WARN=0
-FAIL=0
+PASS=0; WARN=0; FAIL=0
+pass() { echo "  ✅ $1"; PASS=$((PASS + 1)); }
+warn() { echo "  ⚠️  $1"; WARN=$((WARN + 1)); }
+fail() { echo "  ❌ $1"; FAIL=$((FAIL + 1)); }
 
-pass() {
-    echo "  ✅ $1"
-    PASS=$((PASS + 1))
+# Helper: does a Lambda function exist and is it Active?
+check_lambda() {
+    local fn="$1"
+    local state
+    state=$(aws lambda get-function --function-name "$fn" \
+        --query 'Configuration.State' --output text 2>/dev/null) || state=""
+    if [[ "$state" == "Active" ]]; then
+        pass "Lambda '$fn' is Active"
+    elif [[ -n "$state" ]]; then
+        warn "Lambda '$fn' exists but state is: $state"
+    else
+        fail "Lambda '$fn' not found"
+    fi
 }
 
-warn() {
-    echo "  ⚠️  $1"
-    WARN=$((WARN + 1))
+# Helper: does an IoT topic rule exist?
+check_rule() {
+    local rule="$1"
+    local sql
+    sql=$(aws iot get-topic-rule --rule-name "$rule" --query 'rule.sql' --output text 2>/dev/null) || sql=""
+    if [[ -n "$sql" ]]; then
+        pass "IoT Rule '$rule' exists"
+    else
+        fail "IoT Rule '$rule' not found"
+    fi
 }
 
-fail() {
-    echo "  ❌ $1"
-    FAIL=$((FAIL + 1))
+# Helper: DynamoDB table ACTIVE?
+check_table() {
+    local tb="$1"
+    local status
+    status=$(aws dynamodb describe-table --table-name "$tb" --query 'Table.TableStatus' --output text 2>/dev/null) || status=""
+    if [[ "$status" == "ACTIVE" ]]; then
+        pass "DynamoDB table '$tb' is ACTIVE"
+    else
+        fail "DynamoDB table '$tb' status: ${status:-NOT_FOUND}"
+    fi
 }
 
 # ─── Header ──────────────────────────────────────────────────────────────────
@@ -88,7 +105,6 @@ echo "  PQC Workshop — Environment Readiness Check"
 echo "═══════════════════════════════════════════════════════════════"
 echo ""
 echo "  Region:     $REGION"
-echo "  Stack:      $STACK_NAME"
 echo "  Timestamp:  $(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 echo ""
 
@@ -97,12 +113,9 @@ echo "─── 1. AWS Credentials ───────────────
 CALLER_IDENTITY=$(aws sts get-caller-identity --output json 2>&1) || {
     fail "No valid AWS credentials found. Configure credentials and retry."
     echo ""
-    echo "═══════════════════════════════════════════════════════════════"
     echo "  RESULT: FAILED (cannot proceed without credentials)"
-    echo "═══════════════════════════════════════════════════════════════"
     exit 1
 }
-
 ACCOUNT_ID=$(echo "$CALLER_IDENTITY" | python3 -c "import sys,json; print(json.load(sys.stdin)['Account'])")
 ROLE_ARN=$(echo "$CALLER_IDENTITY" | python3 -c "import sys,json; print(json.load(sys.stdin)['Arn'])")
 pass "Authenticated as $ROLE_ARN (Account: $ACCOUNT_ID)"
@@ -110,370 +123,171 @@ echo ""
 
 # ─── 2. CloudFormation Stacks ────────────────────────────────────────────────
 echo "─── 2. CloudFormation Stacks ────────────────────────────────"
-
-MAIN_STACK_STATUS=$(aws cloudformation describe-stacks \
-    --stack-name "$STACK_NAME" \
-    --query 'Stacks[0].StackStatus' \
-    --output text 2>/dev/null) || MAIN_STACK_STATUS="NOT_FOUND"
-
-if [[ "$MAIN_STACK_STATUS" == "CREATE_COMPLETE" || "$MAIN_STACK_STATUS" == "UPDATE_COMPLETE" ]]; then
-    pass "Main stack '$STACK_NAME' status: $MAIN_STACK_STATUS"
-else
-    fail "Main stack '$STACK_NAME' status: $MAIN_STACK_STATUS (expected CREATE_COMPLETE or UPDATE_COMPLETE)"
-fi
-
-# Check nested stacks
-NESTED_STACKS=$(aws cloudformation list-stacks \
+for stack in "$BROKER_STACK" "$DEVICE_BUILDER_STACK"; do
+    status=$(aws cloudformation describe-stacks --stack-name "$stack" \
+        --query 'Stacks[0].StackStatus' --output text 2>/dev/null) || status="NOT_FOUND"
+    if [[ "$status" == "CREATE_COMPLETE" || "$status" == "UPDATE_COMPLETE" ]]; then
+        pass "Stack '$stack' status: $status"
+    else
+        fail "Stack '$stack' status: $status (expected CREATE_COMPLETE/UPDATE_COMPLETE)"
+    fi
+done
+# The dashboard/device provisioning stacks are nested under pqc-workshop-* names.
+DASHBOARD_STACK=$(aws cloudformation list-stacks \
     --stack-status-filter CREATE_COMPLETE UPDATE_COMPLETE \
-    --query "StackSummaries[?contains(StackName, '$STACK_NAME-')].StackName" \
-    --output json 2>/dev/null)
-
-NESTED_COUNT=$(echo "$NESTED_STACKS" | python3 -c "import sys,json; print(len(json.load(sys.stdin)))")
-if [[ "$NESTED_COUNT" -ge 3 ]]; then
-    pass "Nested stacks deployed: $NESTED_COUNT found (Device, Dashboard, Greengrass)"
+    --query "StackSummaries[?contains(StackName, 'DashboardStack')].StackName | [0]" \
+    --output text 2>/dev/null) || DASHBOARD_STACK=""
+if [[ -n "$DASHBOARD_STACK" && "$DASHBOARD_STACK" != "None" ]]; then
+    pass "Dashboard stack deployed: $DASHBOARD_STACK"
 else
-    fail "Expected at least 3 nested stacks, found $NESTED_COUNT"
+    warn "Dashboard stack not found (checked for *DashboardStack*)"
 fi
-
-# Get stack outputs for use in later checks
-STACK_OUTPUTS=$(aws cloudformation describe-stacks \
-    --stack-name "$STACK_NAME" \
-    --query 'Stacks[0].Outputs' \
-    --output json 2>/dev/null) || STACK_OUTPUTS="[]"
-
-get_output() {
-    echo "$STACK_OUTPUTS" | python3 -c "
-import sys, json
-outputs = json.load(sys.stdin)
-for o in outputs:
-    if o['OutputKey'] == '$1':
-        print(o['OutputValue'])
-        break
-" 2>/dev/null
-}
-
-IOT_ENDPOINT=$(get_output "IoTEndpoint")
-GREENGRASS_THING=$(get_output "GreengrassThingName")
-DASHBOARD_URL=$(get_output "DashboardURL")
-DASHBOARD_BUCKET=$(get_output "DashboardBucketName")
-APPSYNC_ENDPOINT=$(get_output "AppSyncEndpoint")
-COGNITO_POOL_ID=$(get_output "CognitoIdentityPoolId")
-DEVICE_POLICY=$(get_output "DevicePolicyName")
-DEVICE_COUNT=$(get_output "DeviceCount")
-
 echo ""
 
 # ─── 3. IoT Core ────────────────────────────────────────────────────────────
 echo "─── 3. IoT Core ─────────────────────────────────────────────"
-
-# Endpoint
 ACTUAL_ENDPOINT=$(aws iot describe-endpoint --endpoint-type iot:Data-ATS \
     --query 'endpointAddress' --output text 2>/dev/null) || ACTUAL_ENDPOINT=""
+[[ -n "$ACTUAL_ENDPOINT" ]] && pass "IoT endpoint: $ACTUAL_ENDPOINT" || fail "IoT endpoint not found"
 
-if [[ -n "$ACTUAL_ENDPOINT" ]]; then
-    pass "IoT endpoint: $ACTUAL_ENDPOINT"
-else
-    fail "IoT endpoint not found"
-fi
-
-# Thing (Greengrass core)
-if [[ -n "$GREENGRASS_THING" ]]; then
-    THING_EXISTS=$(aws iot describe-thing --thing-name "$GREENGRASS_THING" \
-        --query 'thingName' --output text 2>/dev/null) || THING_EXISTS=""
-    if [[ "$THING_EXISTS" == "$GREENGRASS_THING" ]]; then
-        pass "Greengrass core Thing exists: $GREENGRASS_THING"
-    else
-        fail "Greengrass core Thing '$GREENGRASS_THING' not found"
-    fi
-else
-    fail "GreengrassThingName not found in stack outputs"
-fi
-
-# Device policy
-if [[ -n "$DEVICE_POLICY" ]]; then
-    POLICY_DOC=$(aws iot get-policy --policy-name "$DEVICE_POLICY" \
-        --query 'policyDocument' --output text 2>/dev/null) || POLICY_DOC=""
-    if [[ -n "$POLICY_DOC" ]]; then
-        # Check policy allows esp32-* wildcard
-        if echo "$POLICY_DOC" | grep -q "esp32-\*"; then
-            pass "Device policy '$DEVICE_POLICY' allows esp32-* wildcard"
-        else
-            warn "Device policy '$DEVICE_POLICY' exists but may not have esp32-* wildcard"
-        fi
-    else
-        fail "Device policy '$DEVICE_POLICY' not found"
-    fi
-else
-    fail "DevicePolicyName not found in stack outputs"
-fi
-
-# Certificates
-CERT_COUNT=$(aws iot list-certificates --query 'length(certificates[?status==`ACTIVE`])' --output text 2>/dev/null) || CERT_COUNT="0"
-if [[ "$CERT_COUNT" -ge 1 ]]; then
-    pass "Active IoT certificates: $CERT_COUNT"
-else
-    fail "No active IoT certificates found"
-fi
-
-# IoT Rules
-EXPECTED_RULES=("pqc_workshop_auto_register" "pqc_workshop_telemetry" "pqc_workshop_lifecycle")
-for RULE_NAME in "${EXPECTED_RULES[@]}"; do
-    RULE_SQL=$(aws iot get-topic-rule --rule-name "$RULE_NAME" \
-        --query 'rule.sql' --output text 2>/dev/null) || RULE_SQL=""
-    if [[ -n "$RULE_SQL" ]]; then
-        pass "IoT Rule '$RULE_NAME' exists (SQL: $RULE_SQL)"
-    else
-        fail "IoT Rule '$RULE_NAME' not found"
-    fi
+# IoT rules of the current architecture (no Greengrass; auto-register + telemetry
+# + lifecycle + message log rules).
+for rule in pqc_workshop_auto_register pqc_workshop_telemetry pqc_workshop_lifecycle \
+            pqc_workshop_message_log_dt pqc_workshop_message_log_cmd; do
+    check_rule "$rule"
 done
-
 echo ""
 
 # ─── 4. Lambda Functions ────────────────────────────────────────────────────
 echo "─── 4. Lambda Functions ─────────────────────────────────────"
-
-EXPECTED_LAMBDAS=(
-    "pqc-workshop-auto-register"
-    "pqc-workshop-telemetry-processor"
-    "pqc-workshop-command-publisher"
-    "pqc-workshop-greengrass-core-cert-provisioner"
-)
-
-for FUNC in "${EXPECTED_LAMBDAS[@]}"; do
-    FUNC_STATE=$(aws lambda get-function --function-name "$FUNC" \
-        --query 'Configuration.State' --output text 2>/dev/null) || FUNC_STATE=""
-    if [[ "$FUNC_STATE" == "Active" ]]; then
-        pass "Lambda '$FUNC' is Active"
-    elif [[ -n "$FUNC_STATE" ]]; then
-        warn "Lambda '$FUNC' exists but state is: $FUNC_STATE"
-    else
-        fail "Lambda '$FUNC' not found"
-    fi
+# Backend (dashboard) + device-builder + migration workflow + broker provisioners.
+for fn in \
+    pqc-workshop-telemetry-processor \
+    pqc-workshop-command-publisher \
+    pqc-workshop-message-logger \
+    pqc-workshop-broker-log-reader \
+    pqc-workshop-auto-register \
+    pqc-workshop-device-registrar \
+    pqc-workshop-device-deregistrar \
+    pqc-workshop-firmware-pusher \
+    pqc-workshop-prepare-build \
+    pqc-workshop-publish-ota \
+    pqc-workshop-start-migration; do
+    check_lambda "$fn"
 done
-
 echo ""
 
-# ─── 5. DynamoDB ─────────────────────────────────────────────────────────────
-echo "─── 5. DynamoDB ─────────────────────────────────────────────"
-
-TABLE_NAME="pqc-workshop-devices"
-TABLE_STATUS=$(aws dynamodb describe-table --table-name "$TABLE_NAME" \
-    --query 'Table.TableStatus' --output text 2>/dev/null) || TABLE_STATUS=""
-
-if [[ "$TABLE_STATUS" == "ACTIVE" ]]; then
-    pass "DynamoDB table '$TABLE_NAME' is ACTIVE"
+# ─── 5. PQC Migration State Machine ──────────────────────────────────────────
+echo "─── 5. Step Functions (PQC migration) ───────────────────────"
+SM_ARN=$(aws stepfunctions list-state-machines \
+    --query "stateMachines[?name=='pqc-workshop-pqc-migration'].stateMachineArn | [0]" \
+    --output text 2>/dev/null) || SM_ARN=""
+if [[ -n "$SM_ARN" && "$SM_ARN" != "None" ]]; then
+    pass "State machine 'pqc-workshop-pqc-migration' exists"
 else
-    fail "DynamoDB table '$TABLE_NAME' status: ${TABLE_STATUS:-NOT_FOUND}"
+    fail "State machine 'pqc-workshop-pqc-migration' not found"
 fi
-
 echo ""
 
-# ─── 6. AppSync API ─────────────────────────────────────────────────────────
-echo "─── 6. AppSync API ──────────────────────────────────────────"
+# ─── 6. DynamoDB ─────────────────────────────────────────────────────────────
+echo "─── 6. DynamoDB ─────────────────────────────────────────────"
+check_table "pqc-workshop-devices"          # dashboard device state (listDevices)
+check_table "pqc-workshop-device-registry"  # device-builder registry (certs)
+check_table "pqc-workshop-message-log"      # dashboard message log view
+echo ""
 
-if [[ -n "$APPSYNC_ENDPOINT" ]]; then
-    # Verify the API actually exists by listing and matching
-    API_NAME=$(aws appsync list-graphql-apis \
-        --query "graphqlApis[?uris.GRAPHQL=='$APPSYNC_ENDPOINT'].name | [0]" \
-        --output text 2>/dev/null) || API_NAME=""
-    if [[ -n "$API_NAME" && "$API_NAME" != "None" ]]; then
-        pass "AppSync API '$API_NAME' active at: $APPSYNC_ENDPOINT"
+# ─── 7. AppSync API ─────────────────────────────────────────────────────────
+echo "─── 7. AppSync API ──────────────────────────────────────────"
+APPSYNC=$(aws appsync list-graphql-apis \
+    --query "graphqlApis[?name=='pqc-workshop-device-api'].{id:apiId,uri:uris.GRAPHQL} | [0]" \
+    --output json 2>/dev/null) || APPSYNC=""
+APPSYNC_URI=$(echo "$APPSYNC" | python3 -c "import sys,json; d=json.load(sys.stdin) if sys.stdin.read else None; print((d or {}).get('uri','') if d else '')" 2>/dev/null) || APPSYNC_URI=""
+if [[ -n "$APPSYNC_URI" ]]; then
+    pass "AppSync API 'pqc-workshop-device-api' at: $APPSYNC_URI"
+else
+    fail "AppSync API 'pqc-workshop-device-api' not found"
+fi
+echo ""
+
+# ─── 8. Cognito (unauthenticated dashboard access) ───────────────────────────
+echo "─── 8. Cognito ──────────────────────────────────────────────"
+POOL_ID=$(aws cognito-identity list-identity-pools --max-results 60 \
+    --query "IdentityPools[?IdentityPoolName=='pqc_workshop_dashboard'].IdentityPoolId | [0]" \
+    --output text 2>/dev/null) || POOL_ID=""
+if [[ -n "$POOL_ID" && "$POOL_ID" != "None" ]]; then
+    pass "Cognito identity pool 'pqc_workshop_dashboard' exists ($POOL_ID)"
+else
+    fail "Cognito identity pool 'pqc_workshop_dashboard' not found"
+fi
+echo ""
+
+# ─── 9. v2 Dashboard Hosting (S3 + CloudFront) ───────────────────────────────
+echo "─── 9. Dashboard Hosting (v2 Firmware Manager) ──────────────"
+DASH_BUCKET="pqc-workshop-firmware-dashboard-${ACCOUNT_ID}"
+FILE_COUNT=$(aws s3 ls "s3://$DASH_BUCKET/" --recursive 2>/dev/null | grep -c "index.html") || FILE_COUNT=0
+if [[ "$FILE_COUNT" -ge 1 ]]; then
+    pass "Dashboard bucket '$DASH_BUCKET' has the built app deployed"
+else
+    warn "Dashboard bucket '$DASH_BUCKET' missing index.html (run the build+sync step)"
+fi
+CF_DIST=$(aws cloudfront list-distributions \
+    --query "DistributionList.Items[?Comment=='PQC Workshop Firmware Manager Dashboard'].{Id:Id,Domain:DomainName,Status:Status} | [0]" \
+    --output json 2>/dev/null) || CF_DIST=""
+CF_DOMAIN=$(echo "$CF_DIST" | python3 -c "import sys,json; d=json.load(sys.stdin) if sys.stdin.read else None; print((d or {}).get('Domain','') if d else '')" 2>/dev/null) || CF_DOMAIN=""
+if [[ -n "$CF_DOMAIN" ]]; then
+    pass "CloudFront distribution for the v2 dashboard: https://$CF_DOMAIN"
+else
+    warn "CloudFront distribution for the v2 dashboard not found"
+fi
+echo ""
+
+# ─── 10. PQC Broker (ECS Fargate + NLB + Private CA) ─────────────────────────
+echo "─── 10. PQC Broker (ECS Fargate) ────────────────────────────"
+# Broker log group (the single, live group — the Pi group is retired).
+LOG_GROUP=$(aws logs describe-log-groups --log-group-name-prefix /pqc-workshop/broker-container \
+    --query "logGroups[?logGroupName=='/pqc-workshop/broker-container'].logGroupName | [0]" \
+    --output text 2>/dev/null) || LOG_GROUP=""
+if [[ -n "$LOG_GROUP" && "$LOG_GROUP" != "None" ]]; then
+    pass "Broker log group '/pqc-workshop/broker-container' exists"
+else
+    fail "Broker log group '/pqc-workshop/broker-container' not found"
+fi
+# Running ECS service/task for the broker.
+CLUSTER_ARN=$(aws ecs list-clusters --query "clusterArns[?contains(@,'pqc-workshop') || contains(@,'broker')] | [0]" --output text 2>/dev/null) || CLUSTER_ARN=""
+if [[ -n "$CLUSTER_ARN" && "$CLUSTER_ARN" != "None" ]]; then
+    RUNNING=$(aws ecs list-tasks --cluster "$CLUSTER_ARN" --desired-status RUNNING \
+        --query 'length(taskArns)' --output text 2>/dev/null) || RUNNING=0
+    if [[ "$RUNNING" -ge 1 ]]; then
+        pass "Broker ECS cluster has $RUNNING running task(s)"
     else
-        fail "AppSync API not found for endpoint: $APPSYNC_ENDPOINT"
+        warn "Broker ECS cluster found but no running tasks"
     fi
 else
-    fail "AppSyncEndpoint not found in stack outputs"
+    warn "Broker ECS cluster not found"
 fi
-
+# Private CA (issues device certs) — from the broker stack.
+CA_COUNT=$(aws acm-pca list-certificate-authorities \
+    --query "length(CertificateAuthorities[?Status=='ACTIVE'])" --output text 2>/dev/null) || CA_COUNT=0
+if [[ "$CA_COUNT" -ge 1 ]]; then
+    pass "Active Private CA(s): $CA_COUNT"
+else
+    warn "No ACTIVE Private CA found (device cert issuance depends on it)"
+fi
 echo ""
 
-# ─── 7. Cognito Identity Pool ───────────────────────────────────────────────
-echo "─── 7. Cognito Identity Pool ────────────────────────────────"
-
-if [[ -n "$COGNITO_POOL_ID" ]]; then
-    ALLOW_UNAUTH=$(aws cognito-identity describe-identity-pool \
-        --identity-pool-id "$COGNITO_POOL_ID" \
-        --query 'AllowUnauthenticatedIdentities' \
-        --output text 2>/dev/null) || ALLOW_UNAUTH=""
-    if [[ "$ALLOW_UNAUTH" == "True" ]]; then
-        pass "Cognito Identity Pool allows unauthenticated access (attendees don't need login)"
-    elif [[ "$ALLOW_UNAUTH" == "False" ]]; then
-        warn "Cognito Identity Pool does NOT allow unauthenticated access — dashboard may require login"
-    else
-        fail "Cognito Identity Pool '$COGNITO_POOL_ID' not found or inaccessible"
-    fi
+# ─── 11. SSM Hybrid Managed Instance (Builder-Pi) ────────────────────────────
+echo "─── 11. Builder-Pi (SSM Hybrid) ─────────────────────────────"
+PI_COUNT=$(aws ssm describe-instance-information \
+    --query "length(InstanceInformationList[?PingStatus=='Online'])" --output text 2>/dev/null) || PI_COUNT=0
+if [[ "$PI_COUNT" -ge 1 ]]; then
+    pass "Online SSM managed instance(s) (Builder-Pi): $PI_COUNT"
 else
-    fail "CognitoIdentityPoolId not found in stack outputs"
+    warn "No Online SSM managed instances found (Builder-Pi may be offline)"
 fi
-
-echo ""
-
-# ─── 8. Dashboard (CloudFront + S3) ─────────────────────────────────────────
-echo "─── 8. Dashboard (CloudFront + S3) ──────────────────────────"
-
-if [[ -n "$DASHBOARD_BUCKET" ]]; then
-    FILE_COUNT=$(aws s3 ls "s3://$DASHBOARD_BUCKET/" --recursive \
-        --summarize --human-readable 2>/dev/null | grep "Total Objects" | awk '{print $3}') || FILE_COUNT="0"
-    if [[ "$FILE_COUNT" -ge 2 ]]; then
-        pass "S3 bucket '$DASHBOARD_BUCKET' has $FILE_COUNT files deployed"
-    else
-        warn "S3 bucket '$DASHBOARD_BUCKET' has $FILE_COUNT file(s) — expected at least index.html + assets"
-    fi
-else
-    fail "DashboardBucketName not found in stack outputs"
-fi
-
-if [[ -n "$DASHBOARD_URL" ]]; then
-    # Extract domain from URL for CloudFront check
-    CF_DOMAIN=$(echo "$DASHBOARD_URL" | sed 's|https://||')
-    CF_STATUS=$(aws cloudfront list-distributions \
-        --query "DistributionList.Items[?DomainName=='$CF_DOMAIN'].Status | [0]" \
-        --output text 2>/dev/null) || CF_STATUS=""
-    if [[ "$CF_STATUS" == "Deployed" ]]; then
-        pass "CloudFront distribution deployed: $DASHBOARD_URL"
-    elif [[ -n "$CF_STATUS" && "$CF_STATUS" != "None" ]]; then
-        warn "CloudFront distribution status: $CF_STATUS (expected: Deployed)"
-    else
-        fail "CloudFront distribution not found for $DASHBOARD_URL"
-    fi
-else
-    fail "DashboardURL not found in stack outputs"
-fi
-
-echo ""
-
-# ─── 9. Secrets Manager ─────────────────────────────────────────────────────
-echo "─── 9. Secrets Manager ──────────────────────────────────────"
-
-SECRET_ID="iot/${GREENGRASS_THING:-pqc-workshop-greengrass-core}/greengrass-credentials"
-SECRET_STATUS=$(aws secretsmanager describe-secret --secret-id "$SECRET_ID" \
-    --query 'Name' --output text 2>/dev/null) || SECRET_STATUS=""
-
-if [[ -n "$SECRET_STATUS" ]]; then
-    pass "Greengrass credentials secret exists: $SECRET_ID"
-else
-    fail "Greengrass credentials secret not found: $SECRET_ID"
-fi
-
-# SSM Activation secret
-SSM_SECRET_ID="iot/${GREENGRASS_THING:-pqc-workshop-greengrass-core}/ssm-activation"
-SSM_SECRET_STATUS=$(aws secretsmanager describe-secret --secret-id "$SSM_SECRET_ID" \
-    --query 'Name' --output text 2>/dev/null) || SSM_SECRET_STATUS=""
-
-if [[ -n "$SSM_SECRET_STATUS" ]]; then
-    pass "SSM activation secret exists: $SSM_SECRET_ID"
-else
-    warn "SSM activation secret not found: $SSM_SECRET_ID (deploy ssm-hybrid-activation-stack)"
-fi
-
-echo ""
-
-# ─── 10. SSM Hybrid Managed Instance ────────────────────────────────────────
-echo "─── 10. SSM Hybrid Managed Instance ─────────────────────────"
-
-SSM_INSTANCES=$(aws ssm describe-instance-information \
-    --filters "Key=ActivationIds,Values=$(
-        aws secretsmanager get-secret-value --secret-id "$SSM_SECRET_ID" \
-            --query 'SecretString' --output text 2>/dev/null | \
-            python3 -c "import sys,json; print(json.load(sys.stdin).get('activationId','none'))" 2>/dev/null || echo "none"
-    )" \
-    --query 'InstanceInformationList[].{Id:InstanceId,Status:PingStatus}' \
-    --output json 2>/dev/null) || SSM_INSTANCES="[]"
-
-SSM_ONLINE=$(echo "$SSM_INSTANCES" | python3 -c "
-import sys, json
-instances = json.load(sys.stdin)
-online = [i for i in instances if i.get('Status') == 'Online']
-print(len(online))
-" 2>/dev/null) || SSM_ONLINE="0"
-
-SSM_TOTAL=$(echo "$SSM_INSTANCES" | python3 -c "import sys,json; print(len(json.load(sys.stdin)))" 2>/dev/null) || SSM_TOTAL="0"
-
-if [[ "$SSM_ONLINE" -gt 0 ]]; then
-    INSTANCE_ID=$(echo "$SSM_INSTANCES" | python3 -c "
-import sys, json
-instances = json.load(sys.stdin)
-online = [i for i in instances if i.get('Status') == 'Online']
-if online:
-    print(online[0]['Id'])
-" 2>/dev/null)
-    pass "SSM managed instance online: $INSTANCE_ID (connect with: aws ssm start-session --target $INSTANCE_ID)"
-elif [[ "$SSM_TOTAL" -gt 0 ]]; then
-    warn "SSM managed instance registered but OFFLINE ($SSM_TOTAL instance(s) — Pi may be powered off)"
-else
-    warn "No SSM managed instances registered yet (run setup-ssm-agent.sh on the Pi)"
-fi
-
-echo ""
-
-# ─── 11. Greengrass Core Device ──────────────────────────────────────────────
-echo "─── 11. Greengrass Core Device ──────────────────────────────"
-
-GG_CORE_STATUS=$(aws greengrassv2 list-core-devices \
-    --query "coreDevices[?coreDeviceThingName=='${GREENGRASS_THING}'].status | [0]" \
-    --output text 2>/dev/null) || GG_CORE_STATUS=""
-
-if [[ "$GG_CORE_STATUS" == "HEALTHY" ]]; then
-    pass "Greengrass core '$GREENGRASS_THING' is HEALTHY"
-elif [[ -n "$GG_CORE_STATUS" && "$GG_CORE_STATUS" != "None" ]]; then
-    warn "Greengrass core '$GREENGRASS_THING' status: $GG_CORE_STATUS"
-else
-    warn "Greengrass core '$GREENGRASS_THING' not registered yet (Pi needs provisioning)"
-fi
-
-echo ""
-
-# ─── 12. ESP32 Device Registrations ─────────────────────────────────────────
-echo "─── 12. ESP32 Device Registrations ──────────────────────────"
-
-ESP32_THINGS=$(aws iot list-things \
-    --query "things[?starts_with(thingName, 'esp32-')].thingName" \
-    --output json 2>/dev/null) || ESP32_THINGS="[]"
-
-ESP32_COUNT=$(echo "$ESP32_THINGS" | python3 -c "import sys,json; print(len(json.load(sys.stdin)))")
-
-if [[ "$ESP32_COUNT" -gt 0 ]]; then
-    pass "$ESP32_COUNT ESP32 device(s) registered (auto-registered on first connect)"
-    echo "$ESP32_THINGS" | python3 -c "
-import sys, json
-things = json.load(sys.stdin)
-for t in things[:10]:
-    print(f'       - {t}')
-if len(things) > 10:
-    print(f'       ... and {len(things) - 10} more')
-"
-else
-    warn "No ESP32 devices registered yet (they register on first connection — expected before workshop)"
-fi
-
 echo ""
 
 # ─── Summary ─────────────────────────────────────────────────────────────────
 echo "═══════════════════════════════════════════════════════════════"
-echo "  RESULTS"
+echo "  RESULT: $PASS passed, $WARN warnings, $FAIL failed"
 echo "═══════════════════════════════════════════════════════════════"
-echo ""
-echo "  ✅ Passed:   $PASS"
-echo "  ⚠️  Warnings: $WARN"
-echo "  ❌ Failed:   $FAIL"
-echo ""
-
-if [[ $FAIL -eq 0 && $WARN -eq 0 ]]; then
-    echo "  🎉 Environment is FULLY READY for the workshop!"
-elif [[ $FAIL -eq 0 ]]; then
-    echo "  👍 Environment is MOSTLY READY (review warnings above)."
-    echo ""
-    echo "  Common warnings before the session:"
-    echo "    - Greengrass core not registered: Pi not yet provisioned"
-    echo "    - No ESP32 devices: They auto-register when powered on"
-else
-    echo "  🚨 Environment has FAILURES that need to be resolved."
-    echo "     Fix the issues above and run this script again."
-fi
-
-echo ""
-echo "  Dashboard:  ${DASHBOARD_URL:-N/A}"
-echo "  IoT Endpoint: ${ACTUAL_ENDPOINT:-N/A}"
-echo "  Region:     $REGION"
-echo "  Account:    $ACCOUNT_ID"
-echo ""
+[[ "$FAIL" -eq 0 ]] && exit 0 || exit 1

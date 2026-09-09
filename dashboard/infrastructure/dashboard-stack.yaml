@@ -20,11 +20,6 @@ Parameters:
     Default: esp32-pqc-device
     Description: Prefix for device Thing names (e.g., esp32-pqc-device-001)
 
-  GreengrassThingName:
-    Type: String
-    Default: pqc-workshop-greengrass-core
-    Description: Thing name for the Greengrass core device (Raspberry Pi)
-
 # ─────────────────────────────────────────────────────────────────────────────
 # Resources
 # ─────────────────────────────────────────────────────────────────────────────
@@ -804,56 +799,27 @@ Resources:
     DependsOn: DeviceApiSchema
 
   # ═══════════════════════════════════════════════════════════════════════════
-  # IoT Policy — For Greengrass Bridge (allows bridging all device topics)
-  # ═══════════════════════════════════════════════════════════════════════════
-
-  GreengrassBridgePolicy:
-    Type: AWS::IoT::Policy
-    Properties:
-      PolicyName: pqc-workshop-greengrass-bridge
-      PolicyDocument:
-        Version: '2012-10-17'
-        Statement:
-          # Bridge uses a separate client ID to avoid conflict with Greengrass nucleus
-          - Effect: Allow
-            Action: iot:Connect
-            Resource: !Sub 'arn:aws:iot:${AWS::Region}:${AWS::AccountId}:client/${GreengrassThingName}-bridge'
-          - Effect: Allow
-            Action:
-              - iot:Publish
-              - iot:RetainPublish
-            Resource:
-              - !Sub 'arn:aws:iot:${AWS::Region}:${AWS::AccountId}:topic/dt/*'
-          - Effect: Allow
-            Action: iot:Subscribe
-            Resource:
-              - !Sub 'arn:aws:iot:${AWS::Region}:${AWS::AccountId}:topicfilter/cmd/*'
-          - Effect: Allow
-            Action: iot:Receive
-            Resource:
-              - !Sub 'arn:aws:iot:${AWS::Region}:${AWS::AccountId}:topic/cmd/*'
-
-  # ═══════════════════════════════════════════════════════════════════════════
   # S3 + CloudFront — Dashboard Hosting
   # ═══════════════════════════════════════════════════════════════════════════
 
-  DashboardBucket:
+  # Hosts the v2 "PQC Firmware Manager" dashboard (Vite/React app in
+  # raw_device_builder/dashboard-v2/frontend). The deploy tooling builds the app
+  # and syncs dist/ to this bucket, then invalidates the distribution. The v1
+  # "Device Dashboard" frontend/hosting has been removed (superseded by v2).
+  FirmwareDashboardBucket:
     Type: AWS::S3::Bucket
     Properties:
-      BucketName: !Sub 'pqc-workshop-dashboard-${AWS::AccountId}'
-      WebsiteConfiguration:
-        IndexDocument: index.html
-        ErrorDocument: index.html
+      BucketName: !Sub 'pqc-workshop-firmware-dashboard-${AWS::AccountId}'
       PublicAccessBlockConfiguration:
         BlockPublicAcls: true
         BlockPublicPolicy: true
         IgnorePublicAcls: true
         RestrictPublicBuckets: true
 
-  DashboardBucketPolicy:
+  FirmwareDashboardBucketPolicy:
     Type: AWS::S3::BucketPolicy
     Properties:
-      Bucket: !Ref DashboardBucket
+      Bucket: !Ref FirmwareDashboardBucket
       PolicyDocument:
         Version: '2012-10-17'
         Statement:
@@ -862,30 +828,31 @@ Resources:
             Principal:
               Service: cloudfront.amazonaws.com
             Action: s3:GetObject
-            Resource: !Sub '${DashboardBucket.Arn}/*'
+            Resource: !Sub '${FirmwareDashboardBucket.Arn}/*'
             Condition:
               StringEquals:
-                AWS:SourceArn: !Sub 'arn:aws:cloudfront::${AWS::AccountId}:distribution/${DashboardDistribution}'
+                AWS:SourceArn: !Sub 'arn:aws:cloudfront::${AWS::AccountId}:distribution/${FirmwareDashboardDistribution}'
 
-  DashboardOAC:
+  FirmwareDashboardOAC:
     Type: AWS::CloudFront::OriginAccessControl
     Properties:
       OriginAccessControlConfig:
-        Name: pqc-workshop-dashboard-oac
+        Name: pqc-workshop-firmware-dashboard-oac
         OriginAccessControlOriginType: s3
         SigningBehavior: always
         SigningProtocol: sigv4
 
-  DashboardDistribution:
+  FirmwareDashboardDistribution:
     Type: AWS::CloudFront::Distribution
     Properties:
       DistributionConfig:
         Enabled: true
+        Comment: PQC Workshop Firmware Manager Dashboard
         DefaultRootObject: index.html
         Origins:
           - Id: S3Origin
-            DomainName: !GetAtt DashboardBucket.RegionalDomainName
-            OriginAccessControlId: !GetAtt DashboardOAC.Id
+            DomainName: !GetAtt FirmwareDashboardBucket.RegionalDomainName
+            OriginAccessControlId: !GetAtt FirmwareDashboardOAC.Id
             S3OriginConfig:
               OriginAccessIdentity: ''
         DefaultCacheBehavior:
@@ -908,12 +875,16 @@ Resources:
 # ─────────────────────────────────────────────────────────────────────────────
 Outputs:
   DashboardURL:
-    Description: Dashboard URL (CloudFront)
-    Value: !Sub 'https://${DashboardDistribution.DomainName}'
+    Description: v2 Firmware Manager dashboard URL (CloudFront)
+    Value: !Sub 'https://${FirmwareDashboardDistribution.DomainName}'
 
   DashboardBucketName:
-    Description: S3 bucket for dashboard static files
-    Value: !Ref DashboardBucket
+    Description: S3 bucket for the v2 dashboard static files
+    Value: !Ref FirmwareDashboardBucket
+
+  DashboardDistributionId:
+    Description: CloudFront distribution ID (for cache invalidation after sync)
+    Value: !Ref FirmwareDashboardDistribution
 
   AppSyncEndpoint:
     Description: AppSync GraphQL endpoint
@@ -930,10 +901,6 @@ Outputs:
   DeviceTableName:
     Description: DynamoDB table storing device state
     Value: !Ref DeviceTable
-
-  GreengrassBridgePolicyName:
-    Description: IoT Policy to attach to the Greengrass device certificate
-    Value: !Ref GreengrassBridgePolicy
 
   Region:
     Description: AWS Region

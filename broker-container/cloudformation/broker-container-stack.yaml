@@ -416,7 +416,7 @@ Resources:
               Value: !Ref BrokerKeySecret
             - Name: IOT_ENDPOINT
               Value: !Ref IoTEndpoint
-            - Name: GREENGRASS_THING
+            - Name: BROKER_NAME
               Value: pqc-workshop-broker
             - Name: BRIDGE_CERT_SECRET
               Value: !Ref BridgeCertSecret

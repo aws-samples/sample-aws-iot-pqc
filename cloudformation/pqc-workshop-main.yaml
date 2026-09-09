@@ -3,7 +3,7 @@ Description: >
   PQC Workshop — Master Stack (nested stacks)
   
   Single-command deployment for the entire re:Invent builders session.
-  Creates all AWS infrastructure: IoT Things, Greengrass core, dashboard,
+  Creates all AWS infrastructure: IoT Things, dashboard,
   IoT Rules, and supporting resources.
   
   Deploy with:
@@ -27,10 +27,13 @@ Parameters:
     Default: esp32-
     Description: Prefix for auto-registered device Thing names
 
-  GreengrassThingName:
+  WorkshopInstanceName:
     Type: String
-    Default: pqc-workshop-greengrass-core
-    Description: Thing name for the Greengrass core (Raspberry Pi)
+    Default: pqc-workshop-broker
+    Description: >
+      Base name used for the Builder-Pi SSM hybrid activation and related
+      resource naming. (Formerly GreengrassThingName; Greengrass has been
+      removed but the SSM activation still derives its resource names from this.)
 
   TemplateBucketName:
     Type: String
@@ -50,19 +53,6 @@ Parameters:
 Resources:
 
   # ═══════════════════════════════════════════════════════════════════════════
-  # Nested Stack: Greengrass Core Device
-  # ═══════════════════════════════════════════════════════════════════════════
-  GreengrassStack:
-    Type: AWS::CloudFormation::Stack
-    Properties:
-      TemplateURL: !Sub 'https://${TemplateBucketName}.s3.amazonaws.com/${TemplateBucketPrefix}/templates/greengrass-core-stack.yaml'
-      Parameters:
-        GreengrassThingName: !Ref GreengrassThingName
-      Tags:
-        - Key: Workshop
-          Value: pqc-reinvent
-
-  # ═══════════════════════════════════════════════════════════════════════════
   # Nested Stack: Device Auto-Registration (JIT via IoT Rule + Lambda)
   # ═══════════════════════════════════════════════════════════════════════════
   DeviceStack:
@@ -71,7 +61,6 @@ Resources:
       TemplateURL: !Sub 'https://${TemplateBucketName}.s3.amazonaws.com/${TemplateBucketPrefix}/templates/device-provisioning-stack.yaml'
       Parameters:
         DeviceNamePrefix: !Ref DeviceNamePrefix
-        GreengrassThingName: !Ref GreengrassThingName
       Tags:
         - Key: Workshop
           Value: pqc-reinvent
@@ -84,7 +73,7 @@ Resources:
     Properties:
       TemplateURL: !Sub 'https://${TemplateBucketName}.s3.amazonaws.com/${TemplateBucketPrefix}/templates/ssm-hybrid-activation-stack.yaml'
       Parameters:
-        GreengrassThingName: !Ref GreengrassThingName
+        WorkshopInstanceName: !Ref WorkshopInstanceName
       Tags:
         - Key: Workshop
           Value: pqc-reinvent
@@ -99,25 +88,11 @@ Resources:
       Parameters:
         DeviceCount: !Ref DeviceCount
         DeviceNamePrefix: !Ref DeviceNamePrefix
-        GreengrassThingName: !Ref GreengrassThingName
       Tags:
         - Key: Workshop
           Value: pqc-reinvent
 
 Outputs:
-  # ─── Greengrass Core ──────────────────────────────────────────────────────
-  GreengrassThingName:
-    Description: Greengrass core device Thing name
-    Value: !Ref GreengrassThingName
-
-  GreengrassCredentialsSecret:
-    Description: Secrets Manager secret with Greengrass device credentials
-    Value: !GetAtt GreengrassStack.Outputs.CredentialsSecretName
-
-  GreengrassTokenExchangeRoleArn:
-    Description: IAM role ARN for Greengrass Token Exchange
-    Value: !GetAtt GreengrassStack.Outputs.TokenExchangeRoleArn
-
   # ─── Devices ──────────────────────────────────────────────────────────────
   DeviceCount:
     Description: Number of ESP32 devices provisioned
@@ -150,10 +125,6 @@ Outputs:
   DashboardBucketName:
     Description: S3 bucket for dashboard static files
     Value: !GetAtt DashboardStack.Outputs.DashboardBucketName
-
-  GreengrassBridgePolicyName:
-    Description: IoT Policy for Mosquitto bridge (attach to Greengrass cert)
-    Value: !GetAtt DashboardStack.Outputs.GreengrassBridgePolicyName
 
   # ─── SSM Hybrid Activation ────────────────────────────────────────────────
   SSMActivationSecretName:
