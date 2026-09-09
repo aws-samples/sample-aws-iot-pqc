@@ -309,22 +309,3 @@ Branch: `refactor-deployment`.
   - NOTE: firmware-domain work — out of scope for the deployment-hardening
     effort; tracked here only so it is not lost. Should be done under a firmware
     effort so as not to destabilise the firmware while AWS deploy work is ongoing.
-- [ ] Bake a Builder-Pi OS image via a CodeBuild pipeline (pre-installed tools).
-  - Today each Pi is provisioned at runtime: an operator downloads the bundle,
-    registers SSM, and runs `setup-builder-pi.sh` (installs arduino-cli, ESP32
-    core, wolfSSL PQC config, PubSubClient, Python deps + `workshop-builder`
-    CLI, udev rules, GUI service). That is slow and varies per host. Build a
-    golden Raspberry Pi OS image with all tools + the app pre-installed, using
-    `pi-gen` (or packer-arm) in a privileged/ARM CodeBuild project, published to
-    S3 with a checksum.
-  - Keep dynamic bits OUT of the image: the per-deployment `config.json`
-    (api_endpoint, region, firmware_bucket) and the SSM activation are injected
-    at first boot (cloud-init/firstboot reading a small file off the boot
-    partition, or a one-time SSM command). Secrets (WiFi creds) must never be
-    baked in.
-  - Acceptance: flashing the image + a first-boot config yields a Pi that comes
-    up Online in SSM with the GUI running and the CLI on PATH, with no manual
-    tool install. The config-template + secret-hygiene work from the builder-pi
-    hardening still applies (the image does not remove it).
-  - Rough effort ~3-5 days (mostly ARM-emulation/pi-gen ops + hardware testing);
-    deferred as a scale improvement, not required for a single-Pi workshop.
