@@ -165,22 +165,21 @@ aws s3 cp "$PROJECT_ROOT/raw_device_builder/codebuild/Dockerfile" \
     "s3://${FIRMWARE_BUCKET}/source/Dockerfile" >/dev/null
 aws s3 cp "$PROJECT_ROOT/raw_device_builder/codebuild/buildspec-image.yml" \
     "s3://${FIRMWARE_BUCKET}/source/buildspec-image.yml" >/dev/null
-# Known locations for the two extra context files (fall back to a repo search
-# that only skips the arduino-cli/data/ board-package cache, not arduino-cli/).
-declare -A EXTRA_SRC=(
-    [wolfssl_user_settings_arduino.h]="$PROJECT_ROOT/raw_device_builder/codebuild/wolfssl_user_settings_arduino.h"
-    [partitions_pqc_workshop.csv]="$PROJECT_ROOT/esp32-flash/partitions_pqc_workshop.csv"
-)
-for extra in wolfssl_user_settings_arduino.h partitions_pqc_workshop.csv; do
-    f="${EXTRA_SRC[$extra]}"
-    [[ -f "$f" ]] || f=$(find "$PROJECT_ROOT" -name "$extra" -not -path '*/arduino-cli/data/*' 2>/dev/null | head -1)
+# The two extra firmware-image context files live in known repo locations. Use a
+# plain function (no associative array, whose dotted keys break under zsh) with
+# a fallback repo search that only skips the arduino-cli/data/ board cache.
+stage_extra() {
+    local name="$1" f="$2"
+    [[ -f "$f" ]] || f=$(find "$PROJECT_ROOT" -name "$name" -not -path '*/arduino-cli/data/*' 2>/dev/null | head -1)
     if [[ -n "$f" && -f "$f" ]]; then
-        echo "          - $extra"
-        aws s3 cp "$f" "s3://${FIRMWARE_BUCKET}/source/$extra" >/dev/null
+        echo "          - $name"
+        aws s3 cp "$f" "s3://${FIRMWARE_BUCKET}/source/$name" >/dev/null
     else
-        echo "          ! WARN: $extra not found; firmware image build may fail until it is staged"
+        echo "          ! WARN: $name not found; firmware image build may fail until it is staged"
     fi
-done
+}
+stage_extra wolfssl_user_settings_arduino.h "$PROJECT_ROOT/raw_device_builder/codebuild/wolfssl_user_settings_arduino.h"
+stage_extra partitions_pqc_workshop.csv     "$PROJECT_ROOT/esp32-flash/partitions_pqc_workshop.csv"
 
 # Trigger the broker image build now that its source is in place, and wait.
 BROKER_BUILD_PROJECT=$(get_out CodeBuildProjectName 2>/dev/null || true)
