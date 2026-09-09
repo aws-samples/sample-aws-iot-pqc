@@ -31,8 +31,34 @@ Parameters:
       - 'true'
       - 'false'
 
+  CreateVpcEndpoints:
+    Type: String
+    Description: >
+      Create VPC interface endpoints (ECR api/dkr, Secrets Manager, CloudWatch
+      Logs) + an S3 gateway endpoint so the Fargate broker task can pull its
+      image and fetch secrets over private AWS networking. Set 'true' when the
+      subnets lack reliable internet egress to the AWS APIs (the default here,
+      since it is the safe choice for both default and provisioned VPCs).
+    Default: 'true'
+    AllowedValues:
+      - 'true'
+      - 'false'
+
+  RouteTableIds:
+    Type: CommaDelimitedList
+    Description: >
+      Route table IDs for the S3 gateway endpoint (only used when
+      CreateVpcEndpoints=true). Leave empty to skip the S3 gateway endpoint
+      (image pulls then rely on the ECR interface endpoints + their DNS). For a
+      default VPC pass the main route table id.
+    Default: ''
+
 Conditions:
   ShouldTriggerBuild: !Equals [!Ref TriggerBuild, 'true']
+  MakeVpcEndpoints: !Equals [!Ref CreateVpcEndpoints, 'true']
+  MakeS3Gateway: !And
+    - !Condition MakeVpcEndpoints
+    - !Not [!Equals [!Join ['', !Ref RouteTableIds], '']]
 
 Resources:
 
@@ -445,6 +471,81 @@ Resources:
           FromPort: 8883
           ToPort: 8883
           CidrIp: 0.0.0.0/0
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # VPC Endpoints — let the Fargate task reach ECR / Secrets Manager / Logs over
+  # private AWS networking instead of depending on public egress to the APIs.
+  # ECR image pulls need ecr.api + ecr.dkr (interface) AND S3 (gateway, for the
+  # image layers). Secrets Manager + Logs cover cert fetch and the awslogs driver.
+  # ═══════════════════════════════════════════════════════════════════════════
+  VpcEndpointSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Condition: MakeVpcEndpoints
+    Properties:
+      GroupDescription: HTTPS to VPC interface endpoints (from broker tasks)
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          SourceSecurityGroupId: !Ref BrokerSecurityGroup
+
+  EcrApiEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Condition: MakeVpcEndpoints
+    Properties:
+      VpcId: !Ref VpcId
+      ServiceName: !Sub 'com.amazonaws.${AWS::Region}.ecr.api'
+      VpcEndpointType: Interface
+      PrivateDnsEnabled: true
+      SubnetIds: !Ref SubnetIds
+      SecurityGroupIds:
+        - !Ref VpcEndpointSecurityGroup
+
+  EcrDkrEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Condition: MakeVpcEndpoints
+    Properties:
+      VpcId: !Ref VpcId
+      ServiceName: !Sub 'com.amazonaws.${AWS::Region}.ecr.dkr'
+      VpcEndpointType: Interface
+      PrivateDnsEnabled: true
+      SubnetIds: !Ref SubnetIds
+      SecurityGroupIds:
+        - !Ref VpcEndpointSecurityGroup
+
+  SecretsManagerEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Condition: MakeVpcEndpoints
+    Properties:
+      VpcId: !Ref VpcId
+      ServiceName: !Sub 'com.amazonaws.${AWS::Region}.secretsmanager'
+      VpcEndpointType: Interface
+      PrivateDnsEnabled: true
+      SubnetIds: !Ref SubnetIds
+      SecurityGroupIds:
+        - !Ref VpcEndpointSecurityGroup
+
+  LogsEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Condition: MakeVpcEndpoints
+    Properties:
+      VpcId: !Ref VpcId
+      ServiceName: !Sub 'com.amazonaws.${AWS::Region}.logs'
+      VpcEndpointType: Interface
+      PrivateDnsEnabled: true
+      SubnetIds: !Ref SubnetIds
+      SecurityGroupIds:
+        - !Ref VpcEndpointSecurityGroup
+
+  S3GatewayEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Condition: MakeS3Gateway
+    Properties:
+      VpcId: !Ref VpcId
+      ServiceName: !Sub 'com.amazonaws.${AWS::Region}.s3'
+      VpcEndpointType: Gateway
+      RouteTableIds: !Ref RouteTableIds
 
   BrokerNLB:
     Type: AWS::ElasticLoadBalancingV2::LoadBalancer

@@ -123,6 +123,26 @@ for pair in \
     rm -f "$tmp"
 done
 
+# ─── Discover route tables for the chosen subnets (S3 gateway VPC endpoint) ───
+# The broker's S3 gateway endpoint needs the route tables associated with the
+# task subnets. A subnet with no explicit association uses the VPC main table.
+echo "[*] Resolving route tables for the S3 gateway endpoint..."
+RT_IDS=""
+for sn in $(echo "$SUBNETS" | tr ',' ' '); do
+    rt=$(aws ec2 describe-route-tables \
+        --filters "Name=association.subnet-id,Values=$sn" \
+        --query 'RouteTables[0].RouteTableId' --output text 2>/dev/null)
+    if [[ -z "$rt" || "$rt" == "None" ]]; then
+        rt=$(aws ec2 describe-route-tables \
+            --filters "Name=vpc-id,Values=$VPC_ID" "Name=association.main,Values=true" \
+            --query 'RouteTables[0].RouteTableId' --output text 2>/dev/null)
+    fi
+    [[ -n "$rt" && "$rt" != "None" ]] && RT_IDS+="${RT_IDS:+,}$rt"
+done
+# de-duplicate
+RT_IDS=$(echo "$RT_IDS" | tr ',' '\n' | awk 'NF && !seen[$0]++' | paste -sd, -)
+echo "    route tables: ${RT_IDS:-<none found — S3 gateway endpoint will be skipped>}"
+
 # ─── Step 2: deploy the single master stack ──────────────────────────────────
 # BrokerTriggerBuild=false: the broker's container-image CodeBuild pulls its
 # source from the broker source bucket, which does not exist until this stack
@@ -140,6 +160,8 @@ aws cloudformation deploy \
         TemplateBucketName="$ARTIFACTS_BUCKET" \
         TemplateBucketPrefix="$TEMPLATE_PREFIX" \
         BrokerTriggerBuild=false \
+        BrokerCreateVpcEndpoints=true \
+        BrokerRouteTableIds="$RT_IDS" \
     --capabilities CAPABILITY_NAMED_IAM CAPABILITY_AUTO_EXPAND \
     --tags Workshop=pqc-reinvent
 

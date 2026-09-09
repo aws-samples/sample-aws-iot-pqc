@@ -60,6 +60,22 @@ Parameters:
     Description: >
       At least two subnets in different AZs for the broker NLB and ECS tasks.
 
+  BrokerRouteTableIds:
+    Type: CommaDelimitedList
+    Default: ''
+    Description: >
+      Route table IDs for the broker's S3 gateway VPC endpoint (needed for ECR
+      image-layer pulls when the task uses VPC endpoints). For a default VPC,
+      pass the main route table id. Leave empty to skip the S3 gateway endpoint.
+
+  BrokerCreateVpcEndpoints:
+    Type: String
+    Default: 'true'
+    AllowedValues: ['true', 'false']
+    Description: >
+      Create VPC endpoints (ECR/Secrets Manager/Logs interface + S3 gateway) so
+      the broker task pulls its image and secrets over private AWS networking.
+
   # ─── Default device WiFi (used by the firmware build; overridable) ──────────
   DefaultWifiSsid:
     Type: String
@@ -100,6 +116,8 @@ Resources:
         SubnetIds: !Join [',', !Ref SubnetIds]
         IoTEndpoint: !Sub '${AWS::AccountId}-ats.iot.${AWS::Region}.amazonaws.com'
         TriggerBuild: !Ref BrokerTriggerBuild
+        CreateVpcEndpoints: !Ref BrokerCreateVpcEndpoints
+        RouteTableIds: !Join [',', !Ref BrokerRouteTableIds]
       Tags:
         - Key: Workshop
           Value: pqc-reinvent
