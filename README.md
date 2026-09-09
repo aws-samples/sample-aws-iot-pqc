@@ -8,7 +8,7 @@ WiFi and MQTT run as independent FreeRTOS tasks with automatic failure recovery.
 
 - [Why Post-Quantum Cryptography?](#why-post-quantum-cryptography)
 - [How It Works](#how-it-works)
-- [Workshop Architecture (Greengrass + Mosquitto)](#workshop-architecture-greengrass--mosquitto)
+- [Workshop Architecture (Containerized PQC Broker)](#workshop-architecture-containerized-pqc-broker)
 - [Project Structure](#project-structure)
 - [Supported Hardware](#supported-hardware)
 - [Prerequisites](#prerequisites)
@@ -67,7 +67,7 @@ ESP32 Device                                    AWS Cloud
 
 1. The **WiFi task** manages the wireless connection on FreeRTOS core 0. It connects to the configured network, monitors the link, and automatically reconnects on failure.
 
-2. The **MQTT task** waits for WiFi, initializes wolfSSL with your device certificates, then opens a TLS 1.3 connection to the Mosquitto PQC broker. During the TLS handshake, it requests a hybrid PQC key exchange (P-256 + ML-KEM-768). Once connected, it publishes JSON telemetry every 30 seconds and subscribes to a topic for inbound commands.
+2. The **MQTT task** waits for WiFi, initializes wolfSSL with your device certificates, then opens a TLS 1.3 connection to the containerized Mosquitto PQC broker (ECS Fargate, reached via a Network Load Balancer on port 8883). During the TLS handshake, it requests a hybrid PQC key exchange (P-256 + ML-KEM-768). Once connected, it publishes JSON telemetry every 30 seconds and subscribes to a topic for inbound commands. The broker bridges this traffic up to AWS IoT Core.
 
 3. The **main loop** prints a system status report every 60 seconds (uptime, WiFi RSSI, MQTT state, free heap).
 
@@ -75,49 +75,61 @@ If WiFi drops, the WiFi task reconnects automatically. The MQTT task detects the
 
 ---
 
-## Workshop Architecture (Greengrass + Mosquitto)
+## Workshop Architecture (Containerized PQC Broker)
 
-For the re:Invent builders session, the system uses a Raspberry Pi as an edge gateway running AWS IoT Greengrass v2 with a standalone PQC-enabled Mosquitto broker. This creates an end-to-end PQC demonstration path:
+For the re:Invent builders session, the PQC-enabled Mosquitto broker runs as a **container on ECS Fargate** behind a Network Load Balancer — there is no Raspberry Pi gateway and no AWS IoT Greengrass in the data path. ESP32 devices connect straight to the load balancer over PQC TLS 1.3, and the broker bridges their traffic up to AWS IoT Core. A separate Raspberry Pi (the "builder-pi") is used only to flash devices, not to route MQTT.
 
 ```
-ESP32 Devices (x8)               Raspberry Pi (Edge Gateway)              AWS Cloud
-+-------------------+            +----------------------------------+     +-------------------+
-|                   |            |                                  |     |                   |
-| [Partition 0]     |  TLS 1.3  |  Mosquitto MQTT Broker           |     |  AWS IoT Core     |
-|  Classical FW     |  Classical |    - OpenSSL 3.5                 |     |    - MQTT Broker  |
-|  (mbedTLS)        |---------->|    - Port 8883, mTLS             |     |    - Rules Engine |
-|                   |            |    - ACL per device              |     |    - CloudWatch   |
-| [Partition 1]     |  TLS 1.3  |                                  |     |                   |
-|  PQC FW           |  + ML-KEM |  Mosquitto Bridge                | TLS |                   |
-|  (wolfSSL)        |---------->|    - Classical TLS to IoT Core   |---->|                   |
-|                   |            |    - Topic forwarding (dt/, cmd/)|1.2  |                   |
-+-------------------+            |                                  |     |                   |
-                                 |  Greengrass Nucleus              |     |  IoT Greengrass   |
-                                 |    - Manages Mosquitto lifecycle |---->|    - Deployments  |
-                                 |    - Dashboard component         |     |    - Components   |
-                                 |    - OTA command relay           |     |                   |
-                                 +----------------------------------+     +-------------------+
+ESP32 Devices (x8)          AWS Cloud (us-east-1)
++-------------------+       +--------------------------------------------------------------+
+|                   |       |                                                              |
+| [OTA_0 / app0]    | TLS   |   Network Load        ECS Fargate                            |
+|  Classical FW     | 1.3   |   Balancer            +--------------------------+           |
+|  (wolfSSL)        |=====> |   pqc-broker-nlb ====> |  Mosquitto PQC broker    |           |
+|                   | :8883 |   (TCP passthrough)   |   - OpenSSL 3.5 + ML-KEM |           |
+| [OTA_1 / app1]    |       |                       |   - port 8883, mTLS      |           |
+|  PQC FW           | TLS   |                       |   - certs from Private CA|           |
+|  (wolfSSL)        | 1.3   |                       +-----------+--------------+           |
+|                   | +ML-  |                                   | MQTT bridge (mTLS)       |
+|                   | KEM   |                                   v                          |
++-------------------+       |   AWS IoT Core <----------- (pqc-workshop-broker-bridge)      |
+        ^                   |     |  IoT Rules                                             |
+        | flash (USB)       |     +--> telemetry-processor / message-logger Lambdas        |
+        |                   |            |                                                 |
++-------+---------+         |            v                                                 |
+| Builder-Pi      |         |   DynamoDB (pqc-workshop-devices, -message-log)              |
+| workshop-builder|-- API ->|     |                                                        |
+| CLI + Flask GUI |  (IAM)  |     v                                                        |
+| (SSM instance)  |         |   AppSync GraphQL API  <-- Cognito (unauth)                  |
++-----------------+         |     |                                                        |
+                            |     v                                                        |
+                            |   CloudFront + S3  (v2 "PQC Firmware Manager" dashboard)      |
+                            +--------------------------------------------------------------+
 ```
 
 ### PQC Key Exchange: SecP256r1MLKEM768
 
-Both the ESP32 and Mosquitto negotiate the **IANA-standardized** hybrid key exchange `SecP256r1MLKEM768` (code point 4587). This combines classical ECDHE P-256 with quantum-resistant ML-KEM-768 in a single TLS 1.3 handshake.
+Both the ESP32 and Mosquitto negotiate the **IANA-standardized** hybrid key exchange `SecP256r1MLKEM768` (code point 4587). This combines classical ECDHE P-256 with quantum-resistant ML-KEM-768 in a single TLS 1.3 handshake. The broker gets ML-KEM support from OpenSSL 3.5 with the oqs-provider.
 
 | Component | TLS Library | Named Group | Code Point |
 |-----------|-------------|-------------|-----------|
 | ESP32 (PQC firmware) | wolfSSL 5.7+ | SecP256r1MLKEM768 | 4587 |
-| Mosquitto broker | OpenSSL 3.5+ | SecP256r1MLKEM768 | 4587 |
+| Mosquitto broker (container) | OpenSSL 3.5+ | SecP256r1MLKEM768 | 4587 |
 | Mosquitto → IoT Core bridge | OpenSSL 3.5 | secp256r1 (classical) | 23 |
+
+### Certificate trust
+
+An **AWS Private CA** (ACM Private CA) created by the broker stack is the single trust root for the workshop. It issues both the broker's server certificate and every device certificate, so device ↔ broker mTLS validates against one CA. The broker's cert/key and the IoT Core bridge credentials are stored in Secrets Manager.
 
 ### Workshop Flow
 
-1. **Pre-session:** Facilitator deploys CloudFormation stack, pre-flashes ESP32 devices with dual-boot firmware
-2. **Attendee plugs in ESP32:** Device boots partition 0 (classical TLS), connects to Mosquitto, appears on dashboard
-3. **Code walkthrough:** Facilitator explains PQC firmware differences
-4. **Firmware migration:** Attendee clicks dashboard button → sends `migrate-pqc` command → device reboots to partition 1 (PQC firmware)
-5. **Verification:** Dashboard shows device now using `SecP256r1MLKEM768` and TLS 1.3
+1. **Pre-session:** Facilitator deploys the single master CloudFormation stack, runs the one-time firmware image build, and registers the builder-pi. Devices are flashed with classical firmware (OTA_0).
+2. **Attendee plugs in ESP32:** Device boots OTA_0 (classical TLS 1.3), connects to the container broker via the NLB, and appears on the dashboard.
+3. **Code walkthrough:** Facilitator explains the PQC firmware differences.
+4. **Firmware migration:** Attendee clicks **Migrate to PQC** on the dashboard → an asynchronous Step Functions workflow builds the PQC firmware, pushes it over the air, and the device reboots into OTA_1 (PQC). Live status (`building → pushing-ota → rebooting`) is shown on the dashboard.
+5. **Verification:** Dashboard shows the device now negotiating `SecP256r1MLKEM768` over TLS 1.3.
 
-See [`greengrass/README.md`](greengrass/README.md) for detailed setup instructions.
+See [`cloudformation/DEPLOYMENT.md`](cloudformation/DEPLOYMENT.md) for the full deployment guide, and the [PQC Migration Techniques](#pqc-migration-techniques) section for migration details.
 
 ---
 
@@ -128,38 +140,47 @@ Sample-aws-iot-pqc/
 +-- README.md                              This file
 +-- attendee_experience.md                 Workshop attendee flow document
 +-- check_setup_status.sh                  Validates AWS environment readiness
++-- architecture.drawio                    Architecture + deployment-pipeline diagrams
 +-- aws_iot_pqc_esp32/
-|   +-- aws_iot_pqc_esp32.ino              PQC firmware (partition 1)
-|   +-- secrets.h                          WiFi + credentials (you edit this)
+|   +-- aws_iot_pqc_esp32.ino              PQC firmware (OTA_1 / app1)
+|   +-- secrets.h                          WiFi + credentials (build-time generated)
 |   +-- wolfssl_user_settings.h            Reference wolfSSL PQC configuration
 +-- aws_iot_pqc_esp32_v1_classical/
-|   +-- aws_iot_pqc_esp32_v1_classical.ino Classical firmware (partition 0)
+|   +-- aws_iot_pqc_esp32_v1_classical.ino Classical firmware (OTA_0 / app0)
 |   +-- secrets.h                          WiFi + credentials
-+-- greengrass/
-|   +-- README.md                          Greengrass + Mosquitto architecture docs
-|   +-- setup-mosquitto-pqc.sh             Build script: OpenSSL 3.5 + Mosquitto
-|   +-- mosquitto/
-|   |   +-- mosquitto-pqc.conf            Broker config with PQC TLS
-|   |   +-- bridge-iotcore.conf           Bridge to AWS IoT Core
-|   |   +-- acl.conf                      Device access control
-|   +-- certs/
-|   |   +-- generate-broker-certs.sh      CA + broker + device cert generator
-|   +-- greengrass-component/
-|       +-- recipe.yaml                   Greengrass component recipe
-|       +-- deploy.sh                     Local deployment script
++-- broker-container/                       Containerized PQC Mosquitto broker
+|   +-- cloudformation/
+|   |   +-- broker-container-stack.yaml    ECS Fargate + NLB + Private CA + ECR/CodeBuild
+|   +-- docker/                            Dockerfile, mosquitto.conf, entrypoint (OpenSSL 3.5 + oqs)
++-- raw_device_builder/                     Device build + registration pipeline
+|   +-- cloudformation/
+|   |   +-- device-builder-stack.yaml      Builder API, firmware CodeBuild, PQC migration (Step Functions)
+|   +-- lambda/                            Registrar, firmware-pusher, prepare-build, publish-ota, start-migration
+|   +-- builder-pi/                        workshop-builder CLI + Flask GUI (shared builder_core)
+|   +-- codebuild/                         Firmware buildspecs (generate secrets.h, arduino-cli compile)
+|   +-- dashboard-v2/frontend/             v2 "PQC Firmware Manager" dashboard (Vite/React)
++-- dashboard/
+|   +-- infrastructure/dashboard-stack.yaml AppSync, DynamoDB, Cognito, S3/CloudFront, IoT Rules
+|   +-- lambda/                            telemetry-processor, message-logger, broker-log-reader, command-publisher
 +-- cloudformation/
-    +-- iot-core-setup.yaml                CloudFormation template for AWS IoT Core
-    +-- README.md                          Deployment instructions
+    +-- pqc-workshop-main.yaml             Master template (nests all 5 child stacks)
+    +-- device-provisioning-stack.yaml     JIT device auto-registration
+    +-- ssm-hybrid-activation-stack.yaml   Builder-Pi SSM hybrid activation
+    +-- deploy-workshop.sh                 One-command deploy (self-hosted)
+    +-- package.sh                         Stage assets for Workshop Studio
+    +-- DEPLOYMENT.md                      Deployment guide + manual steps
 ```
 
-| File | Description |
+| Path | Description |
 |------|-------------|
-| `aws_iot_pqc_esp32.ino` | PQC Arduino sketch (partition 1) with wolfSSL TLS 1.3, FreeRTOS tasks, and MQTT logic. |
-| `aws_iot_pqc_esp32_v1_classical.ino` | Classical TLS sketch (partition 0) with OTA migration handler. |
-| `secrets.h` | Placeholder for WiFi SSID/password, broker endpoint, Thing name, and PEM certificates. |
+| `aws_iot_pqc_esp32/` | PQC Arduino sketch (OTA_1) with wolfSSL TLS 1.3, FreeRTOS tasks, and MQTT logic. |
+| `aws_iot_pqc_esp32_v1_classical/` | Classical TLS sketch (OTA_0) with OTA migration handler. |
+| `secrets.h` | WiFi SSID/password, broker endpoint, Thing name, and PEM certificates. For workshop builds this is generated at compile time by CodeBuild; the checked-in copy holds placeholders. |
 | `wolfssl_user_settings.h` | Reference `#define` values for wolfSSL with ML-KEM PQC on ESP32. |
-| `greengrass/` | All artifacts for the Raspberry Pi edge gateway: Mosquitto build scripts, configs, certs, and Greengrass component. |
-| `cloudformation/iot-core-setup.yaml` | CloudFormation template for IoT Thing, certificate, policy, and IoT Rules. |
+| `broker-container/` | The containerized PQC Mosquitto broker: CloudFormation (ECS Fargate, NLB, Private CA, ECR/CodeBuild image build) and the Docker image sources. |
+| `raw_device_builder/` | Device build/registration pipeline: builder API + firmware CodeBuild, the PQC-migration Step Functions workflow, the builder-pi CLI/GUI, and the v2 dashboard frontend. |
+| `dashboard/` | Dashboard backend infrastructure and Lambdas (telemetry, message log, broker log, command publisher). |
+| `cloudformation/pqc-workshop-main.yaml` | Single master template that nests all five child stacks for one-command / Workshop Studio deployment. |
 
 ---
 
@@ -542,7 +563,7 @@ After deploying the CloudFormation stacks (or at any time before/during the work
 
 - AWS CLI v2 installed
 - Valid AWS credentials in the session (environment variables or named profile)
-- Read-only access to: IoT, Lambda, DynamoDB, AppSync, CloudFormation, CloudFront, S3, Cognito, Greengrass, SecretsManager
+- Read-only access to: IoT, Lambda, DynamoDB, AppSync, CloudFormation, CloudFront, S3, Cognito, ECS, ELB, ACM-PCA, SSM, SecretsManager
 
 ### Run the Check
 
@@ -571,19 +592,19 @@ After deploying the CloudFormation stacks (or at any time before/during the work
 | 1 | AWS Credentials | Valid session with account access |
 | 2 | CloudFormation | Main + nested stacks deployed successfully |
 | 3 | IoT Core | Endpoint, Thing, device policy (esp32-* wildcard), certificates, Rules |
-| 4 | Lambda Functions | All 4 functions exist and are Active |
-| 5 | DynamoDB | `pqc-workshop-devices` table is ACTIVE |
+| 4 | Lambda Functions | Dashboard + builder + migration functions exist and are Active |
+| 5 | DynamoDB | `pqc-workshop-devices` and `-device-registry` tables ACTIVE |
 | 6 | AppSync API | GraphQL endpoint responding |
 | 7 | Cognito | Identity pool allows unauthenticated dashboard access |
 | 8 | Dashboard | S3 files deployed, CloudFront distribution active |
-| 9 | Secrets Manager | Greengrass core credentials + SSM activation stored |
-| 10 | SSM Hybrid Instance | Pi registered and online via Systems Manager |
-| 11 | Greengrass Core | Pi registered and healthy (warning if not yet provisioned) |
+| 9 | PQC Broker | ECS Fargate service running behind the NLB; Private CA active |
+| 10 | Secrets Manager | Broker cert/key + IoT bridge + SSM activation stored |
+| 11 | SSM Hybrid Instance | Builder-Pi registered and online via Systems Manager |
 | 12 | ESP32 Devices | Auto-registered devices (warning if none yet — expected pre-workshop) |
 
 ### Expected Output (Pre-Workshop)
 
-A fully deployed environment that hasn't yet connected the Raspberry Pi or ESP32 devices will show:
+A fully deployed environment that hasn't yet connected the builder-Pi or ESP32 devices will show:
 
 ```
   ✅ Passed:   15
@@ -593,11 +614,11 @@ A fully deployed environment that hasn't yet connected the Raspberry Pi or ESP32
   👍 Environment is MOSTLY READY (review warnings above).
 
   Common warnings before the session:
-    - Greengrass core not registered: Pi not yet provisioned
+    - Builder-Pi not registered: Pi not yet provisioned via SSM
     - No ESP32 devices: They auto-register when powered on
 ```
 
-Once the Pi is online and devices connect, all checks pass with zero warnings.
+Once the builder-Pi is online and devices connect, all checks pass with zero warnings.
 
 ---
 
@@ -984,9 +1005,11 @@ Before (v1.0):  {"pqc_algorithm":"none", "tls_version":"TLS 1.2", "firmware_vers
 After  (v2.0):  {"pqc_algorithm":"SECP256R1_MLKEM768", "tls_version":"TLS 1.3", "firmware_version":"2.0.0"}
 ```
 
-### Option A: HTTPS OTA Pull (Simple)
+### Option A: HTTPS OTA Pull (Simple) ← Used in Builders Session
 
 The device listens for an OTA command on its MQTT command topic, then downloads the new firmware binary from an HTTPS URL (e.g., S3 bucket).
+
+> **How the workshop implements this:** the dashboard **Migrate to PQC** button starts an asynchronous **Step Functions** workflow (`pqc-workshop-pqc-migration`). It builds the device's PQC firmware with CodeBuild (via the `startBuild.sync` integration so nothing blocks), then the `publish-ota` Lambda generates a **regional presigned S3 URL** and publishes `{"action":"ota-update","url":...}` to `cmd/<thing>/ota`. The device downloads to OTA_1 and reboots into PQC. Live progress (`building → pushing-ota → rebooting`) is written to the `pqc-workshop-devices` table and shown on the dashboard, which polls every 5 seconds.
 
 **Flow:**
 1. Device runs v1.0 (classical TLS), publishes telemetry normally
@@ -1033,9 +1056,9 @@ AWS IoT Jobs provides a managed OTA framework with status tracking, rollback, an
 
 **Best for:** Showing the production architecture in slides/diagrams, or longer workshops.
 
-### Option C: Dual-Partition Switch (Instant Demo) ← Used in Builders Session
+### Option C: Dual-Partition Switch (Instant Demo)
 
-Both firmware versions are pre-flashed to the ESP32's two OTA partitions before the demo. A command on the MQTT topic triggers an instant boot partition switch — no download needed.
+Both firmware versions are pre-flashed to the ESP32's two OTA partitions before the demo. A command on the MQTT topic triggers an instant boot partition switch — no download needed. (This was an earlier approach; the builders session now uses the real OTA pull in Option A.)
 
 **Flow:**
 1. Pre-flash v1.0 to OTA_0 and v2.0 to OTA_1 using `esptool.py`
