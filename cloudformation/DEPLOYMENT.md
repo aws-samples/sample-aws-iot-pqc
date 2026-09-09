@@ -164,3 +164,62 @@ aws ecs update-service --cluster pqc-workshop-broker \
 ```bash
 ./check_setup_status.sh --region <region> [--profile NAME]
 ```
+
+---
+
+## Validation status — account 569757034460 (as of 2026-07-15)
+
+This section is a point-in-time record of the `refactor-deployment` branch being
+validated in test account **569757034460** (`us-east-1`, profile `pqc-b`), using
+the **create-its-own-VPC** path (`./deploy-workshop.sh us-east-1 --profile pqc-b`,
+no `--vpc-id`). It records exactly what is done and what is not.
+
+### Done (verified live)
+
+- **Master stack `pqc-workshop`:** `CREATE_COMPLETE`. All nested stacks created:
+  `NetworkStack`, `BrokerStack`, `DeviceBuilderStack`, `DeviceStack`,
+  `SSMActivationStack`, `DashboardStack`.
+- **VPC:** created by `NetworkStack` — `vpc-0b84a1a6a34bef02f` (CIDR
+  `10.20.0.0/16`, two public subnets across two AZs, IGW). The broker runs in
+  this VPC (not the default).
+- **VPC endpoints:** ECR api/dkr, Secrets Manager, CloudWatch Logs (interface) +
+  S3 (gateway) created in the workshop VPC.
+- **Broker container image:** built by `deploy-workshop.sh` step 3 and pushed to
+  ECR `pqc-workshop-mosquitto-broker`.
+- **Broker service:** ECS Fargate `pqc-workshop-broker` scaled to 1 —
+  desired 1 / running 1, task healthy in the NLB target group.
+  Endpoint: `pqc-broker-nlb-f713aef3b6027e11.elb.us-east-1.amazonaws.com:8883`.
+- **v2 dashboard:** built + synced to S3 + CloudFront invalidated by
+  `deploy-workshop.sh` step 4.
+  URL: `https://d2flrb40wnodyl.cloudfront.net`.
+- **Firmware image build source:** staged to
+  `s3://pqc-workshop-firmware-569757034460/source/` — `Dockerfile`,
+  `buildspec-image.yml`, `wolfssl_user_settings_arduino.h`,
+  `partitions_pqc_workshop.csv` (all present).
+
+### Not done yet (the next steps)
+
+1. **Firmware Docker image build — NOT run.** ECR repo
+   `pqc-workshop-firmware-builder` currently has **0 images**. The build source
+   is staged (above), so it is ready to run. Run once:
+   ```bash
+   aws codebuild start-build --project-name pqc-workshop-build-image --profile pqc-b
+   ```
+   Until this succeeds, no per-device firmware can be compiled.
+
+2. **Builder-Pi SSM registration — NOT done.** No SSM managed instances are
+   registered in the account (`aws ssm describe-instance-information` is empty).
+   This is on-device work on the physical Raspberry Pi: generate the bundle with
+   `raw_device_builder/bundle-for-builder-pi.sh` and run its `setup-all.sh` on
+   the Pi (installs the SSM agent + the `workshop-builder` CLI). Cannot be done
+   from the deploy host.
+
+3. **Validate readiness** (run any time; warnings expected until 1 + 2 above):
+   ```bash
+   ./check_setup_status.sh --region us-east-1 --profile pqc-b
+   ```
+
+### Not applicable to this validation
+
+- No ESP32 devices have been flashed/connected (expected — depends on step 1 +
+  the Builder-Pi).
