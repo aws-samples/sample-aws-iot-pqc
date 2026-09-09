@@ -94,3 +94,37 @@ Note: the v1 CloudFront comment is empty; the v2 CloudFront comment is
 **Remove with Greengrass cleanup (not on live data path):**
 7. GreengrassStack resources incl. `pqc-workshop-greengrass-core-cert-provisioner`,
    `GreengrassBridgePolicy`; decouple SSM activation from `GreengrassThingName`.
+
+---
+
+## Live deletion log (Phase 5.6 — operator approved "option A": safe items only)
+
+Executed against account 087195661091 / us-east-1 with per-item operator
+confirmation. Only the items with no impact on the live v2 demo were deleted;
+the rest were deferred (a fresh deploy already excludes them).
+
+**Deleted:**
+- ✅ CloudWatch log group `/pqc-workshop/mosquitto-broker` — dead Raspberry-Pi
+  broker group (Pi powered off; nothing writes to it). Zero impact.
+- ✅ S3 bucket `pqc-workshop-dashboard-087195661091` — v1 "Device Dashboard"
+  frontend hosting (not the live v2). Emptied + removed.
+- ✅ CloudFront distribution `E35PBBUBSD7O3C` — v1 dashboard distribution.
+  Disabled then deleted (multi-step; CloudFront requires Deployed-disabled
+  before delete). No impact on the live v2 dashboard (`d21c2wyzdgiex7`).
+
+**Deferred (still serving the live demo; fresh deploy excludes/replaces them):**
+- `pqc-workshop-pqc-upgrader` Lambda — live AppSync still invokes it for the
+  "Migrate to PQC" button until the new stacks are deployed; replaced by the
+  Step Functions workflow in IaC.
+- `pqc-workshop-message-logger` Lambda + role — backs the live dashboard message
+  log view; now in dashboard-stack IaC.
+- `pqc-workshop-broker-log-reader` Lambda + role — backs the live "Broker Log"
+  view; now in dashboard-stack IaC.
+- `pqc-workshop-message-log` DynamoDB table — holds live message-log data; now in
+  dashboard-stack IaC.
+
+Rationale: the workshop is destroyed/recreated per delivery, so the primary
+cleanup deliverable is that a fresh deploy does not recreate the redundant
+resources — which is satisfied by the template changes. Deleting the deferred
+items from the *current* live account would only degrade the running demo
+(migrate button + log views) with no lasting benefit.
