@@ -38,9 +38,11 @@ set -euo pipefail
 REGION="${AWS_DEFAULT_REGION:-us-east-1}"
 PROFILE=""
 
-# Live stack names (the workshop deploys these; names are fixed).
-BROKER_STACK="pqc-workshop-broker-container"
-DEVICE_BUILDER_STACK="pqc-workshop-device-builder"
+# The workshop is deployed as a single master stack (pqc-workshop) with nested
+# child stacks. Child stack names are CloudFormation-generated
+# (pqc-workshop-BrokerStack-<hash>, pqc-workshop-DeviceBuilderStack-<hash>), so
+# we resolve them by logical-name substring rather than assuming fixed names.
+MASTER_STACK="pqc-workshop"
 
 # ─── Parse Arguments ─────────────────────────────────────────────────────────
 while [[ $# -gt 0 ]]; do
@@ -130,25 +132,28 @@ echo ""
 
 # ─── 2. CloudFormation Stacks ────────────────────────────────────────────────
 echo "─── 2. CloudFormation Stacks ────────────────────────────────"
-for stack in "$BROKER_STACK" "$DEVICE_BUILDER_STACK"; do
-    status=$(aws cloudformation describe-stacks --stack-name "$stack" \
-        --query 'Stacks[0].StackStatus' --output text 2>/dev/null) || status="NOT_FOUND"
-    if [[ "$status" == "CREATE_COMPLETE" || "$status" == "UPDATE_COMPLETE" ]]; then
-        pass "Stack '$stack' status: $status"
+# Master stack must be complete.
+master_status=$(aws cloudformation describe-stacks --stack-name "$MASTER_STACK" \
+    --query 'Stacks[0].StackStatus' --output text 2>/dev/null) || master_status="NOT_FOUND"
+if [[ "$master_status" == "CREATE_COMPLETE" || "$master_status" == "UPDATE_COMPLETE" ]]; then
+    pass "Master stack '$MASTER_STACK' status: $master_status"
+else
+    fail "Master stack '$MASTER_STACK' status: $master_status (expected CREATE_COMPLETE/UPDATE_COMPLETE)"
+fi
+# Nested child stacks have CloudFormation-generated names; resolve each by the
+# logical-name substring it is created under and confirm it is complete.
+for label in BrokerStack DeviceBuilderStack DashboardStack; do
+    child=$(aws cloudformation list-stacks \
+        --stack-status-filter CREATE_COMPLETE UPDATE_COMPLETE \
+        --query "StackSummaries[?contains(StackName, '$label')].StackName | [0]" \
+        --output text 2>/dev/null) || child=""
+    if [[ -n "$child" && "$child" != "None" ]]; then
+        pass "Nested stack '$label' deployed: $child"
     else
-        fail "Stack '$stack' status: $status (expected CREATE_COMPLETE/UPDATE_COMPLETE)"
+        # BrokerStack/DeviceBuilderStack are required; DashboardStack is expected too.
+        fail "Nested stack '$label' not found (checked for *$label*)"
     fi
 done
-# The dashboard/device provisioning stacks are nested under pqc-workshop-* names.
-DASHBOARD_STACK=$(aws cloudformation list-stacks \
-    --stack-status-filter CREATE_COMPLETE UPDATE_COMPLETE \
-    --query "StackSummaries[?contains(StackName, 'DashboardStack')].StackName | [0]" \
-    --output text 2>/dev/null) || DASHBOARD_STACK=""
-if [[ -n "$DASHBOARD_STACK" && "$DASHBOARD_STACK" != "None" ]]; then
-    pass "Dashboard stack deployed: $DASHBOARD_STACK"
-else
-    warn "Dashboard stack not found (checked for *DashboardStack*)"
-fi
 echo ""
 
 # ─── 3. IoT Core ────────────────────────────────────────────────────────────
