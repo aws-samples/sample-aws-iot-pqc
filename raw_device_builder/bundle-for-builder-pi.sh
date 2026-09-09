@@ -54,13 +54,37 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+# ─── Identity guard ──────────────────────────────────────────────────────────
+# The SSM activation is created in whatever account the current credentials
+# resolve to, and the Pi will register into THAT account. Getting this wrong
+# (e.g. leaving AWS_PROFILE unset so it targets a default/live account) silently
+# registers the Pi into the wrong account. Show the target and confirm.
+CALLER_ARN=$(aws sts get-caller-identity --query Arn --output text 2>/dev/null) || {
+    echo "[ERROR] No usable AWS credentials. Set AWS_PROFILE (or credentials) for the"
+    echo "        account you deployed the workshop into, then re-run."
+    exit 1
+}
+ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+
 echo "═══════════════════════════════════════════════════════════════"
 echo "  Builder-Pi Bundle Generator"
 echo "═══════════════════════════════════════════════════════════════"
 echo ""
-echo "  Region: $REGION"
-echo "  Output: $BUNDLE_DIR"
+echo "  Profile:        ${AWS_PROFILE:-<ambient/default credentials>}"
+echo "  Target account: $ACCOUNT_ID"
+echo "  Caller:         $CALLER_ARN"
+echo "  Region:         $REGION"
+echo "  Output:         $BUNDLE_DIR"
 echo ""
+echo "  The Pi will register as an SSM managed instance in account $ACCOUNT_ID."
+echo "  This MUST be the account you deployed the workshop stack into."
+echo ""
+# Confirm unless CONFIRM_BUNDLE=yes (for automation). Only prompts on a TTY.
+if [[ "${CONFIRM_BUNDLE:-}" != "yes" && -t 0 ]]; then
+    read -r -p "  Create the activation in account $ACCOUNT_ID? [y/N] " reply
+    [[ "$reply" == "y" || "$reply" == "Y" ]] || { echo "Aborted."; exit 1; }
+    echo ""
+fi
 
 # ─── Step 1: Create SSM Hybrid Activation ────────────────────────────────────
 echo "[1/4] Creating SSM hybrid activation..."
@@ -142,16 +166,32 @@ echo "       ✅ SSM activation ready"
 echo "[2/4] Detecting API endpoint..."
 
 if [[ -z "$API_ENDPOINT" ]]; then
-    # Try to get from CloudFormation stack outputs
+    # Prefer the master stack's BuilderApiEndpoint output (single-master deploy).
     API_ENDPOINT=$(aws cloudformation describe-stacks \
-        --stack-name pqc-workshop-device-builder \
-        --query "Stacks[0].Outputs[?OutputKey=='ApiEndpoint'].OutputValue" \
+        --stack-name pqc-workshop \
+        --query "Stacks[0].Outputs[?OutputKey=='BuilderApiEndpoint'].OutputValue | [0]" \
         --output text --region "$REGION" 2>/dev/null) || API_ENDPOINT=""
+
+    # Fall back to the standalone/nested device-builder stack's ApiEndpoint
+    # output (the nested stack name is pqc-workshop-DeviceBuilderStack-<hash>).
+    if [[ -z "$API_ENDPOINT" || "$API_ENDPOINT" == "None" ]]; then
+        DB_STACK=$(aws cloudformation list-stacks \
+            --stack-status-filter CREATE_COMPLETE UPDATE_COMPLETE \
+            --query "StackSummaries[?contains(StackName,'DeviceBuilder') || StackName=='pqc-workshop-device-builder'].StackName | [0]" \
+            --output text --region "$REGION" 2>/dev/null) || DB_STACK=""
+        if [[ -n "$DB_STACK" && "$DB_STACK" != "None" ]]; then
+            API_ENDPOINT=$(aws cloudformation describe-stacks \
+                --stack-name "$DB_STACK" \
+                --query "Stacks[0].Outputs[?OutputKey=='ApiEndpoint'].OutputValue | [0]" \
+                --output text --region "$REGION" 2>/dev/null) || API_ENDPOINT=""
+        fi
+    fi
 
     if [[ -z "$API_ENDPOINT" || "$API_ENDPOINT" == "None" ]]; then
         API_ENDPOINT="https://REPLACE_WITH_API_GATEWAY_URL/prod"
-        echo "       [WARN] Stack not deployed yet. Using placeholder."
-        echo "       Update config.json on the Pi after deployment."
+        echo "       [WARN] Could not resolve the builder API endpoint from the"
+        echo "       'pqc-workshop' master stack or a DeviceBuilder stack. Using a"
+        echo "       placeholder — update config.json on the Pi after deployment."
     fi
 fi
 echo "       API: $API_ENDPOINT"
@@ -189,24 +229,26 @@ ACTIVATION_ID="__ACTIVATION_ID__"
 ACTIVATION_CODE="__ACTIVATION_CODE__"
 REGION="__REGION__"
 
-echo "Installing SSM Agent..."
+# Handle --reset FIRST, before the already-registered check below. Otherwise a
+# Pi that is already registered exits early and --reset can never run.
+if [[ "${1:-}" == "--reset" ]]; then
+    echo "Deregistering from previous activation..."
+    systemctl stop amazon-ssm-agent 2>/dev/null || true
+    rm -f /var/lib/amazon/ssm/registration
+    echo "Previous registration cleared."
+fi
 
-# Check if already registered
+# If still registered (and not resetting), stop — nothing to do.
 if systemctl is-active --quiet amazon-ssm-agent 2>/dev/null; then
     EXISTING=$(cat /var/lib/amazon/ssm/registration 2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin).get('ManagedInstanceID',''))" 2>/dev/null) || EXISTING=""
     if [[ -n "$EXISTING" ]]; then
         echo "Already registered as: $EXISTING"
-        echo "To re-register, run: sudo $0 --reset"
+        echo "To re-register against a new activation, run: sudo $0 --reset"
         exit 0
     fi
 fi
 
-# Handle --reset
-if [[ "${1:-}" == "--reset" ]]; then
-    echo "Deregistering from previous activation..."
-    sudo systemctl stop amazon-ssm-agent 2>/dev/null || true
-    sudo rm -f /var/lib/amazon/ssm/registration
-fi
+echo "Installing SSM Agent..."
 
 # Install SSM agent (ARM64 for Raspberry Pi)
 ARCH=$(dpkg --print-architecture)
