@@ -12,6 +12,24 @@ phases:
       - SKETCH_DIR="/tmp/firmware_build/$SKETCH_NAME"
       - mkdir -p "$SKETCH_DIR"
       - echo "Downloading firmware source from S3..." && aws s3 cp "s3://$FIRMWARE_BUCKET/source/$SKETCH_NAME.ino" "$SKETCH_DIR/$SKETCH_NAME.ino"
+      # Sanitize the broker endpoint: MQTT_BROKER_ENDPOINT must be a BARE host
+      # (the sketch supplies the port separately via MQTT_BROKER_PORT). If the
+      # value arrives with a ':port' suffix (e.g. from the GUI/registry), the
+      # firmware would do a DNS lookup of "host:port" and fail
+      # ("DNS Failed ... error -54"). Strip a trailing :port and, if present,
+      # use it as the port when BROKER_PORT is unset/default.
+      - |
+        case "$BROKER_ENDPOINT" in
+          *:*)
+            _BE_PORT="${BROKER_ENDPOINT##*:}"
+            BROKER_ENDPOINT="${BROKER_ENDPOINT%:*}"
+            if [ -z "${BROKER_PORT:-}" ] || [ "${BROKER_PORT}" = "8883" ]; then
+              case "$_BE_PORT" in ''|*[!0-9]*) : ;; *) BROKER_PORT="$_BE_PORT" ;; esac
+            fi
+            ;;
+        esac
+      - '[ -z "${BROKER_PORT:-}" ] && BROKER_PORT=8883 || true'
+      - echo "Broker endpoint (host)= $BROKER_ENDPOINT  port= $BROKER_PORT"
       - |
         cat > "$SKETCH_DIR/secrets.h" << 'SECRETS_HEADER'
         #ifndef SECRETS_H
