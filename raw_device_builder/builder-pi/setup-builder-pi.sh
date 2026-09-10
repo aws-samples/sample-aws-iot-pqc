@@ -278,6 +278,23 @@ fi
 CW_AGENT_DIR="/opt/aws/amazon-cloudwatch-agent/etc"
 if [[ -d "$CW_AGENT_DIR" || -x /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl ]]; then
     mkdir -p "$CW_AGENT_DIR"
+
+    # This is an SSM HYBRID (on-prem) instance: the SSM agent maintains rotating
+    # role credentials in /root/.aws/credentials ([default] profile). The
+    # CloudWatch agent's onPremise mode needs (a) that credentials profile and
+    # (b) a resolvable region, or it fails start with "please make sure the
+    # credentials and region set correctly". Point common-config at the SSM
+    # creds and ensure a region is set in /root/.aws/config.
+    cat > "$CW_AGENT_DIR/common-config.toml" << 'COMMONCFG'
+[credentials]
+  shared_credential_profile = "default"
+  shared_credential_file = "/root/.aws/credentials"
+COMMONCFG
+    mkdir -p /root/.aws
+    if [[ ! -f /root/.aws/config ]] || ! grep -q '^\[default\]' /root/.aws/config 2>/dev/null; then
+        printf '[default]\nregion = %s\noutput = json\n' "$CW_REGION" > /root/.aws/config
+    fi
+
     cat > "$CW_AGENT_DIR/builder-pi-cloudwatch.json" << CWCONFIG
 {
   "agent": { "region": "${CW_REGION}", "run_as_user": "root" },
