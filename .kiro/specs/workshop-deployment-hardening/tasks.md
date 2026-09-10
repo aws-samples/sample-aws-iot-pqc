@@ -460,3 +460,32 @@ Branch: `refactor-deployment`.
   - Acceptance: with the GUI open during a flash, scrolling up through the log
     stays put across polls; new lines append without forcing the view back to
     the top; auto-scroll-to-bottom only when already at the bottom.
+- [ ] Expand check_setup_status.sh to surface config/wiring problems, not just
+      resource existence.
+  - Problem: the readiness check verifies resources EXIST (stacks, Lambdas,
+    tables, NLB target healthy, Pi online) but not that they are wired
+    CORRECTLY. Real bugs slipped through undetected — most notably the broker's
+    IoT-Core bridge configured with a non-resolving '<accountId>-ats' endpoint
+    (mosquitto: "Error creating bridge: Name or service not known"), so device
+    telemetry never reached the dashboard even though every resource was
+    "present" and green.
+  - Task: add wiring/config validations, e.g.:
+    - IoT endpoint sanity: compare the value baked into the broker task /
+      SSM param (/pqc-workshop/iotEndpoint) against the real
+      `aws iot describe-endpoint --endpoint-type iot:Data-ATS`; FAIL on mismatch
+      or on the '<accountId>-ats' pattern.
+    - Broker->IoT bridge health: scan the broker CloudWatch log group for
+      "Error creating bridge" / "Name or service not known" (recent), and for a
+      successful bridge connection; WARN/FAIL accordingly.
+    - SSM Parameter Store presence: confirm the /pqc-workshop/* config params
+      exist and are non-empty (dashboard + builder-pi + iotEndpoint).
+    - Dashboard config.json: fetch <cloudfront>/config.json and assert it is
+      valid JSON with real (non-placeholder) endpoints, not the index.html
+      SPA-fallback.
+    - Broker endpoint format: assert BrokerEndpoint has NO ':port' suffix baked
+      where a bare host is expected (the doubled-port DNS bug).
+    - Cert/trust sanity (optional): confirm the broker's device-trust CA matches
+      the Private CA that signs device certs.
+  - Acceptance: a deployment with a mis-wired IoT endpoint, missing SSM param,
+    placeholder dashboard config, or a broken broker bridge is reported as
+    FAIL/ WARN by check_setup_status.sh, not a false green.
