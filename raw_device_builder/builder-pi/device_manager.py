@@ -183,6 +183,14 @@ class DeviceManager:
             slot.error = 'Could not read device serial number'
             slot.log('ERROR: Failed to read chip ID via esptool')
 
+        # Begin capturing serial as soon as a device is identified, so the GUI
+        # Serial view / CLI have data regardless of whether a flash pipeline has
+        # run. (The monitor is stopped during flash by the pipelines and
+        # restarted after.) Only for identified devices — a port we couldn't
+        # read a serial from is likely mid-flash/bootloader.
+        if slot.serial_number:
+            self.start_serial_monitor(port)
+
         return slot
 
     def _check_registration(self, serial_number: str) -> bool:
@@ -421,9 +429,15 @@ class DeviceManager:
 
         def _reader():
             baud_rate = self.config.get('serial_baud_rate', 115200)
+            busy_noted = False
             while not stop_event.is_set():
                 try:
-                    ser = serial.Serial(port, baud_rate, timeout=1)
+                    # exclusive=True so we fail fast (and visibly) if another
+                    # reader holds the port, rather than both getting partial
+                    # data. This is the contention that made the GUI Serial
+                    # view appear empty.
+                    ser = serial.Serial(port, baud_rate, timeout=1, exclusive=True)
+                    busy_noted = False
                     while not stop_event.is_set():
                         if ser.in_waiting:
                             line = ser.readline().decode('utf-8', errors='ignore').strip()
@@ -435,8 +449,15 @@ class DeviceManager:
                         time.sleep(0.05)
                     ser.close()
                     break
-                except serial.SerialException:
-                    # Port may be in use by upload — wait and retry
+                except serial.SerialException as e:
+                    # Port busy (e.g. mid-flash, or another reader). Surface it
+                    # ONCE into the buffer so "empty" is distinguishable from
+                    # "can't open", then keep retrying.
+                    if not busy_noted:
+                        buf = self._serial_buffers.get(port, [])
+                        buf.append(f'[monitor] serial port unavailable ({e}); retrying...')
+                        self._serial_buffers[port] = buf[-200:]
+                        busy_noted = True
                     time.sleep(2)
                 except Exception:
                     time.sleep(2)
@@ -457,7 +478,16 @@ class DeviceManager:
             self._serial_stop_events.pop(port, None)
 
     def read_serial_buffer(self, port: str, max_lines: int = 100) -> List[str]:
-        """Read the serial buffer for a port."""
+        """Read the serial buffer for a port.
+
+        Starts the background monitor on demand if it isn't already running, so
+        the GUI 'Serial' view / CLI `serial` always begin capturing even when no
+        flash pipeline has run yet (the monitor was previously only started by
+        register/reflash). The very first read may return few/no lines while the
+        monitor spins up; subsequent polls fill in.
+        """
+        if port not in self._serial_threads:
+            self.start_serial_monitor(port)
         buf = self._serial_buffers.get(port, [])
         return buf[-max_lines:]
 
