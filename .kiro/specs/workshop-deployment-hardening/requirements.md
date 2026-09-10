@@ -29,6 +29,9 @@ This spec hardens the deployment across six workstreams:
    definition, and the Builder-Pi CLI, tied to acceptance criteria.
 7. **Single master template for Workshop Studio** — the master template nests as
    many stacks as possible so Workshop Studio can be pointed at one template.
+8. **Builder-Pi observability** — persist the Pi-side flash/download/serial
+   output and ship it to CloudWatch, so a failed physical flash is diagnosable
+   remotely (closing the gap where that evidence lived only in Pi memory).
 
 ### Established facts (verified against the live account 087195661091 / us-east-1)
 
@@ -379,6 +382,56 @@ independently deployable for development/testing).
 
 7.6. WHEN the master template is validated THEN it SHALL pass cfn-lint with no
 errors and its nested references SHALL resolve to real child template outputs.
+
+---
+
+## Requirement 8 — Builder-Pi observability
+
+**User story:** As a workshop operator debugging a failed device flash, I want
+the Builder-Pi's flash, download, and serial/boot output shipped to CloudWatch,
+so that I can diagnose a failure remotely without SSHing to the Pi and without
+losing the evidence when the device is unplugged or the GUI restarts.
+
+*Context:* the register→build stages already log to CloudWatch (the
+`device-registrar`/`prepare-build` Lambdas → `/aws/lambda/*`, and the firmware
+CodeBuild project → `/aws/codebuild/pqc-workshop-firmware-build`). The gap is
+the Pi-side half of the pipeline (S3 download, esptool flash, serial/boot
+verification), which previously lived only in an in-memory ring buffer surfaced
+to the browser — truncated (esptool output kept only as a 300-char tail) and
+discarded on unplug/GUI restart. This requirement closes that gap. It parallels
+Requirement 3 (broker observability) but for the Builder-Pi.
+
+#### Acceptance criteria
+
+8.1. WHEN a Builder-Pi flash/download/serial operation runs (via the GUI OR the
+CLI) THEN the system SHALL persist the full operation transcript to a log file
+on the Pi under `/var/log/workshop-builder/`, surviving GUI restarts and device
+unplug (not only the in-memory buffer surfaced to the browser).
+
+8.2. WHEN esptool produces output during a flash THEN the system SHALL persist
+the FULL esptool stdout/stderr to the device log file (not a truncated tail), so
+a failed flash is fully diagnosable from the shipped logs.
+
+8.3. WHEN the Builder-Pi is provisioned THEN the setup/bootstrap process SHALL
+install and configure the CloudWatch agent to ship `/var/log/workshop-builder/*`
+to a dedicated CloudWatch Logs group `/pqc-workshop/builder-pi`, with a per-host
+log stream and a defined retention.
+
+8.4. WHEN the CloudWatch agent ships Pi logs THEN it SHALL authenticate using the
+Builder-Pi's SSM instance role (hybrid/on-prem mode), and that role SHALL grant
+only the `logs:` permissions needed, scoped to the `/pqc-workshop/builder-pi`
+log group (least privilege, per C3) — no embedded credentials.
+
+8.5. WHERE the CloudWatch agent cannot be installed or the log directory is not
+writable (e.g. a dev checkout, or a download failure) THEN the system SHALL
+degrade gracefully — the operation SHALL NOT fail, logs SHALL still persist
+locally where possible, and a clear warning SHALL be emitted.
+
+8.6. WHEN the flash pipeline logs are needed for debugging THEN the AWS-side
+stages (registrar/prepare-build Lambdas, firmware CodeBuild) SHALL remain
+observable in their existing CloudWatch groups, so that together with the
+Builder-Pi group the full register→build→flash→verify path is visible in
+CloudWatch.
 
 ---
 

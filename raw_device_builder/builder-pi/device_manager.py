@@ -26,6 +26,28 @@ FQBN = "esp32:esp32:XIAO_ESP32S3:USBMode=hwcdc,CDCOnBoot=default,DebugLevel=info
 ARDUINO_CLI = "arduino-cli"
 FIRMWARE_DIR = "/opt/pqc-workshop/firmware"
 
+# Persistent log directory. Every DeviceSlot.log() line is appended here (in
+# addition to the in-memory ring buffer surfaced to the GUI), so the full
+# flash/download/serial transcript survives GUI restarts and device unplugs and
+# can be shipped to CloudWatch by the CloudWatch agent on the Pi. Overridable
+# for dev checkouts via WORKSHOP_BUILDER_LOG_DIR; falls back silently if the
+# directory is not writable.
+LOG_DIR = os.environ.get("WORKSHOP_BUILDER_LOG_DIR", "/var/log/workshop-builder")
+
+
+def _append_log_file(name: str, line: str):
+    """Best-effort append of a single line to LOG_DIR/<name>.log.
+
+    Never raises — logging must not break a flash operation if the log
+    directory is missing/read-only (e.g. a dev checkout).
+    """
+    try:
+        os.makedirs(LOG_DIR, exist_ok=True)
+        with open(os.path.join(LOG_DIR, f"{name}.log"), "a") as f:
+            f.write(line + "\n")
+    except OSError:
+        pass
+
 
 @dataclass
 class DeviceSlot:
@@ -41,9 +63,18 @@ class DeviceSlot:
 
     def log(self, message: str):
         timestamp = time.strftime('%H:%M:%S')
-        self.progress.append(f'[{timestamp}] {message}')
+        line = f'[{timestamp}] {message}'
+        # In-memory ring buffer for the GUI (last 50, surfaced 20 to the browser).
+        self.progress.append(line)
         if len(self.progress) > 50:
             self.progress = self.progress[-50:]
+        # Persistent, full transcript per device (keyed by serial when known,
+        # else the tty port). Survives GUI restart/unplug; shipped to CloudWatch.
+        device_key = (self.serial_number or self.port or 'unknown').replace('/', '_')
+        full = f'{time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())} [{device_key}] {message}'
+        _append_log_file(f'device-{device_key}', full)
+        # Also to a single combined stream so `journalctl`/agent tailing is simple.
+        _append_log_file('flash', full)
 
     def to_dict(self):
         return {
@@ -275,6 +306,17 @@ class DeviceManager:
                 capture_output=True, text=True, timeout=120
             )
 
+            # Persist the FULL esptool output to the device log file (not just
+            # the GUI tail), so a failed flash is fully diagnosable from the
+            # shipped logs rather than a truncated 300-char tail.
+            device_key = (slot.serial_number or slot.port or 'unknown').replace('/', '_')
+            if result.stdout:
+                for ln in result.stdout.rstrip().split('\n'):
+                    _append_log_file(f'device-{device_key}', f'  [esptool] {ln}')
+            if result.stderr:
+                for ln in result.stderr.rstrip().split('\n'):
+                    _append_log_file(f'device-{device_key}', f'  [esptool:err] {ln}')
+
             if result.returncode == 0:
                 slot.log('Flash complete!')
                 if result.stdout.strip():
@@ -284,7 +326,7 @@ class DeviceManager:
             else:
                 error_output = result.stderr.strip() or result.stdout.strip()
                 slot.error = error_output[-300:] if error_output else 'Flash failed (no output)'
-                slot.log(f'ERROR: esptool flash failed')
+                slot.log('ERROR: esptool flash failed (full output in device log)')
                 for line in error_output.split('\n')[-5:]:
                     slot.log(f'  {line.strip()}')
                 return False

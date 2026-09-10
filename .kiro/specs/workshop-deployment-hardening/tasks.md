@@ -277,6 +277,44 @@ Branch: `refactor-deployment`.
 
 ---
 
+## Phase 8 — Builder-Pi observability
+
+- [x] 8.1 Persist the full Pi flash/download/serial transcript to disk
+  - `device_manager.py`: `DeviceSlot.log()` appends every line (UTC-stamped,
+    device-keyed) to `/var/log/workshop-builder/device-<serial|port>.log` + a
+    combined `flash.log`, in addition to the in-memory ring buffer. Best-effort
+    (never fails a flash). Captures the GUI path, not just the CLI.
+  - _Requirements: 8.1_
+
+- [x] 8.2 Keep the full esptool output on flash
+  - `flash_firmware` writes complete esptool stdout/stderr to the device log
+    file (GUI slot keeps its concise tail for the browser), so a failed flash is
+    diagnosable beyond the old 300-char tail.
+  - _Requirements: 8.2_
+
+- [x] 8.3 Install + configure the CloudWatch agent on the Pi
+  - `setup-builder-pi.sh`: install arch-matched `amazon-cloudwatch-agent`, write
+    a config tailing `/var/log/workshop-builder/*.log` to `/pqc-workshop/builder-pi`
+    (per-host stream, 14-day retention), start in `onPremise` mode (uses the SSM
+    instance role). Region resolved from config.json → SSM registration →
+    us-east-1. Idempotent + graceful `[WARN]` on download/install failure.
+  - _Requirements: 8.3, 8.5_
+
+- [x] 8.4 Scope the Builder-Pi log IAM to least privilege
+  - `BuilderPiSsmRole` in `device-builder-stack.yaml`: `logs:` statement scoped
+    from `*` to the `/pqc-workshop/builder-pi` log-group ARN
+    (Create/Put/DescribeLogStreams/PutRetentionPolicy).
+  - _Requirements: 8.4_
+
+- [ ] 8.5 Validate on hardware (first flash)
+  - On the next physical flash, confirm `/var/log/workshop-builder/*` populates,
+    the `/pqc-workshop/builder-pi` log group appears in CloudWatch with the
+    flash/serial transcript, and a forced failure surfaces the full esptool
+    output remotely.
+  - _Requirements: 8.1, 8.2, 8.3, 8.6_
+
+---
+
 ## Notes
 
 - **Sequencing safety:** new migration resources (Phase 1) and v2 hosting (5.1)

@@ -237,6 +237,75 @@ export ARDUINO_CLI_CONFIG=/opt/pqc-workshop/arduino-cli.yaml
 export PATH=/usr/local/bin:$PATH
 PROFILE
 
+# ─── CloudWatch agent: ship Pi flash/serial logs off-box for remote debug ────
+# The register->build stages log to CloudWatch already (Lambda + CodeBuild), but
+# the Pi-side flash/download/serial output previously lived only in memory. We
+# persist it to /var/log/workshop-builder/ (device_manager + CLI) and ship it,
+# plus the GUI service journal, to CloudWatch so a failed physical flash can be
+# diagnosed remotely without SSHing to the Pi.
+echo "[+] Installing + configuring the CloudWatch agent..."
+mkdir -p /var/log/workshop-builder
+
+# Region for the agent: prefer the deployed app config.json, else SSM's
+# registered region, else us-east-1.
+CW_REGION=$(python3 -c "import json;print(json.load(open('$APP_DIR/config.json')).get('region',''))" 2>/dev/null || true)
+if [[ -z "$CW_REGION" ]]; then
+    CW_REGION=$(cat /var/lib/amazon/ssm/registration 2>/dev/null | python3 -c "import sys,json;print(json.load(sys.stdin).get('Region',''))" 2>/dev/null || true)
+fi
+[[ -z "$CW_REGION" ]] && CW_REGION="us-east-1"
+
+if command -v amazon-cloudwatch-agent-ctl &>/dev/null || [[ -x /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl ]]; then
+    echo "       CloudWatch agent already installed"
+else
+    CW_ARCH=$(dpkg --print-architecture 2>/dev/null || echo arm64)
+    case "$CW_ARCH" in
+        arm64) CW_PKG="arm64/latest/amazon-cloudwatch-agent.deb" ;;
+        armhf) CW_PKG="arm/latest/amazon-cloudwatch-agent.deb" ;;
+        *)     CW_PKG="${CW_ARCH}/latest/amazon-cloudwatch-agent.deb" ;;
+    esac
+    CW_URL="https://amazoncloudwatch-agent-${CW_REGION}.s3.${CW_REGION}.amazonaws.com/debian/${CW_PKG}"
+    CW_TMP="/tmp/amazon-cloudwatch-agent.deb"
+    if curl -fsSL "$CW_URL" -o "$CW_TMP"; then
+        dpkg -i -E "$CW_TMP" 2>&1 | tail -2 || echo "       [WARN] CloudWatch agent install failed"
+    else
+        echo "       [WARN] could not download CloudWatch agent from $CW_URL"
+        echo "              Pi logs will persist locally in /var/log/workshop-builder but not ship."
+    fi
+fi
+
+# Agent config: tail the persistent builder logs + the GUI service journal to a
+# dedicated /pqc-workshop/builder-pi log group, stream per host+source.
+CW_AGENT_DIR="/opt/aws/amazon-cloudwatch-agent/etc"
+if [[ -d "$CW_AGENT_DIR" || -x /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl ]]; then
+    mkdir -p "$CW_AGENT_DIR"
+    cat > "$CW_AGENT_DIR/builder-pi-cloudwatch.json" << CWCONFIG
+{
+  "agent": { "region": "${CW_REGION}", "run_as_user": "root" },
+  "logs": {
+    "logs_collected": {
+      "files": {
+        "collect_list": [
+          {
+            "file_path": "/var/log/workshop-builder/*.log",
+            "log_group_name": "/pqc-workshop/builder-pi",
+            "log_stream_name": "{hostname}/workshop-builder",
+            "retention_in_days": 14
+          }
+        ]
+      }
+    }
+  }
+}
+CWCONFIG
+    /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl \
+        -a fetch-config -m onPremise -s \
+        -c file:"$CW_AGENT_DIR/builder-pi-cloudwatch.json" 2>&1 | tail -3 \
+        || echo "       [WARN] could not start CloudWatch agent; logs stay local"
+    echo "       CloudWatch agent shipping /var/log/workshop-builder/*.log -> /pqc-workshop/builder-pi (region $CW_REGION)"
+else
+    echo "       [WARN] CloudWatch agent not present; Pi logs persist locally only"
+fi
+
 echo ""
 echo "═══════════════════════════════════════════════════════════════"
 echo "  Setup complete!"

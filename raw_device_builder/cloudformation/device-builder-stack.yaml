@@ -878,12 +878,19 @@ Resources:
                   - dynamodb:GetItem
                   - dynamodb:Scan
                 Resource: !GetAtt DeviceRegistryTable.Arn
+              # Ship Builder-Pi flash/serial logs to a dedicated log group via
+              # the CloudWatch agent (register/build stages already log to
+              # CloudWatch via Lambda + CodeBuild; this closes the Pi-side gap).
+              # Scoped to the builder-pi group for least privilege (C3).
               - Effect: Allow
                 Action:
                   - logs:CreateLogGroup
                   - logs:CreateLogStream
                   - logs:PutLogEvents
-                Resource: '*'
+                  - logs:DescribeLogStreams
+                  - logs:PutRetentionPolicy
+                Resource:
+                  - !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/pqc-workshop/builder-pi:*'
 
 Outputs:
   ApiEndpoint:

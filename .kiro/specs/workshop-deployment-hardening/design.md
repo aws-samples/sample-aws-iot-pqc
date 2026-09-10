@@ -522,6 +522,73 @@ deploy."
 
 ---
 
+## Workstream 8 — Builder-Pi observability
+
+### Current state (the gap)
+
+The register→build→flash→verify pipeline splits into an AWS half and a Pi half:
+
+- **AWS half — already observable.** The `device-registrar`/`prepare-build`
+  Lambdas log to `/aws/lambda/*` (cert issuance, thing/policy creation, build
+  start, full tracebacks on failure); the firmware CodeBuild project logs to
+  `/aws/codebuild/pqc-workshop-firmware-build`.
+- **Pi half — invisible off-box.** S3 download, esptool flash, and serial/boot
+  verification were written only to `DeviceSlot.progress`, an in-memory ring
+  buffer (last 50, 20 surfaced to the browser). esptool output was kept only as
+  a 300-char tail. The GUI service's stdout goes to journald only; the
+  interesting detail uses `slot.log()` (in-memory), not `print`. Everything is
+  discarded when the device is unplugged or `pqc-builder-gui` restarts, and the
+  `BuilderPiSsmRole` did not (in effect, scoped) ship anything to CloudWatch.
+
+So a flash that fails at the download/flash/boot stage — the most failure-prone,
+physical part — left no durable, remotely-readable evidence. This parallels
+Workstream 3 (broker observability) but for the Pi.
+
+### Target design
+
+- **8a. Persist the full transcript on the Pi.** `DeviceSlot.log()` becomes the
+  single choke point: in addition to the in-memory ring buffer it appends every
+  line to `/var/log/workshop-builder/device-<serial|port>.log` and a combined
+  `flash.log`, with a UTC timestamp and device key. Because every
+  download/flash/verify step already routes through `slot.log()`, this captures
+  the whole pipeline for the GUI path too (not just the CLI's `OperationLogger`).
+  File writes are best-effort (never break a flash if the dir is read-only).
+  (Satisfies 8.1.)
+- **8b. Keep the FULL esptool output.** `flash_firmware` writes the complete
+  esptool stdout/stderr to the device log file (the GUI slot keeps its concise
+  last-5-line tail for the browser). (Satisfies 8.2.)
+- **8c. Ship logs via the CloudWatch agent.** `setup-builder-pi.sh` installs the
+  `amazon-cloudwatch-agent` (arch-matched .deb) and writes a config that tails
+  `/var/log/workshop-builder/*.log` to a dedicated log group
+  `/pqc-workshop/builder-pi` (per-host stream, 14-day retention), started in
+  `onPremise` mode so it uses the SSM instance role. Region is resolved from the
+  deployed `config.json`, else the SSM registration, else `us-east-1`.
+  (Satisfies 8.3.)
+- **8d. Least-privilege IAM.** `BuilderPiSsmRole`'s `logs:` statement is scoped
+  from `*` to the `/pqc-workshop/builder-pi` log-group ARN (Create/PutLogEvents/
+  DescribeLogStreams/PutRetentionPolicy). No embedded credentials — the agent
+  uses the instance role. (Satisfies 8.4.)
+- **8e. Graceful degradation.** If the agent can't be installed (download
+  failure) or the log dir isn't writable, setup emits a clear `[WARN]`, logs
+  still persist locally where possible, and the flow does not fail.
+  (Satisfies 8.5.)
+
+Net: `/pqc-workshop/builder-pi` (Pi flash/serial) + `/aws/lambda/*` (registrar)
++ `/aws/codebuild/pqc-workshop-firmware-build` (compile) together make the whole
+register→build→flash→verify path readable in CloudWatch. (Satisfies 8.6.)
+
+### Which stack / files own it
+
+- Code: `raw_device_builder/builder-pi/device_manager.py` (log persistence +
+  full esptool output), and it composes with the CLI's existing
+  `builder_core/logging.py` (same `/var/log/workshop-builder` dir).
+- Provisioning: `raw_device_builder/builder-pi/setup-builder-pi.sh` (agent
+  install + config).
+- IAM + log group access: `BuilderPiSsmRole` in
+  `raw_device_builder/cloudformation/device-builder-stack.yaml`.
+
+---
+
 ## Deployment model (cross-cutting)
 
 ### Stacks (after this work)
