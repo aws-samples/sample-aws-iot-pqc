@@ -1,0 +1,7 @@
+{
+  "appSyncEndpoint": "https://REPLACE_WITH_APPSYNC_ENDPOINT/graphql",
+  "identityPoolId": "REPLACE_WITH_COGNITO_IDENTITY_POOL_ID",
+  "apiEndpoint": "https://REPLACE_WITH_API_GATEWAY_URL/prod",
+  "region": "us-east-1",
+  "pollInterval": 5000
+}

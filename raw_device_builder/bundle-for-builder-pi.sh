@@ -162,18 +162,31 @@ fi
 echo "       Activation ID: $ACTIVATION_ID"
 echo "       ✅ SSM activation ready"
 
-# ─── Step 2: Try to get API endpoint ────────────────────────────────────────
-echo "[2/4] Detecting API endpoint..."
+# ─── Step 2: Resolve API endpoint + firmware bucket ──────────────────────────
+echo "[2/4] Resolving API endpoint + firmware bucket..."
+
+# Canonical source is SSM Parameter Store (written by deploy-workshop.sh under
+# /pqc-workshop/builder-pi/*). Fall back to CloudFormation outputs / account-id
+# derivation so the bundler still works if the parameters aren't present yet
+# (e.g. an older deploy or a standalone device-builder stack).
+ssm_param() {
+    aws ssm get-parameter --name "$1" --query 'Parameter.Value' \
+        --output text --region "$REGION" 2>/dev/null || echo ""
+}
 
 if [[ -z "$API_ENDPOINT" ]]; then
-    # Prefer the master stack's BuilderApiEndpoint output (single-master deploy).
-    API_ENDPOINT=$(aws cloudformation describe-stacks \
-        --stack-name pqc-workshop \
-        --query "Stacks[0].Outputs[?OutputKey=='BuilderApiEndpoint'].OutputValue | [0]" \
-        --output text --region "$REGION" 2>/dev/null) || API_ENDPOINT=""
+    # 1. Parameter Store (canonical).
+    API_ENDPOINT=$(ssm_param /pqc-workshop/builder-pi/apiEndpoint)
 
-    # Fall back to the standalone/nested device-builder stack's ApiEndpoint
-    # output (the nested stack name is pqc-workshop-DeviceBuilderStack-<hash>).
+    # 2. Master stack's BuilderApiEndpoint output (single-master deploy).
+    if [[ -z "$API_ENDPOINT" || "$API_ENDPOINT" == "None" ]]; then
+        API_ENDPOINT=$(aws cloudformation describe-stacks \
+            --stack-name pqc-workshop \
+            --query "Stacks[0].Outputs[?OutputKey=='BuilderApiEndpoint'].OutputValue | [0]" \
+            --output text --region "$REGION" 2>/dev/null) || API_ENDPOINT=""
+    fi
+
+    # 3. Standalone/nested device-builder stack's ApiEndpoint output.
     if [[ -z "$API_ENDPOINT" || "$API_ENDPOINT" == "None" ]]; then
         DB_STACK=$(aws cloudformation list-stacks \
             --stack-status-filter CREATE_COMPLETE UPDATE_COMPLETE \
@@ -189,12 +202,20 @@ if [[ -z "$API_ENDPOINT" ]]; then
 
     if [[ -z "$API_ENDPOINT" || "$API_ENDPOINT" == "None" ]]; then
         API_ENDPOINT="https://REPLACE_WITH_API_GATEWAY_URL/prod"
-        echo "       [WARN] Could not resolve the builder API endpoint from the"
-        echo "       'pqc-workshop' master stack or a DeviceBuilder stack. Using a"
-        echo "       placeholder — update config.json on the Pi after deployment."
+        echo "       [WARN] Could not resolve the builder API endpoint from Parameter"
+        echo "       Store, the 'pqc-workshop' master stack, or a DeviceBuilder stack."
+        echo "       Using a placeholder — update config.json on the Pi after deployment."
     fi
 fi
 echo "       API: $API_ENDPOINT"
+
+# Firmware bucket: prefer Parameter Store, else derive from account id (the
+# stack names it pqc-workshop-firmware-<accountId>).
+FIRMWARE_BUCKET=$(ssm_param /pqc-workshop/builder-pi/firmwareBucket)
+if [[ -z "$FIRMWARE_BUCKET" || "$FIRMWARE_BUCKET" == "None" ]]; then
+    FIRMWARE_BUCKET="pqc-workshop-firmware-${ACCOUNT_ID}"
+fi
+echo "       Firmware bucket: $FIRMWARE_BUCKET"
 
 # ─── Step 3: Create bundle directory ────────────────────────────────────────
 echo "[3/4] Creating bundle..."
@@ -219,12 +240,10 @@ else
     echo "              step 5 on the Pi will warn and skip the PQC config."
 fi
 
-# Update config with actual, per-deployment values. Only these keys are
-# deployment-specific; everything else in config.json is a static default or a
-# field the operator sets in the GUI (wifi_ssid/wifi_password/broker_endpoint).
-# The firmware bucket is named pqc-workshop-firmware-<accountId> by the stack,
-# so derive it from the account the activation was created in.
-FIRMWARE_BUCKET="pqc-workshop-firmware-${ACCOUNT_ID}"
+# Update config with actual, per-deployment values (resolved in step 2 from
+# Parameter Store with CFN/account-id fallback). Everything else in config.json
+# is a static default or a field the operator sets in the GUI
+# (wifi_ssid/wifi_password/broker_endpoint).
 python3 -c "
 import json
 with open('$BUNDLE_DIR/config.json', 'r') as f:

@@ -21,6 +21,15 @@ staging/
 node_modules/
 dashboard/frontend/build/
 
+# Dashboard-v2 generated artifacts (built per deploy; env-specific)
+# - build/ is Vite output
+# - src/config.js is the runtime config holder; the real endpoints are NOT
+#   compiled in — they come from public/config.json at runtime. The deploy
+#   writes public/config.json (env-specific); config.example.json is the
+#   committed template.
+raw_device_builder/dashboard-v2/frontend/build/
+raw_device_builder/dashboard-v2/frontend/public/config.json
+
 # OS files
 .DS_Store
 Thumbs.db
