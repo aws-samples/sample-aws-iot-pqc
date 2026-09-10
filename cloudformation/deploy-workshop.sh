@@ -174,6 +174,23 @@ fi
 # stage the source and trigger the build in step 3 (below). The broker ECS
 # service ships at DesiredCount 0, so nothing needs the image mid-deploy.
 echo "[2/5] Deploying the master stack (nests all children)..."
+
+# Resolve the REAL IoT Core data endpoint. It is account-specific and cannot be
+# derived from the account id (the old '${AccountId}-ats...' guess does not
+# resolve, which silently broke the broker->IoT bridge). Pass it into the stack
+# so the broker bridge + device-builder get a working endpoint. Fail fast if it
+# can't be resolved rather than deploy a broken bridge.
+echo "    - resolving IoT Core data endpoint..."
+IOT_ENDPOINT=$(aws iot describe-endpoint --endpoint-type iot:Data-ATS \
+    --query 'endpointAddress' --output text 2>/dev/null) || IOT_ENDPOINT=""
+if [[ -z "$IOT_ENDPOINT" || "$IOT_ENDPOINT" == "None" ]]; then
+    echo "[ERROR] Could not resolve the IoT Core data endpoint via"
+    echo "        'aws iot describe-endpoint --endpoint-type iot:Data-ATS'."
+    echo "        The broker->IoT bridge needs this; aborting."
+    exit 1
+fi
+echo "      IoT endpoint: $IOT_ENDPOINT"
+
 aws cloudformation deploy \
     --template-file "$SCRIPT_DIR/pqc-workshop-main.yaml" \
     --stack-name "pqc-workshop" \
@@ -181,6 +198,7 @@ aws cloudformation deploy \
         DeviceCount="$DEVICE_COUNT" \
         TemplateBucketName="$ARTIFACTS_BUCKET" \
         TemplateBucketPrefix="$TEMPLATE_PREFIX" \
+        IoTEndpoint="$IOT_ENDPOINT" \
         BrokerTriggerBuild=false \
         BrokerCreateVpcEndpoints=true \
         $VPC_PARAMS \
@@ -284,6 +302,7 @@ put_param /pqc-workshop/dashboard/region          "$AWS_REGION"
 put_param /pqc-workshop/builder-pi/apiEndpoint    "$API_ENDPOINT"
 put_param /pqc-workshop/builder-pi/firmwareBucket "$FIRMWARE_BUCKET"
 put_param /pqc-workshop/builder-pi/region         "$AWS_REGION"
+put_param /pqc-workshop/iotEndpoint               "$IOT_ENDPOINT"
 
 # ─── Materialize the dashboard's runtime config.json ─────────────────────────
 # Written into public/ so Vite copies it into build/ as a normal asset. This

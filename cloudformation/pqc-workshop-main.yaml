@@ -102,6 +102,18 @@ Parameters:
     Default: changeme
     Description: Default WiFi password baked into device firmware builds.
 
+  IoTEndpoint:
+    Type: String
+    Default: ''
+    Description: >
+      AWS IoT Core data endpoint (iot:Data-ATS), e.g.
+      a2ftry130vkg2k-ats.iot.us-east-1.amazonaws.com. This is account-specific
+      and CANNOT be derived from the account id — it must be resolved with
+      `aws iot describe-endpoint --endpoint-type iot:Data-ATS` and passed in
+      (deploy-workshop.sh does this). Used by the broker's IoT-Core bridge and
+      threaded to the device-builder. If left empty the deploy will fail fast
+      rather than bake a non-resolving endpoint.
+
   BrokerTriggerBuild:
     Type: String
     Default: 'false'
@@ -145,7 +157,7 @@ Resources:
         VpcId: !If [ShouldCreateVpc, !GetAtt NetworkStack.Outputs.VpcId, !Ref VpcId]
         SubnetIds: !If [ShouldCreateVpc, !GetAtt NetworkStack.Outputs.SubnetIds, !Join [',', !Ref SubnetIds]]
         RouteTableIds: !If [ShouldCreateVpc, !GetAtt NetworkStack.Outputs.RouteTableId, !Join [',', !Ref BrokerRouteTableIds]]
-        IoTEndpoint: !Sub '${AWS::AccountId}-ats.iot.${AWS::Region}.amazonaws.com'
+        IoTEndpoint: !Ref IoTEndpoint
         TriggerBuild: !Ref BrokerTriggerBuild
         CreateVpcEndpoints: !Ref BrokerCreateVpcEndpoints
       Tags:
@@ -166,7 +178,7 @@ Resources:
       Parameters:
         PrivateCAArn: !GetAtt BrokerStack.Outputs.PrivateCAArn
         DefaultBrokerEndpoint: !GetAtt BrokerStack.Outputs.BrokerEndpoint
-        IoTEndpoint: !Sub '${AWS::AccountId}-ats.iot.${AWS::Region}.amazonaws.com'
+        IoTEndpoint: !Ref IoTEndpoint
         DefaultWifiSsid: !Ref DefaultWifiSsid
         DefaultWifiPassword: !Ref DefaultWifiPassword
       Tags:
@@ -258,9 +270,11 @@ Outputs:
   # ─── IoT Core ─────────────────────────────────────────────────────────────
   IoTEndpoint:
     Description: >
-      IoT Core data endpoint. Retrieve exact value with:
-      aws iot describe-endpoint --endpoint-type iot:Data-ATS
-    Value: !Sub '${AWS::AccountId}-ats.iot.${AWS::Region}.amazonaws.com'
+      AWS IoT Core data endpoint (iot:Data-ATS), as passed to the stack. This is
+      account-specific and is resolved by the deploy tooling via
+      aws iot describe-endpoint --endpoint-type iot:Data-ATS (it is NOT derivable
+      from the account id).
+    Value: !Ref IoTEndpoint
 
   DashboardBucketName:
     Description: S3 bucket for dashboard static files

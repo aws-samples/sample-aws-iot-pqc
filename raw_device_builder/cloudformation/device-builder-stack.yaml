@@ -39,8 +39,11 @@ Parameters:
 
   IoTEndpoint:
     Type: String
-    Description: AWS IoT Core data endpoint
-    Default: auxsw1j2tp0z6-ats.iot.us-east-1.amazonaws.com
+    Default: ''
+    Description: >
+      AWS IoT Core data endpoint (iot:Data-ATS). Account-specific; resolve with
+      `aws iot describe-endpoint --endpoint-type iot:Data-ATS`. In the master
+      deploy this is passed down from the master IoTEndpoint parameter.
 
   PrivateCAArn:
     Type: String
