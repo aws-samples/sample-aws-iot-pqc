@@ -447,3 +447,16 @@ Branch: `refactor-deployment`.
     present); graceful if the download fails (the Pi still works via boto3).
   - Acceptance: after a clean Builder-Pi setup, `aws --version` works over SSM
     and S3 pulls / diagnostics can use the AWS CLI directly, no boto3 fallback.
+- [ ] Fix Builder-Pi GUI log auto-scroll (jumps back to top on refresh).
+  - Problem: the device output/progress log in the builder-pi GUI re-renders on
+    the 2s device poll, resetting the scroll position to the top, so an operator
+    scrolling through the log is yanked back up repeatedly — annoying and makes
+    it hard to read a long transcript during a flash.
+  - Task: fix the render so polling updates the log content without resetting
+    scroll — e.g. preserve scroll position across re-renders, only auto-scroll
+    (to bottom) when the user is already pinned to the bottom, and keep position
+    otherwise. In templates/index.html (renderDevices / the device-card progress
+    rendering).
+  - Acceptance: with the GUI open during a flash, scrolling up through the log
+    stays put across polls; new lines append without forcing the view back to
+    the top; auto-scroll-to-bottom only when already at the bottom.
