@@ -77,7 +77,14 @@ def cmd_register(args, config, log):
     # If a port is connected, download + flash.
     if getattr(args, "port", None) and not args.no_flash:
         dm = _device_manager(config)
+        # Must detect the device on THIS DeviceManager first — a fresh instance
+        # has an empty devices map, so dm.devices.get(port) would be None and
+        # download_firmware(None)/flash_firmware would crash with
+        # "'NoneType' object has no attribute 'status'".
+        dm.detect_device(args.port)
         slot = dm.devices.get(args.port)
+        if not slot:
+            return {"success": False, "message": f"No device detected on {args.port} for flashing"}
         firmware_dir = dm.download_firmware(slot)
         if not firmware_dir:
             return {"success": False, "message": "Firmware download failed"}

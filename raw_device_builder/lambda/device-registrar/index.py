@@ -93,7 +93,11 @@ def handler(event, context):
             registered_at = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H-%M-%SZ')
             iot.create_thing(
                 thingName=thing_name,
-                thingTypeName='ESP32-PQC',
+                # Must match the thing type created by the deployment
+                # (device-provisioning-stack.yaml AWS::IoT::ThingType) and used
+                # by the auto-register Lambda: 'esp32-pqc-device'. The old value
+                # 'ESP32-PQC' was never created -> CreateThing ResourceNotFound.
+                thingTypeName='esp32-pqc-device',
                 attributePayload={
                     'attributes': {
                         'serialNumber': serial_number,
