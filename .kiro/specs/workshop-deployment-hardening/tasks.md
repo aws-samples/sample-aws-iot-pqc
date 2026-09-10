@@ -309,3 +309,39 @@ Branch: `refactor-deployment`.
   - NOTE: firmware-domain work — out of scope for the deployment-hardening
     effort; tracked here only so it is not lost. Should be done under a firmware
     effort so as not to destabilise the firmware while AWS deploy work is ongoing.
+- [ ] Standardize environment config: SSM Parameter Store + runtime-fetched
+      config (stop committing per-account values).
+  - Problem: deployment-specific, non-secret values (dashboard `apiEndpoint`,
+    `appSyncEndpoint`, `identityPoolId`, `region`; builder-pi `api_endpoint`,
+    `firmware_bucket`) currently get baked into tracked source. The dashboard's
+    `src/config.js` is regenerated per deploy by `deploy-workshop.sh` and the
+    built `build/` output is tracked, so every account produces a git diff with
+    that account's endpoints — the same class of leak we fixed for
+    `builder-pi-bundle/`.
+  - Decision (chosen service): **SSM Parameter Store** (Standard tier, `String`)
+    as the canonical store. These values are non-secret, deployment-derived, and
+    few — Parameter Store is free, native to CloudFormation, and purpose-built
+    for this. Rejected alternatives: Secrets Manager (for rotating secrets; costs
+    per secret/API call; these aren't secrets), AppConfig (feature-flag/config
+    rollout with validators — overkill), DynamoDB (operational overhead for a
+    handful of static strings), native env vars (only help server/Lambda
+    compute; the dashboard is a static browser SPA so it can't read them).
+  - Design (standard going forward):
+    1. Master stack publishes its relevant outputs to a namespaced parameter
+       set, e.g. `/pqc-workshop/dashboard/{apiEndpoint,appSyncEndpoint,identityPoolId,region}`
+       and `/pqc-workshop/builder-pi/{apiEndpoint,firmwareBucket,region}`.
+    2. The dashboard SPA stops compiling `config.js` into the bundle; instead it
+       fetches a small `config.json` at runtime (written to the S3 site bucket by
+       the deploy from the parameters/stack outputs). One environment-agnostic
+       build artifact; only the tiny `config.json` differs per account and it
+       lives in S3, never in git.
+    3. The builder-pi bundle/setup reads the same parameter namespace (its SSM
+       role already has access) rather than the generator hardcoding names.
+  - Repo hygiene (part of this task): gitignore + untrack
+    `raw_device_builder/dashboard-v2/frontend/build/` and treat the generated
+    `src/config.js` as generated (gitignore or template it), mirroring the
+    `builder-pi-bundle/` fix.
+  - Acceptance: a clean deploy in a new account produces a working dashboard +
+    builder-pi with zero account-specific values committed to git; the frontend
+    build is byte-identical across accounts; endpoints resolve at
+    deploy/runtime from Parameter Store (or stack outputs) only.
