@@ -370,3 +370,31 @@ Branch: `refactor-deployment`.
     well under a minute, with no broker image build; a full deploy still works
     end-to-end and respects inter-component dependencies; each component can be
     deployed/updated in isolation.
+- [ ] Eliminate the developer-laptop / local-npm dependency for cloud deploys
+      (Workshop Studio friendly).
+  - Problem: `deploy-workshop.sh` step 4 runs `npm ci && npm run build` locally,
+    then `aws s3 sync build/ …`, so deploying the dashboard REQUIRES Node/npm on
+    the machine running the script. In a Workshop Studio (WS) account we do not
+    want any dependency on a developer laptop or local toolchain — the workshop
+    should stand itself up in-account.
+  - Primary investigation: use a pipeline + the WS assets bucket to build in the
+    cloud. WS provisions each account with a static assets S3 bucket
+    (referenced in content via `{{.AssetsBucketName}}` / `{{.AssetsBucketPrefix}}`)
+    that can hold the frontend source. Investigate: stage the dashboard source
+    into the assets bucket (or the repo/CFN artifacts bucket), then have a
+    CodeBuild project (invoked by the master stack as a Custom Resource, or a
+    small CodePipeline) run `npm ci && npm run build`, write config.json, and
+    sync to the dashboard S3 bucket + invalidate CloudFront — entirely in the
+    account. Confirm whether WS lets us trigger a build during stack
+    creation and whether the assets bucket is readable by CodeBuild. This also
+    subsumes the earlier "move the v2 dashboard build into AWS" backlog item.
+  - Fallback (only if in-cloud build during WS provisioning is not feasible):
+    deploy a developer IDE INTO the WS account (e.g. a Cloud9 / Code Server /
+    small EC2 or container dev environment with Node preinstalled) as part of
+    the workshop stack, so the "local" build runs on in-account compute rather
+    than a participant's laptop. Document which approach WS supports.
+  - Acceptance: a clean deploy in a fresh WS account produces a working
+    dashboard with NO Node/npm required on any external/developer machine — the
+    build runs on AWS compute (pipeline/CodeBuild) or on in-account dev compute
+    provisioned by the workshop. `deploy-workshop.sh` (or its successor) needs
+    only AWS CLI + credentials locally, not a JS toolchain.
