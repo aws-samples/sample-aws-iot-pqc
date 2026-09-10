@@ -345,3 +345,28 @@ Branch: `refactor-deployment`.
     builder-pi with zero account-specific values committed to git; the frontend
     build is byte-identical across accounts; endpoints resolve at
     deploy/runtime from Parameter Store (or stack outputs) only.
+- [ ] Decouple deployment into independently deployable component stacks.
+  - Problem: `deploy-workshop.sh` runs every component in one sequential pass —
+    `[2/5]` master stack, `[3/5]` broker container image CodeBuild (slow),
+    `[4/5]` dashboard build+sync. So a dashboard-only change still forces the
+    broker image build and a full master update; there is no way to deploy a
+    single discrete component. (The CFN is already nested into child stacks —
+    Broker, DeviceBuilder, Dashboard, Device, SSMActivation, Network — but the
+    orchestration script couples them.)
+  - Goal: deploy each discrete component on its own, with dependencies managed.
+    Two parts:
+    1. Make the components independently deployable (e.g. standalone child-stack
+       deploys, or separate root stacks with cross-stack references / SSM
+       parameters for the shared values like BrokerEndpoint, PrivateCAArn,
+       ApiEndpoint, AppSync/Cognito). Preserve correct ordering: Broker →
+       DeviceBuilder (needs PrivateCAArn + BrokerEndpoint); Dashboard + Device
+       independent; SSMActivation independent.
+    2. Give `deploy-workshop.sh` a component selector (e.g. `--only dashboard`,
+       `--only broker`, `--only device-builder`, default = all) so the broker
+       image build and other slow steps are skipped when not targeted. The
+       dashboard build+sync must run without triggering the broker CodeBuild.
+  - Acceptance: `deploy-workshop.sh --only dashboard` redeploys just the
+    dashboard (build + config.json + S3 sync + CloudFront invalidation) in
+    well under a minute, with no broker image build; a full deploy still works
+    end-to-end and respects inter-component dependencies; each component can be
+    deployed/updated in isolation.
