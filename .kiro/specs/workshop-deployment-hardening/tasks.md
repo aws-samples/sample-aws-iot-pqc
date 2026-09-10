@@ -436,3 +436,14 @@ Branch: `refactor-deployment`.
     build runs on AWS compute (pipeline/CodeBuild) or on in-account dev compute
     provisioned by the workshop. `deploy-workshop.sh` (or its successor) needs
     only AWS CLI + credentials locally, not a JS toolchain.
+- [ ] Install the AWS CLI on the Builder-Pi during setup.
+  - Problem: a freshly-imaged Builder-Pi has no `aws` CLI on PATH (only boto3,
+    pulled in by the app's Python deps). Operator/agent S3 pulls and other
+    AWS-CLI-based recovery steps over SSM fail with `aws: not found` and have to
+    fall back to ad-hoc `python3 -c "import boto3 …"` one-liners.
+  - Task: install the AWS CLI v2 (arch-matched: aarch64 for arm64 Pis) as part
+    of the Pi provisioning. Best placed in the SSM/bootstrap setup so it is
+    present before any tool-install or fixup step. Idempotent (skip if already
+    present); graceful if the download fails (the Pi still works via boto3).
+  - Acceptance: after a clean Builder-Pi setup, `aws --version` works over SSM
+    and S3 pulls / diagnostics can use the AWS CLI directly, no boto3 fallback.
