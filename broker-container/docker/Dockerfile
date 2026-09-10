@@ -99,9 +99,26 @@ COPY --from=builder /opt/mosquitto /opt/mosquitto
 ENV LD_LIBRARY_PATH=/opt/openssl-pqc/lib:/opt/mosquitto/lib
 ENV PATH=/opt/mosquitto/sbin:/opt/mosquitto/bin:/opt/openssl-pqc/bin:$PATH
 
-# Configure OpenSSL to use oqs-provider and set PQC key exchange groups
+# Configure OpenSSL to load the oqs-provider (makes ML-KEM groups AVAILABLE).
+#
+# We deliberately DO NOT set a system-default `Groups` list here. A system-wide
+# `[system_default_sect] Groups = x25519_mlkem768:...` forces ML-KEM key-exchange
+# groups onto EVERY TLS connection this container makes — including the OUTBOUND
+# Mosquitto->IoT Core bridge. AWS IoT Core is a standard (non-PQC) TLS endpoint
+# and resets any ClientHello that advertises ML-KEM groups, so the bridge never
+# completes TLS ("unexpected eof"), never gets a CONNACK, and loops forever.
+#
+# The device-facing listener still negotiates ML-KEM without a forced Groups
+# list: the oqs-provider makes the hybrid groups AVAILABLE, and OpenSSL selects
+# them when the ESP32 client proposes them. The outbound bridge, whose peer
+# (IoT Core) offers only classical groups, then negotiates classical cleanly.
+#
+# Regression history: commit 22f0f73 added the system-wide Groups list, which
+# broke the bridge on any image built after it (pqc-a kept working only because
+# it still ran a pre-22f0f73 image). Reverting to provider-only restores the
+# proven-good behaviour: PQC on the device listener, classical on the bridge.
 RUN mkdir -p /opt/openssl-pqc/ssl && \
-    printf '[openssl_init]\nproviders = provider_sect\nssl_conf = ssl_sect\n\n[provider_sect]\ndefault = default_sect\noqsprovider = oqs_sect\n\n[default_sect]\nactivate = 1\n\n[oqs_sect]\nactivate = 1\nmodule = /opt/openssl-pqc/lib/ossl-modules/oqsprovider.so\n\n[ssl_sect]\nsystem_default = system_default_sect\n\n[system_default_sect]\nGroups = x25519_mlkem768:secp256r1_mlkem768:X25519:P-256\n' \
+    printf '[openssl_init]\nproviders = provider_sect\n\n[provider_sect]\ndefault = default_sect\noqsprovider = oqs_sect\n\n[default_sect]\nactivate = 1\n\n[oqs_sect]\nactivate = 1\nmodule = /opt/openssl-pqc/lib/ossl-modules/oqsprovider.so\n' \
     > /opt/openssl-pqc/ssl/openssl.cnf
 
 # Create mosquitto directories
