@@ -13,15 +13,20 @@ Parameters:
 
   DefaultWifiSsid:
     Type: String
-    Description: Default WiFi SSID for devices (set per deployment)
-    Default: ''
+    Description: >-
+      Workshop WiFi SSID for devices. In the master deploy this is passed down
+      from the master DefaultWifiSsid (operator-supplied via WORKSHOP_WIFI_SSID).
+      Do not commit a real value.
+    Default: changeme
 
   DefaultWifiPassword:
     Type: String
     Description: >-
-      Default WiFi password for devices. Used by the PQC upgrader Lambda as a
-      fallback when the device registry entry lacks wifiPassword (the registry
-      entry is recreated from telemetry, which does not carry the password).
+      Workshop WiFi password for devices. Persisted in the registry by the
+      registrar and used by the PQC migration (prepare-build) as a fallback when
+      the registry entry lacks wifiPassword. In the master deploy this is passed
+      down from the master DefaultWifiPassword (operator-supplied via
+      WORKSHOP_WIFI_PASSWORD). Do not commit a real value.
     NoEcho: true
     Default: changeme
 
@@ -257,6 +262,7 @@ Resources:
           BUILD_PROJECT: !Ref FirmwareBuildProject
           IOT_ENDPOINT: !Ref IoTEndpoint
           DEFAULT_WIFI_SSID: !Ref DefaultWifiSsid
+          DEFAULT_WIFI_PASSWORD: !Ref DefaultWifiPassword
           DEFAULT_BROKER_ENDPOINT: !Ref DefaultBrokerEndpoint
           PRIVATE_CA_ARN: !Ref PrivateCAArn
       Code: ../lambda/device-registrar
@@ -823,7 +829,7 @@ Resources:
           - Name: WIFI_SSID
             Value: !Ref DefaultWifiSsid
           - Name: WIFI_PASSWORD
-            Value: changeme
+            Value: !Ref DefaultWifiPassword
           - Name: BROKER_ENDPOINT
             Value: !Ref DefaultBrokerEndpoint
           - Name: BROKER_PORT
@@ -876,6 +882,23 @@ Resources:
                 Action:
                   - codebuild:BatchGetBuilds
                 Resource: !GetAtt FirmwareBuildProject.Arn
+              # Read the workshop config params, incl. the WiFi SSID/password
+              # the builder-Pi hostapd AP setup broadcasts. The password is a
+              # SecureString, so allow kms:Decrypt scoped to the SSM service.
+              - Effect: Allow
+                Action:
+                  - ssm:GetParameter
+                  - ssm:GetParameters
+                  - ssm:GetParametersByPath
+                Resource:
+                  - !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/pqc-workshop/*'
+              - Effect: Allow
+                Action:
+                  - kms:Decrypt
+                Resource: !Sub 'arn:aws:kms:${AWS::Region}:${AWS::AccountId}:key/*'
+                Condition:
+                  StringEquals:
+                    kms:ViaService: !Sub 'ssm.${AWS::Region}.amazonaws.com'
               - Effect: Allow
                 Action:
                   - dynamodb:GetItem

@@ -42,6 +42,7 @@ FIRMWARE_BUCKET = os.environ['FIRMWARE_BUCKET']
 BUILD_PROJECT = os.environ['BUILD_PROJECT']
 IOT_ENDPOINT = os.environ['IOT_ENDPOINT']
 DEFAULT_WIFI_SSID = os.environ.get('DEFAULT_WIFI_SSID', 'workshop-wifi')
+DEFAULT_WIFI_PASSWORD = os.environ.get('DEFAULT_WIFI_PASSWORD', '')
 DEFAULT_BROKER = os.environ.get('DEFAULT_BROKER_ENDPOINT', '192.168.1.90')
 PRIVATE_CA_ARN = os.environ['PRIVATE_CA_ARN']
 
@@ -64,7 +65,7 @@ def handler(event, context):
 
     # Allow override of defaults from GUI
     wifi_ssid = body.get('wifiSsid', DEFAULT_WIFI_SSID)
-    wifi_password = body.get('wifiPassword', '')
+    wifi_password = body.get('wifiPassword', DEFAULT_WIFI_PASSWORD)
     broker_endpoint = body.get('brokerEndpoint', DEFAULT_BROKER)
     firmware_version = body.get('firmwareVersion', '0.1.0')
 
@@ -164,6 +165,13 @@ def handler(event, context):
             'status': 'registered',
             'registeredAt': datetime.now(timezone.utc).isoformat(),
             'wifiSsid': wifi_ssid,
+            # Persist the WiFi password so the PQC migration (prepare-build)
+            # rebuilds firmware with the SAME credentials the device was flashed
+            # with. Without this the registry entry (recreated from telemetry,
+            # which does not carry the password) lacks wifiPassword and migration
+            # falls back to the deploy default — a mismatch strands the device on
+            # a WPA2 4-way-handshake timeout after it reboots into PQC firmware.
+            'wifiPassword': wifi_password,
             'brokerEndpoint': broker_endpoint
         })
 

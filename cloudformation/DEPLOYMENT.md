@@ -45,8 +45,29 @@ assets for **Workshop Studio** (see "Workshop Studio" below).
 
 ### 3. Deploy the stack + build the broker image + build the dashboard
 
+> ⚠️ **Set the workshop WiFi credentials first.** The device firmware (both the
+> initial flash and the classical→PQC migration) is built with these WiFi
+> credentials, and the builder-Pi hostapd AP broadcasts the same SSID. Supply
+> them at deploy time via env vars — they are **never committed** to the repo
+> (the template defaults are the harmless placeholder `changeme`):
+>
+> ```bash
+> export WORKSHOP_WIFI_SSID='reinvent-pqc-iot-wifi'
+> export WORKSHOP_WIFI_PASSWORD='@reinvent2026'   # WPA2 PSK, 8–63 chars
+> ```
+>
+> If you skip this, the deploy still succeeds but bakes `changeme` into the
+> firmware, so devices will NOT join a real network (the script prints a WARN).
+> The values are threaded to the firmware build and published to SSM
+> (`/pqc-workshop/wifi/ssid` as String, `/pqc-workshop/wifi/password` as
+> SecureString) as the single source of truth the builder-Pi AP setup consumes.
+
 ```bash
 cd cloudformation
+
+# Set the workshop WiFi (see the callout above) so firmware joins the right net:
+export WORKSHOP_WIFI_SSID='reinvent-pqc-iot-wifi'
+export WORKSHOP_WIFI_PASSWORD='@reinvent2026'
 
 # Option A — let the stack create its own VPC (recommended; required for
 # Workshop Studio / Control Tower accounts that have no usable default VPC):
@@ -193,6 +214,11 @@ steps by hand.
    - `CreateVpc` = `true` (default; no VPC prep needed in the account)
    - `VpcId` / `SubnetIds` = leave empty unless `CreateVpc=false`
    - `DeviceCount` (optional, default 100)
+   - `DefaultWifiSsid` = the workshop WiFi SSID (e.g. `reinvent-pqc-iot-wifi`) —
+     WS bypasses `deploy-workshop.sh`, so set the real value **here** (the
+     template default is the placeholder `changeme`).
+   - `DefaultWifiPassword` = the workshop WiFi password (WPA2 PSK, 8–63 chars) —
+     `NoEcho`; likewise set here, do not leave as `changeme`.
 3. **After the stack completes**, do the steps `deploy-workshop.sh` would have
    done, in this order:
    1. stage the broker Docker build context to the broker source bucket and start
@@ -205,6 +231,15 @@ steps by hand.
       ```
    3. build the v2 dashboard, sync it to the dashboard S3 bucket, and invalidate
       CloudFront.
+   4. publish the workshop WiFi to SSM as the single source of truth for the
+      builder-Pi AP setup (the script does this; WS must do it by hand). Use the
+      SAME values as the `DefaultWifiSsid`/`DefaultWifiPassword` params above:
+      ```bash
+      aws ssm put-parameter --name /pqc-workshop/wifi/ssid \
+        --type String --overwrite --value 'reinvent-pqc-iot-wifi'
+      aws ssm put-parameter --name /pqc-workshop/wifi/password \
+        --type SecureString --overwrite --value '@reinvent2026'
+      ```
 4. Then continue with the shared steps 4–6 above (firmware image build,
    Builder-Pi registration, validate).
 

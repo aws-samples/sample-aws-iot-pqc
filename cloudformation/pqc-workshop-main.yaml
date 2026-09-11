@@ -108,13 +108,24 @@ Parameters:
   DefaultWifiSsid:
     Type: String
     Default: changeme
-    Description: Default WiFi SSID baked into device firmware builds.
+    Description: >
+      Workshop WiFi SSID baked into device firmware builds (initial flash AND
+      the classical->PQC migration). Single source of truth for the device
+      WiFi; the builder-Pi hostapd AP broadcasts this same SSID. Do NOT commit
+      the real value: the operator supplies it at deploy time via the
+      WORKSHOP_WIFI_SSID env var, which deploy-workshop.sh passes as an override.
 
   DefaultWifiPassword:
     Type: String
     NoEcho: true
     Default: changeme
-    Description: Default WiFi password baked into device firmware builds.
+    Description: >
+      Workshop WiFi password (WPA2 PSK, 8-63 chars) baked into device firmware.
+      Used for both initial flash and migration so a migrated device rejoins the
+      same network; must match the builder-Pi hostapd AP password. Do NOT commit
+      the real value: the operator supplies it at deploy time via the
+      WORKSHOP_WIFI_PASSWORD env var, which deploy-workshop.sh passes as an
+      override.
 
   IoTEndpoint:
     Type: String

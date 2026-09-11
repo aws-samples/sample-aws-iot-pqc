@@ -47,6 +47,20 @@ DEVICE_COUNT="100"
 VPC_ID=""
 SUBNETS=""
 PROFILE=""
+
+# ─── Workshop WiFi (operator-supplied, NEVER committed) ──────────────────────
+# The device firmware (initial flash AND the classical->PQC migration) is built
+# with these WiFi credentials, and the builder-Pi hostapd AP broadcasts the same
+# SSID. Supply the real workshop values at deploy time via env vars, e.g.:
+#   WORKSHOP_WIFI_SSID=reinvent-pqc-iot-wifi \
+#   WORKSHOP_WIFI_PASSWORD='@reinvent2026' \
+#   ./deploy-workshop.sh us-east-1 --profile pqc-b
+# They fall through to the harmless 'changeme' placeholder if unset (devices
+# won't join a real network, but the deploy still succeeds). These are threaded
+# to the master stack as parameter overrides and published to SSM (the password
+# as a SecureString) so the builder-Pi AP setup consumes the same source.
+WORKSHOP_WIFI_SSID="${WORKSHOP_WIFI_SSID:-changeme}"
+WORKSHOP_WIFI_PASSWORD="${WORKSHOP_WIFI_PASSWORD:-changeme}"
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --vpc-id) VPC_ID="$2"; shift 2 ;;
@@ -201,6 +215,8 @@ aws cloudformation deploy \
         IoTEndpoint="$IOT_ENDPOINT" \
         BrokerTriggerBuild=false \
         BrokerCreateVpcEndpoints=false \
+        DefaultWifiSsid="$WORKSHOP_WIFI_SSID" \
+        DefaultWifiPassword="$WORKSHOP_WIFI_PASSWORD" \
         $VPC_PARAMS \
     --capabilities CAPABILITY_NAMED_IAM CAPABILITY_AUTO_EXPAND \
     --tags Workshop=pqc-reinvent
@@ -350,6 +366,20 @@ put_param /pqc-workshop/builder-pi/apiEndpoint    "$API_ENDPOINT"
 put_param /pqc-workshop/builder-pi/firmwareBucket "$FIRMWARE_BUCKET"
 put_param /pqc-workshop/builder-pi/region         "$AWS_REGION"
 put_param /pqc-workshop/iotEndpoint               "$IOT_ENDPOINT"
+
+# Workshop WiFi: the single source of truth consumed by the builder-Pi hostapd
+# AP setup (broadcasts this SSID/PSK) and mirrored into firmware at build time.
+# SSID is a plain String; the password is a SecureString (put_param hardcodes
+# --type String, so publish the password with a dedicated call).
+put_param /pqc-workshop/wifi/ssid "$WORKSHOP_WIFI_SSID"
+aws ssm put-parameter --name /pqc-workshop/wifi/password --type SecureString \
+    --overwrite --value "$WORKSHOP_WIFI_PASSWORD" --region "$AWS_REGION" >/dev/null \
+    || echo "    WARN: failed to put /pqc-workshop/wifi/password"
+if [[ "$WORKSHOP_WIFI_SSID" == "changeme" || "$WORKSHOP_WIFI_PASSWORD" == "changeme" ]]; then
+    echo "    WARN: workshop WiFi is the 'changeme' placeholder — devices will NOT"
+    echo "          join a real network. Re-run with WORKSHOP_WIFI_SSID and"
+    echo "          WORKSHOP_WIFI_PASSWORD set to the real workshop credentials."
+fi
 
 # ─── Materialize the dashboard's runtime config.json ─────────────────────────
 # Written into public/ so Vite copies it into build/ as a normal asset. This
