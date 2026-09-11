@@ -36,6 +36,7 @@ iot = boto3.client('iot')
 acm_pca = boto3.client('acm-pca')
 dynamodb = boto3.resource('dynamodb')
 codebuild = boto3.client('codebuild')
+ssm = boto3.client('ssm')
 
 TABLE_NAME = os.environ['REGISTRY_TABLE']
 FIRMWARE_BUCKET = os.environ['FIRMWARE_BUCKET']
@@ -45,8 +46,30 @@ DEFAULT_WIFI_SSID = os.environ.get('DEFAULT_WIFI_SSID', 'workshop-wifi')
 DEFAULT_WIFI_PASSWORD = os.environ.get('DEFAULT_WIFI_PASSWORD', '')
 DEFAULT_BROKER = os.environ.get('DEFAULT_BROKER_ENDPOINT', '192.168.1.90')
 PRIVATE_CA_ARN = os.environ['PRIVATE_CA_ARN']
+# SSM is the authoritative live source of truth for the workshop WiFi. The
+# deploy publishes /pqc-workshop/wifi/ssid (String) + /password (SecureString);
+# reading them here means the WiFi can be rotated with a single put-parameter
+# (every new build picks it up) without a redeploy.
+WIFI_SSM_PREFIX = os.environ.get('WIFI_SSM_PREFIX', '/pqc-workshop/wifi')
 
 table = dynamodb.Table(TABLE_NAME)
+
+
+def _get_ssm(name):
+    """Read one SSM param (decrypted); return None if missing/unreadable so the
+    caller can fall back. Never raises — a WiFi lookup must not fail a build."""
+    try:
+        return ssm.get_parameter(Name=name, WithDecryption=True)['Parameter']['Value']
+    except Exception as e:  # ParameterNotFound, AccessDenied, throttling, etc.
+        print(f"SSM read {name} failed ({e}); falling back")
+        return None
+
+
+def wifi_from_ssm():
+    """Return (ssid, password) from SSM, each None if unavailable."""
+    ssid = _get_ssm(f'{WIFI_SSM_PREFIX}/ssid')
+    password = _get_ssm(f'{WIFI_SSM_PREFIX}/password')
+    return ssid, password
 
 
 def handler(event, context):
@@ -63,9 +86,12 @@ def handler(event, context):
     if not serial_number:
         return api_response(400, {'error': 'Missing serialNumber'})
 
-    # Allow override of defaults from GUI
-    wifi_ssid = body.get('wifiSsid', DEFAULT_WIFI_SSID)
-    wifi_password = body.get('wifiPassword', DEFAULT_WIFI_PASSWORD)
+    # WiFi resolution order: explicit GUI override -> SSM (live source of truth)
+    # -> env-var fallback. SSM lets the workshop WiFi be rotated without a
+    # redeploy; the env vars are only a last resort if SSM is unset/unreadable.
+    ssm_ssid, ssm_password = wifi_from_ssm()
+    wifi_ssid = body.get('wifiSsid') or ssm_ssid or DEFAULT_WIFI_SSID
+    wifi_password = body.get('wifiPassword') or ssm_password or DEFAULT_WIFI_PASSWORD
     broker_endpoint = body.get('brokerEndpoint', DEFAULT_BROKER)
     firmware_version = body.get('firmwareVersion', '0.1.0')
 

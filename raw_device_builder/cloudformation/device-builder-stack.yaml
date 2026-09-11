@@ -242,6 +242,22 @@ Resources:
                 Action:
                   - iot:Publish
                 Resource: !Sub 'arn:aws:iot:${AWS::Region}:${AWS::AccountId}:topic/cmd/*'
+              # Read the workshop WiFi from SSM as the authoritative live source
+              # (registrar bakes it into the initial flash; prepare-build bakes
+              # it into the PQC migration). The password param is a SecureString,
+              # so allow kms:Decrypt scoped to the SSM service.
+              - Effect: Allow
+                Action:
+                  - ssm:GetParameter
+                  - ssm:GetParameters
+                Resource: !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/pqc-workshop/wifi/*'
+              - Effect: Allow
+                Action:
+                  - kms:Decrypt
+                Resource: !Sub 'arn:aws:kms:${AWS::Region}:${AWS::AccountId}:key/*'
+                Condition:
+                  StringEquals:
+                    kms:ViaService: !Sub 'ssm.${AWS::Region}.amazonaws.com'
 
   # ═══════════════════════════════════════════════════════════════════════════
   # Lambda — Device Registrar
@@ -263,6 +279,8 @@ Resources:
           IOT_ENDPOINT: !Ref IoTEndpoint
           DEFAULT_WIFI_SSID: !Ref DefaultWifiSsid
           DEFAULT_WIFI_PASSWORD: !Ref DefaultWifiPassword
+          # SSM is the authoritative live source; DEFAULT_WIFI_* are fallbacks.
+          WIFI_SSM_PREFIX: /pqc-workshop/wifi
           DEFAULT_BROKER_ENDPOINT: !Ref DefaultBrokerEndpoint
           PRIVATE_CA_ARN: !Ref PrivateCAArn
       Code: ../lambda/device-registrar
@@ -298,6 +316,8 @@ Resources:
           PRIVATE_CA_ARN: !Ref PrivateCAArn
           DEFAULT_WIFI_SSID: !Ref DefaultWifiSsid
           DEFAULT_WIFI_PASSWORD: !Ref DefaultWifiPassword
+          # SSM is the authoritative live source; DEFAULT_WIFI_* are fallbacks.
+          WIFI_SSM_PREFIX: /pqc-workshop/wifi
           DEFAULT_BROKER_ENDPOINT: !Ref DefaultBrokerEndpoint
       Code: ../lambda/prepare-build
 

@@ -34,12 +34,37 @@ import boto3
 dynamodb = boto3.resource("dynamodb")
 codebuild = boto3.client("codebuild")
 acm_pca = boto3.client("acm-pca")
+ssm = boto3.client("ssm")
 
 PQC_VERSION = "1.0.0-pqc"
+
+# SSM is the authoritative live source of truth for the workshop WiFi. The
+# deploy publishes /pqc-workshop/wifi/ssid (String) + /password (SecureString);
+# reading them at migration time means a WiFi change is picked up by the next
+# build with a single put-parameter, no redeploy.
+WIFI_SSM_PREFIX = os.environ.get("WIFI_SSM_PREFIX", "/pqc-workshop/wifi")
 
 
 def _table():
     return dynamodb.Table(os.environ["REGISTRY_TABLE"])
+
+
+def _get_ssm(name):
+    """Read one SSM param (decrypted); return None if missing/unreadable so the
+    caller can fall back. Never raises — a WiFi lookup must not fail a build."""
+    try:
+        return ssm.get_parameter(Name=name, WithDecryption=True)["Parameter"]["Value"]
+    except Exception as e:  # ParameterNotFound, AccessDenied, throttling, etc.
+        print(f"SSM read {name} failed ({e}); falling back")
+        return None
+
+
+def wifi_from_ssm():
+    """Return (ssid, password) from SSM, each None if unavailable."""
+    return (
+        _get_ssm(f"{WIFI_SSM_PREFIX}/ssid"),
+        _get_ssm(f"{WIFI_SSM_PREFIX}/password"),
+    )
 
 
 def handler(event, context):
@@ -144,10 +169,14 @@ def issue_device_cert(serial_number):
 def trigger_pqc_build(serial_number, device, certs):
     """Start a CodeBuild for the PQC firmware variant."""
     broker_endpoint = device.get("brokerEndpoint") or os.environ.get("DEFAULT_BROKER_ENDPOINT", "")
-    # The registry entry is recreated from telemetry, which does not carry the
-    # WiFi password, so fall back to the workshop defaults.
-    wifi_ssid = device.get("wifiSsid") or os.environ.get("DEFAULT_WIFI_SSID", "")
-    wifi_password = device.get("wifiPassword") or os.environ.get("DEFAULT_WIFI_PASSWORD", "")
+    # WiFi resolution order: SSM (live source of truth) -> registry value (the
+    # password the device was flashed with, persisted by the registrar) -> env
+    # fallback. SSM first means a workshop WiFi change is honored on migration
+    # without a redeploy; the registry value covers the case where SSM is
+    # unreadable and matches what the device already has.
+    ssm_ssid, ssm_password = wifi_from_ssm()
+    wifi_ssid = ssm_ssid or device.get("wifiSsid") or os.environ.get("DEFAULT_WIFI_SSID", "")
+    wifi_password = ssm_password or device.get("wifiPassword") or os.environ.get("DEFAULT_WIFI_PASSWORD", "")
 
     build_resp = codebuild.start_build(
         projectName=os.environ["BUILD_PROJECT"],
