@@ -149,6 +149,17 @@ Then on the Pi, run the bundle's `setup-all.sh`. It installs the SSM agent
 the `workshop-builder` CLI. After this the Pi appears in
 `aws ssm describe-instance-information`.
 
+> **Plug-and-flash — no GUI configuration.** The Builder-Pi GUI takes no WiFi,
+> broker, or firmware-version input. Every device value is resolved server-side
+> by the registrar Lambda from the workshop **single source of truth in SSM**:
+> WiFi from `/pqc-workshop/wifi/{ssid,password}` and the broker endpoint from
+> `/pqc-workshop/broker/endpoint` (published from the broker stack output at
+> deploy time). The operator just plugs in an ESP32 and clicks **Register &
+> Flash** — the only per-device input is the auto-detected serial number. The
+> GUI shows the resolved broker endpoint read-only for reference. To change the
+> WiFi or broker later, update the SSM parameter — the next build picks it up,
+> no redeploy.
+
 ### 5a. (re:Invent only) Turn the Builder-Pi into the workshop WiFi AP + 2.4↔5 bridge
 
 The ESP32 devices are **2.4 GHz only** and must join `reinvent-pqc-iot-wifi` —

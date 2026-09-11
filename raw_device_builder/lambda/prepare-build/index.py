@@ -43,6 +43,7 @@ PQC_VERSION = "1.0.0-pqc"
 # reading them at migration time means a WiFi change is picked up by the next
 # build with a single put-parameter, no redeploy.
 WIFI_SSM_PREFIX = os.environ.get("WIFI_SSM_PREFIX", "/pqc-workshop/wifi")
+BROKER_SSM_PARAM = os.environ.get("BROKER_SSM_PARAM", "/pqc-workshop/broker/endpoint")
 
 
 def _table():
@@ -65,6 +66,11 @@ def wifi_from_ssm():
         _get_ssm(f"{WIFI_SSM_PREFIX}/ssid"),
         _get_ssm(f"{WIFI_SSM_PREFIX}/password"),
     )
+
+
+def broker_from_ssm():
+    """Return the broker endpoint from SSM, or None if unavailable."""
+    return _get_ssm(BROKER_SSM_PARAM)
 
 
 def handler(event, context):
@@ -168,7 +174,8 @@ def issue_device_cert(serial_number):
 
 def trigger_pqc_build(serial_number, device, certs):
     """Start a CodeBuild for the PQC firmware variant."""
-    broker_endpoint = device.get("brokerEndpoint") or os.environ.get("DEFAULT_BROKER_ENDPOINT", "")
+    # Broker resolution: SSM (live source of truth) -> registry value -> env.
+    broker_endpoint = broker_from_ssm() or device.get("brokerEndpoint") or os.environ.get("DEFAULT_BROKER_ENDPOINT", "")
     # WiFi resolution order: SSM (live source of truth) -> registry value (the
     # password the device was flashed with, persisted by the registrar) -> env
     # fallback. SSM first means a workshop WiFi change is honored on migration

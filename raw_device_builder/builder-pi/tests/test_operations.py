@@ -20,10 +20,6 @@ from builder_core import operations  # noqa: E402
 CONFIG = {
     "api_endpoint": "https://api.example.com/prod",
     "region": "us-east-1",
-    "wifi_ssid": "ssid",
-    "wifi_password": "pw",
-    "broker_endpoint": "broker",
-    "firmware_version": "0.1.0",
 }
 
 
@@ -50,8 +46,9 @@ def test_register_success(monkeypatch):
     assert result["success"] is True
     assert result["buildId"] == "b-1"
     assert captured["url"].endswith("/register")
-    assert captured["payload"]["serialNumber"] == "FC22E0"
-    assert captured["payload"]["wifiSsid"] == "ssid"
+    # Plug-and-flash: the payload carries only the auto-detected serial; WiFi,
+    # broker endpoint and firmware version are resolved server-side from SSM.
+    assert captured["payload"] == {"serialNumber": "FC22E0"}
 
 
 def test_register_api_error(monkeypatch):

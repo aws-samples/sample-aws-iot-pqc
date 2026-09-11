@@ -96,6 +96,27 @@ def handle_config():
     return jsonify(config)
 
 
+@app.route('/api/system-params')
+def get_system_params():
+    """Read-only workshop parameters resolved from SSM (the single source of
+    truth) for display in the GUI. The operator does not edit these — they are
+    baked into firmware server-side by the registrar. Returns the broker
+    endpoint (and region for context). Never raises: a lookup failure just
+    yields an empty value the GUI shows as unavailable."""
+    broker = ''
+    try:
+        ssm = get_fresh_boto3_session().client('ssm')
+        broker = ssm.get_parameter(
+            Name='/pqc-workshop/broker/endpoint'
+        )['Parameter']['Value']
+    except Exception as e:
+        print(f"system-params: broker endpoint SSM read failed: {e}")
+    return jsonify({
+        'brokerEndpoint': broker,
+        'region': config.get('region', ''),
+    })
+
+
 @app.route('/api/register', methods=['POST'])
 def register_device():
     """Trigger device registration and firmware build+flash pipeline."""
@@ -221,12 +242,12 @@ def _registration_pipeline(port: str):
         slot.log(f'Registering device serial={slot.serial_number}')
         api_url = f"{config['api_endpoint']}/register"
 
+        # Plug-and-flash: the only device-specific input is the auto-detected
+        # serial. WiFi, broker endpoint and firmware version are resolved
+        # server-side by the registrar Lambda from SSM (the single source of
+        # truth) / its env defaults — no operator input, no drift.
         payload = {
             'serialNumber': slot.serial_number,
-            'wifiSsid': config['wifi_ssid'],
-            'wifiPassword': config['wifi_password'],
-            'brokerEndpoint': config['broker_endpoint'],
-            'firmwareVersion': config['firmware_version']
         }
 
         # Use SigV4 auth (builder-pi has SSM role with API access)

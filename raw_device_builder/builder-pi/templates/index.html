@@ -13,36 +13,29 @@
     </header>
 
     <main>
-        <!-- Settings Panel -->
+        <!-- System Info Panel (read-only) -->
         <section class="settings-panel">
-            <h2>⚙️ Settings</h2>
+            <h2>⚙️ System Parameters</h2>
+            <p class="subtitle">
+                Plug-and-flash — no configuration needed. WiFi, broker endpoint
+                and firmware version are resolved server-side from the workshop's
+                single source of truth (SSM). These values are shown for
+                reference only.
+            </p>
             <div class="settings-grid">
                 <div class="setting">
-                    <label>WiFi SSID</label>
-                    <input type="text" id="wifi-ssid" value="{{ config.wifi_ssid }}">
-                </div>
-                <div class="setting">
-                    <label>WiFi Password</label>
-                    <input type="password" id="wifi-password" value="{{ config.wifi_password }}">
-                </div>
-                <div class="setting">
                     <label>Broker Endpoint</label>
-                    <input type="text" id="broker-endpoint" value="{{ config.broker_endpoint }}">
-                </div>
-                <div class="setting">
-                    <label>IoT Endpoint</label>
-                    <input type="text" id="iot-endpoint" value="{{ config.iot_endpoint }}">
-                </div>
-                <div class="setting">
-                    <label>Firmware Version</label>
-                    <input type="text" id="firmware-version" value="{{ config.firmware_version }}">
+                    <input type="text" id="broker-endpoint" value="resolving…" readonly>
                 </div>
                 <div class="setting">
                     <label>API Endpoint</label>
-                    <input type="text" id="api-endpoint" value="{{ config.api_endpoint }}">
+                    <input type="text" id="api-endpoint" value="{{ config.api_endpoint }}" readonly>
+                </div>
+                <div class="setting">
+                    <label>Region</label>
+                    <input type="text" id="region" value="{{ config.region }}" readonly>
                 </div>
             </div>
-            <button id="save-settings" onclick="saveSettings()">💾 Save Settings</button>
         </section>
 
         <!-- Device Slots -->
@@ -224,32 +217,23 @@
             }
         }
 
-        async function saveSettings() {
-            const settings = {
-                wifi_ssid: document.getElementById('wifi-ssid').value,
-                wifi_password: document.getElementById('wifi-password').value,
-                broker_endpoint: document.getElementById('broker-endpoint').value,
-                iot_endpoint: document.getElementById('iot-endpoint').value,
-                firmware_version: document.getElementById('firmware-version').value,
-                api_endpoint: document.getElementById('api-endpoint').value
-            };
+        async function loadSystemParams() {
+            // Populate the read-only broker endpoint from SSM (single source of
+            // truth). Display only — the operator does not edit or send it.
             try {
-                const response = await fetch('/api/config', {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify(settings)
-                });
-                const result = await response.json();
-                if (result.success) {
-                    alert('Settings saved!');
-                }
+                const response = await fetch('/api/system-params');
+                const params = await response.json();
+                const brokerEl = document.getElementById('broker-endpoint');
+                brokerEl.value = params.brokerEndpoint || '(unavailable — check SSM /pqc-workshop/broker/endpoint)';
             } catch (err) {
-                alert(`Save failed: ${err.message}`);
+                console.error('Failed to load system params:', err);
+                document.getElementById('broker-endpoint').value = '(unavailable)';
             }
         }
 
         // Initial load
         refreshDevices();
+        loadSystemParams();
     </script>
 </body>
 </html>

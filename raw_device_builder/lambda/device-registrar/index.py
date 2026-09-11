@@ -46,11 +46,13 @@ DEFAULT_WIFI_SSID = os.environ.get('DEFAULT_WIFI_SSID', 'workshop-wifi')
 DEFAULT_WIFI_PASSWORD = os.environ.get('DEFAULT_WIFI_PASSWORD', '')
 DEFAULT_BROKER = os.environ.get('DEFAULT_BROKER_ENDPOINT', '192.168.1.90')
 PRIVATE_CA_ARN = os.environ['PRIVATE_CA_ARN']
-# SSM is the authoritative live source of truth for the workshop WiFi. The
-# deploy publishes /pqc-workshop/wifi/ssid (String) + /password (SecureString);
-# reading them here means the WiFi can be rotated with a single put-parameter
-# (every new build picks it up) without a redeploy.
+# SSM is the authoritative live source of truth for the workshop WiFi and the
+# broker endpoint. The deploy publishes /pqc-workshop/wifi/ssid (String) +
+# /password (SecureString) and /pqc-workshop/broker/endpoint (String); reading
+# them here means they can be changed with a single put-parameter (every new
+# build picks it up) without a redeploy.
 WIFI_SSM_PREFIX = os.environ.get('WIFI_SSM_PREFIX', '/pqc-workshop/wifi')
+BROKER_SSM_PARAM = os.environ.get('BROKER_SSM_PARAM', '/pqc-workshop/broker/endpoint')
 
 table = dynamodb.Table(TABLE_NAME)
 
@@ -70,6 +72,11 @@ def wifi_from_ssm():
     ssid = _get_ssm(f'{WIFI_SSM_PREFIX}/ssid')
     password = _get_ssm(f'{WIFI_SSM_PREFIX}/password')
     return ssid, password
+
+
+def broker_from_ssm():
+    """Return the broker endpoint from SSM, or None if unavailable."""
+    return _get_ssm(BROKER_SSM_PARAM)
 
 
 def handler(event, context):
@@ -92,7 +99,9 @@ def handler(event, context):
     ssm_ssid, ssm_password = wifi_from_ssm()
     wifi_ssid = body.get('wifiSsid') or ssm_ssid or DEFAULT_WIFI_SSID
     wifi_password = body.get('wifiPassword') or ssm_password or DEFAULT_WIFI_PASSWORD
-    broker_endpoint = body.get('brokerEndpoint', DEFAULT_BROKER)
+    # Broker endpoint resolution: explicit override -> SSM (live source of
+    # truth, published from the broker stack output) -> env fallback.
+    broker_endpoint = body.get('brokerEndpoint') or broker_from_ssm() or DEFAULT_BROKER
     firmware_version = body.get('firmwareVersion', '0.1.0')
 
     thing_name = f'esp32-{serial_number}'

@@ -242,15 +242,15 @@ Resources:
                 Action:
                   - iot:Publish
                 Resource: !Sub 'arn:aws:iot:${AWS::Region}:${AWS::AccountId}:topic/cmd/*'
-              # Read the workshop WiFi from SSM as the authoritative live source
-              # (registrar bakes it into the initial flash; prepare-build bakes
-              # it into the PQC migration). The password param is a SecureString,
-              # so allow kms:Decrypt scoped to the SSM service.
+              # Read workshop config from SSM as the authoritative live source:
+              # the WiFi (registrar bakes into initial flash; prepare-build into
+              # the PQC migration) and the broker NLB endpoint. The WiFi password
+              # is a SecureString, so allow kms:Decrypt scoped to the SSM service.
               - Effect: Allow
                 Action:
                   - ssm:GetParameter
                   - ssm:GetParameters
-                Resource: !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/pqc-workshop/wifi/*'
+                Resource: !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/pqc-workshop/*'
               - Effect: Allow
                 Action:
                   - kms:Decrypt
@@ -279,8 +279,9 @@ Resources:
           IOT_ENDPOINT: !Ref IoTEndpoint
           DEFAULT_WIFI_SSID: !Ref DefaultWifiSsid
           DEFAULT_WIFI_PASSWORD: !Ref DefaultWifiPassword
-          # SSM is the authoritative live source; DEFAULT_WIFI_* are fallbacks.
+          # SSM is the authoritative live source; the DEFAULT_* envs are fallbacks.
           WIFI_SSM_PREFIX: /pqc-workshop/wifi
+          BROKER_SSM_PARAM: /pqc-workshop/broker/endpoint
           DEFAULT_BROKER_ENDPOINT: !Ref DefaultBrokerEndpoint
           PRIVATE_CA_ARN: !Ref PrivateCAArn
       Code: ../lambda/device-registrar
@@ -316,8 +317,9 @@ Resources:
           PRIVATE_CA_ARN: !Ref PrivateCAArn
           DEFAULT_WIFI_SSID: !Ref DefaultWifiSsid
           DEFAULT_WIFI_PASSWORD: !Ref DefaultWifiPassword
-          # SSM is the authoritative live source; DEFAULT_WIFI_* are fallbacks.
+          # SSM is the authoritative live source; the DEFAULT_* envs are fallbacks.
           WIFI_SSM_PREFIX: /pqc-workshop/wifi
+          BROKER_SSM_PARAM: /pqc-workshop/broker/endpoint
           DEFAULT_BROKER_ENDPOINT: !Ref DefaultBrokerEndpoint
       Code: ../lambda/prepare-build
 

@@ -366,6 +366,10 @@ put_param /pqc-workshop/builder-pi/apiEndpoint    "$API_ENDPOINT"
 put_param /pqc-workshop/builder-pi/firmwareBucket "$FIRMWARE_BUCKET"
 put_param /pqc-workshop/builder-pi/region         "$AWS_REGION"
 put_param /pqc-workshop/iotEndpoint               "$IOT_ENDPOINT"
+# Broker NLB endpoint — the single source of truth for where devices connect
+# (port 8883). Published from the broker stack output so the registrar Lambda
+# and the builder-Pi GUI both read the same canonical value; no operator input.
+put_param /pqc-workshop/broker/endpoint           "$(get_out BrokerEndpoint)"
 
 # Workshop WiFi: the single source of truth consumed by the builder-Pi hostapd
 # AP setup (broadcasts this SSID/PSK) and mirrored into firmware at build time.

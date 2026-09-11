@@ -20,12 +20,11 @@ def register_device(config, serial_number, logger=None):
     so the caller can wait for the firmware build.
     """
     api_url = f"{config['api_endpoint']}/register"
+    # Plug-and-flash: only the auto-detected serial is sent. WiFi, broker
+    # endpoint and firmware version are resolved server-side by the registrar
+    # Lambda from SSM (single source of truth) / its env defaults.
     payload = {
         "serialNumber": serial_number,
-        "wifiSsid": config.get("wifi_ssid", ""),
-        "wifiPassword": config.get("wifi_password", ""),
-        "brokerEndpoint": config.get("broker_endpoint", ""),
-        "firmwareVersion": config.get("firmware_version", ""),
     }
     if logger:
         logger.info(f"Registering device serial={serial_number}")

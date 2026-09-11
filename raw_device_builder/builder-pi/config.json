@@ -2,10 +2,6 @@
   "api_endpoint": "https://REPLACE_WITH_API_GATEWAY_URL/prod",
   "region": "us-east-1",
   "firmware_bucket": "REPLACE_WITH_FIRMWARE_BUCKET",
-  "firmware_version": "0.1.0",
-  "wifi_ssid": "",
-  "wifi_password": "",
-  "broker_endpoint": "",
   "serial_baud_rate": 115200,
   "gui_port": 8080
 }
