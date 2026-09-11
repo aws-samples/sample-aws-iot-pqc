@@ -61,6 +61,16 @@ the teardown/rebuild. Handle these to keep a from-scratch deploy clean:
   is reused across rebuilds (fine, just don't expect the stack to own it).
 
 Backlog candidates surfaced during rebuilds (not yet fixed):
+- **Firmware builder image is a manual post-deploy build (should be automatic).**
+  The broker image auto-builds via a BuildTrigger Lambda + `Custom::TriggerBuild`
+  custom resource in broker-container-stack.yaml; the device-builder stack defines
+  `ImageBuilderProject` (`pqc-workshop-build-image`) + its ECR repo but has NO
+  trigger, so nothing builds it — a fresh deploy leaves `pqc-workshop-firmware-builder`
+  ECR empty and the first device flash fails at PROVISIONING
+  (`CannotPullImageManifestError`). NOT a dependency issue — just missing wiring.
+  Fix: fold the firmware image build into `deploy-workshop.sh` step 3 (trigger +
+  wait, exactly like the broker image build), removing the manual step entirely.
+  Interim: DEPLOYMENT.md step 4 documents it loudly as mandatory-before-flash.
 - Bundler does not bake `broker_endpoint` into the Pi `config.json` (only api +
   firmware bucket), so it must be entered in the GUI. Consider resolving it from
   the `/pqc-workshop/*` SSM params / broker NLB output.
