@@ -78,19 +78,41 @@ image build ~3–4 min).
 When it finishes, the cloud side is fully up: broker running behind the NLB and
 the dashboard served from CloudFront.
 
-### 4. Build the firmware builder image (one-time, required before flashing)
+### 4. Build the firmware builder image (ONE-TIME, MANDATORY BEFORE ANY FLASH)
 
-The per-device firmware compile runs in a CodeBuild image that must exist in ECR
-first. `deploy-workshop.sh` has already staged its build source, so just start
-the build (the project name is the `FirmwareImageBuilderProject` stack output —
+> ⚠️ **You MUST run this before registering/flashing the first device.** The
+> per-device firmware compile (`pqc-workshop-firmware-build`) runs *inside* a
+> custom CodeBuild container image that lives in the `pqc-workshop-firmware-builder`
+> ECR repo. A fresh deploy leaves that repo EMPTY, so if you flash before running
+> this step the device build fails at PROVISIONING with:
+>
+> ```
+> CannotPullImageManifestError: Requested image not found
+> ```
+>
+> The device Thing/cert still get created, but no firmware is produced. After this
+> image build succeeds, just re-run register/flash — no need to re-register.
+
+`deploy-workshop.sh` has already staged the build source, so start the build (the
+project name is the `FirmwareImageBuilderProject` stack output —
 `pqc-workshop-build-image`):
 
 ```bash
 aws codebuild start-build --project-name pqc-workshop-build-image [--profile <name>]
 ```
 
-Wait for it to reach `SUCCEEDED` before flashing any device. Until this
-completes, device registration/flashing cannot compile firmware.
+Wait for it to reach `SUCCEEDED` before flashing any device (~10–15 min). To
+watch it to completion:
+
+```bash
+aws codebuild batch-get-builds [--profile <name>] \
+  --ids "$(aws codebuild list-builds-for-project --project-name pqc-workshop-build-image \
+           --query 'ids[0]' --output text [--profile <name>])" \
+  --query 'builds[0].buildStatus' --output text
+```
+
+Confirm the image landed: `aws ecr describe-images --repository-name pqc-workshop-firmware-builder`
+should list at least one image.
 
 ### 5. Register the Builder-Pi (on the physical Raspberry Pi)
 
