@@ -16,13 +16,11 @@
         <!-- System Info Panel (read-only) -->
         <section class="settings-panel">
             <h2>⚙️ System Parameters</h2>
-            <p class="subtitle">
-                Plug-and-flash — no configuration needed. WiFi, broker endpoint
-                and firmware version are resolved server-side from the workshop's
-                single source of truth (SSM). These values are shown for
-                reference only.
-            </p>
             <div class="settings-grid">
+                <div class="setting">
+                    <label>WiFi Network (SSID)</label>
+                    <input type="text" id="wifi-ssid" value="resolving…" readonly>
+                </div>
                 <div class="setting">
                     <label>Broker Endpoint</label>
                     <input type="text" id="broker-endpoint" value="resolving…" readonly>
@@ -223,10 +221,13 @@
             try {
                 const response = await fetch('/api/system-params');
                 const params = await response.json();
+                document.getElementById('wifi-ssid').value =
+                    params.wifiSsid || '(unavailable — check SSM /pqc-workshop/wifi/ssid)';
                 const brokerEl = document.getElementById('broker-endpoint');
                 brokerEl.value = params.brokerEndpoint || '(unavailable — check SSM /pqc-workshop/broker/endpoint)';
             } catch (err) {
                 console.error('Failed to load system params:', err);
+                document.getElementById('wifi-ssid').value = '(unavailable)';
                 document.getElementById('broker-endpoint').value = '(unavailable)';
             }
         }

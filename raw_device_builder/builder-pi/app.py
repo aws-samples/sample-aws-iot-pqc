@@ -100,10 +100,20 @@ def handle_config():
 def get_system_params():
     """Read-only workshop parameters resolved from SSM (the single source of
     truth) for display in the GUI. The operator does not edit these — they are
-    baked into firmware server-side by the registrar. Returns the broker
-    endpoint (and region for context). Never raises: a lookup failure just
-    yields an empty value the GUI shows as unavailable."""
+    baked into firmware server-side by the registrar. Returns the WiFi SSID and
+    broker endpoint (and region for context). The WiFi password is intentionally
+    NOT returned — it is a secret and not needed for display. Never raises: a
+    lookup failure just yields an empty value the GUI shows as unavailable."""
+    wifi_ssid = ''
     broker = ''
+    try:
+        ssm = get_fresh_boto3_session().client('ssm')
+        # SSID is a plain String (not a secret); safe to show for reference.
+        wifi_ssid = ssm.get_parameter(
+            Name='/pqc-workshop/wifi/ssid'
+        )['Parameter']['Value']
+    except Exception as e:
+        print(f"system-params: wifi ssid SSM read failed: {e}")
     try:
         ssm = get_fresh_boto3_session().client('ssm')
         broker = ssm.get_parameter(
@@ -112,6 +122,7 @@ def get_system_params():
     except Exception as e:
         print(f"system-params: broker endpoint SSM read failed: {e}")
     return jsonify({
+        'wifiSsid': wifi_ssid,
         'brokerEndpoint': broker,
         'region': config.get('region', ''),
     })
