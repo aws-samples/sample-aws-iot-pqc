@@ -220,13 +220,29 @@ echo "        - broker image source -> s3://${BROKER_SOURCE_BUCKET}/broker-image
 aws s3 cp "$PROJECT_ROOT/broker-container/docker/" \
     "s3://${BROKER_SOURCE_BUCKET}/broker-image/" --recursive >/dev/null
 
-# Firmware builder image context (used by the MANUAL firmware image build below;
-# staged here so it is ready when the operator runs that one-time build).
-echo "        - firmware image source -> s3://${FIRMWARE_BUCKET}/source/"
+# Firmware source context. The FIRMWARE_BUCKET/source/ prefix feeds TWO
+# CodeBuild projects that share it:
+#   - ImageBuilderProject  (BuildSpec: buildspec-image.yml)  -> builds the
+#     firmware-builder Docker image (one-time).
+#   - FirmwareBuildProject (BuildSpec: buildspec.yml)        -> per-device
+#     firmware compile; it also downloads the sketch .ino from source/.
+# So we must stage BOTH buildspecs AND the two sketch .ino variants, or the
+# per-device build fails DOWNLOAD_SOURCE ("buildspec.yml: no such file") or
+# can't fetch its sketch.
+echo "        - firmware source -> s3://${FIRMWARE_BUCKET}/source/"
 aws s3 cp "$PROJECT_ROOT/raw_device_builder/codebuild/Dockerfile" \
     "s3://${FIRMWARE_BUCKET}/source/Dockerfile" >/dev/null
 aws s3 cp "$PROJECT_ROOT/raw_device_builder/codebuild/buildspec-image.yml" \
     "s3://${FIRMWARE_BUCKET}/source/buildspec-image.yml" >/dev/null
+# Per-device firmware build spec (FirmwareBuildProject BuildSpec: buildspec.yml).
+aws s3 cp "$PROJECT_ROOT/raw_device_builder/codebuild/buildspec.yml" \
+    "s3://${FIRMWARE_BUCKET}/source/buildspec.yml" >/dev/null
+# The two sketch variants the per-device build downloads from source/ by name:
+#   classical -> aws_iot_pqc_esp32_v1_classical.ino ; pqc -> aws_iot_pqc_esp32.ino
+aws s3 cp "$PROJECT_ROOT/aws_iot_pqc_esp32_v1_classical/aws_iot_pqc_esp32_v1_classical.ino" \
+    "s3://${FIRMWARE_BUCKET}/source/aws_iot_pqc_esp32_v1_classical.ino" >/dev/null
+aws s3 cp "$PROJECT_ROOT/aws_iot_pqc_esp32/aws_iot_pqc_esp32.ino" \
+    "s3://${FIRMWARE_BUCKET}/source/aws_iot_pqc_esp32.ino" >/dev/null
 # The two extra firmware-image context files live in known repo locations. Use a
 # plain function (no associative array, whose dotted keys break under zsh) with
 # a fallback repo search that only skips the arduino-cli/data/ board cache.

@@ -83,6 +83,17 @@ Backlog candidates surfaced during rebuilds (not yet fixed):
   actually improve the Pi-side reliability/structure too. User's lean: not clearly
   worth the effort, but likes the consistent observability + rollback; PARK and
   revisit. Do NOT implement without an explicit go.
+- **GUI state gap: "registered but not flashed" is a dead-end.** When a device is
+  registered but its firmware build failed (no firmware in S3), the builder-Pi
+  GUI card only offers Reflash/Serial/Deregister — and Reflash only DOWNLOADS
+  existing S3 firmware (it does NOT trigger a build), so it fails with nothing to
+  fetch, and there is no Register/Rebuild button to recover. Workaround:
+  Deregister then Register (re-runs the full build+flash pipeline). Fix options:
+  (a) show Register/Rebuild when no firmware exists in S3, or (b) make Reflash
+  fall back to triggering a build when S3 has none. This dead-end is also a data
+  point FOR the initial-flow Step Function idea (a resumable/observable pipeline
+  makes "build failed" a visible retryable state rather than a stuck card) —
+  consider bumping that item's priority.
 - **Firmware builder image is a manual post-deploy build (should be automatic).**
   The broker image auto-builds via a BuildTrigger Lambda + `Custom::TriggerBuild`
   custom resource in broker-container-stack.yaml; the device-builder stack defines
