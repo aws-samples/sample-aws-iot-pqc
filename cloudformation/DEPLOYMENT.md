@@ -190,7 +190,7 @@ SPOF note) plus an **Alfa AWUS036ACM** USB WiFi adapter (MediaTek MT7612U).
 
 | Role | Interface | Radio | Band | Mode | Why |
 |---|---|---|---|---|---|
-| Workshop IoT AP (`reinvent-pqc-iot-wifi`) | `wlan1` | **Alfa MT7612U** | 2.4 GHz | hostapd AP | ESP32s are 2.4 GHz-only; the MT7612U `mt76x2u` driver has strong AP-mode/hostapd support and an external antenna for a table of devices. |
+| Workshop IoT AP (`reinvent-pqc-iot-wifi`) | `wlan1` | **Alfa MT7612U** | 2.4 GHz | NetworkManager AP (shared) | ESP32s are 2.4 GHz-only; the MT7612U `mt76x2u` driver has strong AP-mode support and an external antenna for a table of devices. |
 | Uplink to venue backbone | `wlan0` | Pi onboard (brcmfmac) | 5 GHz (preferred) | station (client) | The onboard radio is a solid *client* but a weak AP; putting the uplink on 5 GHz dodges the brutal 2.4 GHz congestion at re:Invent. |
 
 Putting the demanding AP job on the capable Alfa radio and the easy station job
@@ -198,25 +198,23 @@ on the onboard radio — **two physical radios, one job each** — is what makes
 dual-band bridge robust. A single radio doing AP+station tends to force both onto
 the same channel/band, which would defeat the 2.4↔5 split.
 
-> **Interface naming:** confirm which interface is which with `iw dev`. The Alfa
-> usually enumerates as `wlan1` when the onboard is `wlan0`, but verify — the
-> steps below assume Alfa=`wlan1`, onboard=`wlan0`. If the names differ, either
-> substitute them throughout or pin them with a `systemd.link`/udev rule keyed on
-> the Alfa's MAC so they're stable across reboots.
+> **NetworkManager approach.** These steps use **NetworkManager (`nmcli`)**, which
+> is the default network stack on current Raspberry Pi OS (Bookworm+). NM manages
+> the AP mode, the DHCP server (its own dnsmasq instance), the interface IP, and
+> the NAT/masquerade to the uplink — all in a single connection profile
+> (`ipv4.method shared`). Do **not** also run standalone `hostapd`/`dnsmasq`/
+> `dhcpcd` for this interface; exactly one system must own `wlan1`. (A legacy
+> `hostapd`+`dnsmasq` recipe for older, non-NM images is in git history if needed.)
 
-**1. Install the AP + routing tooling** (needs internet on the Pi first, e.g.
-onboard `wlan0` already joined to the venue net or a phone hotspot):
+> **Interface naming:** confirm which interface is which with `nmcli device` (or
+> `iw dev`). The Alfa usually enumerates as `wlan1` when the onboard is `wlan0`,
+> but verify — the steps below assume Alfa=`wlan1`, onboard=`wlan0`. If they
+> differ, substitute throughout.
 
-```bash
-sudo apt-get update
-sudo apt-get install -y hostapd dnsmasq iptables
-sudo systemctl unmask hostapd
-```
-
-**2. Pull the workshop WiFi credentials from SSM** (the single source of truth
+**1. Pull the workshop WiFi credentials from SSM** (the single source of truth
 published by the deploy — `/pqc-workshop/wifi/ssid` + `/pqc-workshop/wifi/password`).
-Run this on the Pi (it has the `pqc-workshop-builder-pi-ssm` role, which now
-grants `ssm:GetParameter` on `/pqc-workshop/*` plus SSM-scoped `kms:Decrypt`):
+Run this on the Pi (it has the `pqc-workshop-builder-pi-ssm` role, which grants
+`ssm:GetParameter` on `/pqc-workshop/*` plus SSM-scoped `kms:Decrypt`):
 
 ```bash
 REGION=<region>
@@ -227,84 +225,43 @@ WIFI_PSK=$(aws ssm get-parameter --name /pqc-workshop/wifi/password --with-decry
 echo "AP SSID: $WIFI_SSID"   # sanity check; do NOT echo the PSK in shared logs
 ```
 
-**3. Give the AP interface a static address.** Tell `dhcpcd` to leave `wlan1`
-alone and assign it the gateway IP of the AP subnet (`192.168.50.1/24` here):
+**2. Create the AP connection profile on the Alfa (`wlan1`).** `ipv4.method
+shared` is what makes NM run a DHCP server on the AP subnet AND set up NAT to the
+active uplink automatically — no separate dnsmasq/iptables needed. `band bg` +
+`channel 6` pin it to 2.4 GHz for the ESP32s:
 
 ```bash
-sudo tee -a /etc/dhcpcd.conf >/dev/null <<'EOF'
-
-# Alfa AP interface — static; not a DHCP client
-interface wlan1
-    static ip_address=192.168.50.1/24
-    nohook wpa_supplicant
-EOF
-sudo systemctl restart dhcpcd
+sudo nmcli connection add type wifi ifname wlan1 con-name workshop-ap \
+    autoconnect yes ssid "$WIFI_SSID"
+sudo nmcli connection modify workshop-ap \
+    802-11-wireless.mode ap \
+    802-11-wireless.band bg \
+    802-11-wireless.channel 6 \
+    ipv4.method shared \
+    wifi-sec.key-mgmt wpa-psk \
+    wifi-sec.psk "$WIFI_PSK"
 ```
 
-**4. Configure hostapd (the 2.4 GHz AP on the Alfa).** SSID/PSK come from SSM,
-so this writes them into the config at setup time:
+> `channel 6` is a safe default (1/6/11 are the non-overlapping 2.4 GHz choices).
+> At the venue, scan for the quietest with `sudo nmcli device wifi list ifname
+> wlan1` and set `802-11-wireless.channel` accordingly. NM's `shared` mode uses
+> the `10.42.0.0/24` subnet by default (Pi = `10.42.0.1`); that's fine — the
+> ESP32s get a lease automatically.
+
+**3. Bring the AP up:**
 
 ```bash
-sudo tee /etc/hostapd/hostapd.conf >/dev/null <<EOF
-interface=wlan1
-driver=nl80211
-ssid=${WIFI_SSID}
-hw_mode=g
-channel=6
-ieee80211n=1
-wmm_enabled=1
-auth_algs=1
-wpa=2
-wpa_key_mgmt=WPA-PSK
-rsn_pairwise=CCMP
-wpa_passphrase=${WIFI_PSK}
-EOF
-sudo chmod 600 /etc/hostapd/hostapd.conf
-sudo sed -i 's|^#\?DAEMON_CONF=.*|DAEMON_CONF="/etc/hostapd/hostapd.conf"|' /etc/default/hostapd
+sudo nmcli connection up workshop-ap
+nmcli connection show --active         # expect workshop-ap (wifi) + your uplink
+nmcli -f GENERAL.STATE device show wlan1   # expect connected (as AP)
 ```
 
-> `channel=6` is a safe default. At the venue, scan for the quietest 2.4 GHz
-> channel (1/6/11 are the non-overlapping choices) with `sudo iw dev wlan1 scan |
-> grep -i freq` and set it accordingly.
-
-**5. Configure dnsmasq (DHCP for the ESP32 clients on the AP subnet):**
-
-```bash
-sudo tee /etc/dnsmasq.d/workshop-ap.conf >/dev/null <<'EOF'
-interface=wlan1
-bind-interfaces
-dhcp-range=192.168.50.50,192.168.50.150,255.255.255.0,24h
-dhcp-option=3,192.168.50.1      # gateway = the Pi
-dhcp-option=6,192.168.50.1      # DNS = the Pi (dnsmasq forwards upstream)
-EOF
-sudo systemctl restart dnsmasq
-```
-
-**6. Enable IPv4 forwarding + NAT from the AP (`wlan1`) to the uplink (`wlan0`):**
-
-```bash
-sudo sed -i 's|^#\?net.ipv4.ip_forward=.*|net.ipv4.ip_forward=1|' /etc/sysctl.conf
-sudo sysctl -w net.ipv4.ip_forward=1
-
-sudo iptables -t nat -A POSTROUTING -o wlan0 -j MASQUERADE
-sudo iptables -A FORWARD -i wlan0 -o wlan1 -m state --state RELATED,ESTABLISHED -j ACCEPT
-sudo iptables -A FORWARD -i wlan1 -o wlan0 -j ACCEPT
-
-# Persist the rules across reboots:
-sudo apt-get install -y iptables-persistent   # answer "yes" to save current rules
-# (or later:  sudo netfilter-persistent save)
-```
-
-**7. Start the AP:**
-
-```bash
-sudo systemctl enable --now hostapd dnsmasq
-sudo systemctl status hostapd --no-pager   # expect: active (running)
-```
+`autoconnect yes` means the AP comes back on its own after a reboot.
 
 An ESP32 flashed for the workshop should now associate to `reinvent-pqc-iot-wifi`,
-pick up a `192.168.50.x` lease, and reach AWS IoT / the broker through the Pi's
-`wlan0` uplink.
+pick up a `10.42.0.x` lease, and reach AWS IoT / the broker through the Pi's
+`wlan0` uplink (NM masquerades the AP subnet onto whichever interface has the
+default route).
 
 **Pre-event checklist (both flagged during design):**
 
