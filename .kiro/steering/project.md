@@ -96,6 +96,34 @@ the teardown/rebuild. Handle these to keep a from-scratch deploy clean:
   is reused across rebuilds (fine, just don't expect the stack to own it).
 
 Backlog candidates surfaced during rebuilds (not yet fixed):
+- **[TOP — do next week alongside pqc-a rebuild] Remove the duplicate WiFi
+  password (and SSID) from the DynamoDB registry.** SSM
+  (`/pqc-workshop/wifi/password`, a SecureString) is the single source of truth
+  since Model B (commit 76fd497); `prepare-build` resolves WiFi as SSM -> registry
+  -> env, so SSM wins and the registry copy is never used in normal operation.
+  But the registrar still writes `wifiPassword` (PLAINTEXT) into
+  `pqc-workshop-device-registry` (leftover from the earlier "persist password"
+  fix, commit 20b3b77) — a redundant AND less-secure second copy of a secret.
+  Fix: (1) drop `'wifiPassword': wifi_password` from the registrar's put_item
+  (`raw_device_builder/lambda/device-registrar/index.py`); (2) drop the
+  `device.get("wifiPassword")` middle tier in
+  `raw_device_builder/lambda/prepare-build/index.py` so WiFi resolves SSM -> env
+  (matches how broker already works — broker was never persisted to the registry).
+  Optionally also drop `wifiSsid` from the registry for consistency (not a secret,
+  but same "one place" logic) — keep the registry to identity/status/cert metadata
+  only. Deferred from the Fri session (didn't want to touch the migration path
+  right after the acceptance test); the pqc-a clean rebuild will re-verify the
+  migration path for free, so do it then. Low risk: SSM is already the primary
+  path. Also check for any other reader of registry wifiPassword before removing.
+- **Fold the NetworkManager AP into `setup-all.sh` (medium priority).** The Pi's
+  hostapd/NM AP is currently a MANUAL setup (DEPLOYMENT.md §5a). During the Fri
+  device test the classical device failed WiFi with `4WAY_HANDSHAKE_TIMEOUT`
+  because the operator-typed AP PSK didn't match `@reinvent2026`; fixed by hand
+  with `nmcli ... wifi-sec.psk`. Scripting the `nmcli` AP creation in
+  `setup-all.sh` — pulling SSID/PSK from SSM (`/pqc-workshop/wifi/{ssid,password}`,
+  the same source firmware uses) — eliminates this class of typo entirely and
+  makes the AP consistent with the firmware by construction. The Pi SSM role
+  already has `ssm:GetParameter` on `/pqc-workshop/*` + `kms:Decrypt`.
 - **Dashboard LED button not working (low priority, later fix).** On the device
   dashboard, the LED (command) button does not actuate the device. Likely the
   cmd/<thing>/+ command path (dashboard -> AppSync/API -> IoT -> broker bridge
