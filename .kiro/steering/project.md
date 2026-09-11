@@ -32,6 +32,42 @@ Practical implications for any change:
 - Validate changes by reasoning about (and ultimately performing) a clean
   destroy + redeploy, not just an in-place update.
 
+## Clean teardown / rebuild notes (avoid re-discovering these)
+
+Deleting the master stack `pqc-workshop` cascades to all nested stacks, but a
+few resources are NOT cleaned up by CloudFormation and must be handled around
+the teardown/rebuild. Handle these to keep a from-scratch deploy clean:
+
+- **Versioned S3 buckets block stack deletion.** Empty ALL object versions +
+  delete-markers first for: `pqc-workshop-broker-source-<acct>`,
+  `pqc-workshop-firmware-<acct>`, `pqc-workshop-firmware-dashboard-<acct>`.
+- **ECR images block repo deletion.** Batch-delete images in
+  `pqc-workshop-mosquitto-broker` (and `pqc-workshop-firmware-builder`) before
+  deleting the stack.
+- **IoT Thing Type `esp32-pqc-device` deletion** needs no associated Things and
+  a ~5-min deprecation wait. Detach principals + delete any `esp32-*` device
+  Things first. (Leave `pqc-workshop-broker-bridge` to the broker stack's
+  BridgeProvisioner custom resource.)
+- **Stale SSM managed instances (builder-Pi).** Each `bundle-for-builder-pi.sh`
+  run mints a NEW SSM managed-instance id; the physical Pi re-registers under a
+  new `mi-...` id and the old ones linger as `ConnectionLost`. After registering
+  the Pi, deregister stale entries:
+  `aws ssm describe-instance-information` -> for each `ConnectionLost`
+  `pqc-workshop-builder-pi`, `aws ssm deregister-managed-instance --instance-id mi-...`.
+  Keep only the `Online` one. (Backlog: have the bundler/setup reuse a stable
+  registration or auto-prune stale ones.)
+- **IAM roles created by the bundler survive teardown.** `bundle-for-builder-pi.sh`
+  creates `pqc-workshop-builder-pi-ssm` outside CloudFormation; it persists and
+  is reused across rebuilds (fine, just don't expect the stack to own it).
+
+Backlog candidates surfaced during rebuilds (not yet fixed):
+- Bundler does not bake `broker_endpoint` into the Pi `config.json` (only api +
+  firmware bucket), so it must be entered in the GUI. Consider resolving it from
+  the `/pqc-workshop/*` SSM params / broker NLB output.
+- Broker image build depends on `apt-get` from the Ubuntu mirror in the builder
+  stage; hardened with retries/timeouts + 60-min CodeBuild timeout, but a fully
+  offline/pinned base or pre-baked deps would be more robust for Workshop Studio.
+
 ## Overview
 
 This is an Arduino sample project demonstrating how to connect an ESP32 microcontroller to AWS IoT Core using post-quantum cryptography (PQC). It uses wolfSSL for TLS 1.3 with hybrid Kyber/ML-KEM key exchange, and manages WiFi and MQTT as independent FreeRTOS tasks with automatic failure recovery.
