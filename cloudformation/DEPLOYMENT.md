@@ -149,6 +149,149 @@ Then on the Pi, run the bundle's `setup-all.sh`. It installs the SSM agent
 the `workshop-builder` CLI. After this the Pi appears in
 `aws ssm describe-instance-information`.
 
+### 5a. (re:Invent only) Turn the Builder-Pi into the workshop WiFi AP + 2.4↔5 bridge
+
+The ESP32 devices are **2.4 GHz only** and must join `reinvent-pqc-iot-wifi` —
+the SSID baked into their firmware. At the venue you control that network by
+running it *on the Builder-Pi itself*: the Pi becomes a WiFi access point for the
+devices and bridges their traffic up to the venue backbone. This is optional and
+only needed when you can't (or don't want to) rely on venue-provided WiFi.
+
+**Hardware:** a Raspberry Pi (the Builder-Pi, or a dedicated second Pi — see the
+SPOF note) plus an **Alfa AWUS036ACM** USB WiFi adapter (MediaTek MT7612U).
+
+**Radio role assignment (this split is deliberate — do not swap it):**
+
+| Role | Interface | Radio | Band | Mode | Why |
+|---|---|---|---|---|---|
+| Workshop IoT AP (`reinvent-pqc-iot-wifi`) | `wlan1` | **Alfa MT7612U** | 2.4 GHz | hostapd AP | ESP32s are 2.4 GHz-only; the MT7612U `mt76x2u` driver has strong AP-mode/hostapd support and an external antenna for a table of devices. |
+| Uplink to venue backbone | `wlan0` | Pi onboard (brcmfmac) | 5 GHz (preferred) | station (client) | The onboard radio is a solid *client* but a weak AP; putting the uplink on 5 GHz dodges the brutal 2.4 GHz congestion at re:Invent. |
+
+Putting the demanding AP job on the capable Alfa radio and the easy station job
+on the onboard radio — **two physical radios, one job each** — is what makes the
+dual-band bridge robust. A single radio doing AP+station tends to force both onto
+the same channel/band, which would defeat the 2.4↔5 split.
+
+> **Interface naming:** confirm which interface is which with `iw dev`. The Alfa
+> usually enumerates as `wlan1` when the onboard is `wlan0`, but verify — the
+> steps below assume Alfa=`wlan1`, onboard=`wlan0`. If the names differ, either
+> substitute them throughout or pin them with a `systemd.link`/udev rule keyed on
+> the Alfa's MAC so they're stable across reboots.
+
+**1. Install the AP + routing tooling** (needs internet on the Pi first, e.g.
+onboard `wlan0` already joined to the venue net or a phone hotspot):
+
+```bash
+sudo apt-get update
+sudo apt-get install -y hostapd dnsmasq iptables
+sudo systemctl unmask hostapd
+```
+
+**2. Pull the workshop WiFi credentials from SSM** (the single source of truth
+published by the deploy — `/pqc-workshop/wifi/ssid` + `/pqc-workshop/wifi/password`).
+Run this on the Pi (it has the `pqc-workshop-builder-pi-ssm` role, which now
+grants `ssm:GetParameter` on `/pqc-workshop/*` plus SSM-scoped `kms:Decrypt`):
+
+```bash
+REGION=<region>
+WIFI_SSID=$(aws ssm get-parameter --name /pqc-workshop/wifi/ssid \
+  --region "$REGION" --query 'Parameter.Value' --output text)
+WIFI_PSK=$(aws ssm get-parameter --name /pqc-workshop/wifi/password --with-decryption \
+  --region "$REGION" --query 'Parameter.Value' --output text)
+echo "AP SSID: $WIFI_SSID"   # sanity check; do NOT echo the PSK in shared logs
+```
+
+**3. Give the AP interface a static address.** Tell `dhcpcd` to leave `wlan1`
+alone and assign it the gateway IP of the AP subnet (`192.168.50.1/24` here):
+
+```bash
+sudo tee -a /etc/dhcpcd.conf >/dev/null <<'EOF'
+
+# Alfa AP interface — static; not a DHCP client
+interface wlan1
+    static ip_address=192.168.50.1/24
+    nohook wpa_supplicant
+EOF
+sudo systemctl restart dhcpcd
+```
+
+**4. Configure hostapd (the 2.4 GHz AP on the Alfa).** SSID/PSK come from SSM,
+so this writes them into the config at setup time:
+
+```bash
+sudo tee /etc/hostapd/hostapd.conf >/dev/null <<EOF
+interface=wlan1
+driver=nl80211
+ssid=${WIFI_SSID}
+hw_mode=g
+channel=6
+ieee80211n=1
+wmm_enabled=1
+auth_algs=1
+wpa=2
+wpa_key_mgmt=WPA-PSK
+rsn_pairwise=CCMP
+wpa_passphrase=${WIFI_PSK}
+EOF
+sudo chmod 600 /etc/hostapd/hostapd.conf
+sudo sed -i 's|^#\?DAEMON_CONF=.*|DAEMON_CONF="/etc/hostapd/hostapd.conf"|' /etc/default/hostapd
+```
+
+> `channel=6` is a safe default. At the venue, scan for the quietest 2.4 GHz
+> channel (1/6/11 are the non-overlapping choices) with `sudo iw dev wlan1 scan |
+> grep -i freq` and set it accordingly.
+
+**5. Configure dnsmasq (DHCP for the ESP32 clients on the AP subnet):**
+
+```bash
+sudo tee /etc/dnsmasq.d/workshop-ap.conf >/dev/null <<'EOF'
+interface=wlan1
+bind-interfaces
+dhcp-range=192.168.50.50,192.168.50.150,255.255.255.0,24h
+dhcp-option=3,192.168.50.1      # gateway = the Pi
+dhcp-option=6,192.168.50.1      # DNS = the Pi (dnsmasq forwards upstream)
+EOF
+sudo systemctl restart dnsmasq
+```
+
+**6. Enable IPv4 forwarding + NAT from the AP (`wlan1`) to the uplink (`wlan0`):**
+
+```bash
+sudo sed -i 's|^#\?net.ipv4.ip_forward=.*|net.ipv4.ip_forward=1|' /etc/sysctl.conf
+sudo sysctl -w net.ipv4.ip_forward=1
+
+sudo iptables -t nat -A POSTROUTING -o wlan0 -j MASQUERADE
+sudo iptables -A FORWARD -i wlan0 -o wlan1 -m state --state RELATED,ESTABLISHED -j ACCEPT
+sudo iptables -A FORWARD -i wlan1 -o wlan0 -j ACCEPT
+
+# Persist the rules across reboots:
+sudo apt-get install -y iptables-persistent   # answer "yes" to save current rules
+# (or later:  sudo netfilter-persistent save)
+```
+
+**7. Start the AP:**
+
+```bash
+sudo systemctl enable --now hostapd dnsmasq
+sudo systemctl status hostapd --no-pager   # expect: active (running)
+```
+
+An ESP32 flashed for the workshop should now associate to `reinvent-pqc-iot-wifi`,
+pick up a `192.168.50.x` lease, and reach AWS IoT / the broker through the Pi's
+`wlan0` uplink.
+
+**Pre-event checklist (both flagged during design):**
+
+- **Outbound MQTT (8883) must be allowed** from the `wlan0` uplink to the broker
+  NLB and AWS IoT. The whole chain dies if the venue blocks it — test end to end
+  before the room fills.
+- **The onboard `wlan0` must actually associate to the venue network.** Enterprise
+  auth / captive portals are painful on a headless Pi — do a dry run on the real
+  venue SSID, not just your home network.
+- **SPOF:** if this AP Pi dies, every device drops. Keep a spare Pi imaged and
+  ready, and prefer running the AP on a *dedicated* Pi rather than the Builder-Pi
+  so a flashing hiccup and a WiFi hiccup can't take each other down.
+
 ### 6. Validate readiness
 
 ```bash
