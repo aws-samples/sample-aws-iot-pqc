@@ -45,29 +45,44 @@ assets for **Workshop Studio** (see "Workshop Studio" below).
 
 ### 3. Deploy the stack + build the broker image + build the dashboard
 
-> ⚠️ **Set the workshop WiFi credentials first.** The device firmware (both the
-> initial flash and the classical→PQC migration) is built with these WiFi
-> credentials, and the builder-Pi hostapd AP broadcasts the same SSID. Supply
-> them at deploy time via env vars — they are **never committed** to the repo
-> (the template defaults are the harmless placeholder `changeme`):
+> ⚠️ **The workshop WiFi credentials are supplied at deploy time** — the device
+> firmware (both the initial flash and the classical→PQC migration) is built
+> with them, and the builder-Pi hostapd AP broadcasts the same SSID. They are
+> **never committed** to the repo (the template defaults are the harmless
+> placeholder `changeme`). Provide them by **one of three methods**, resolved in
+> this precedence (per value, first match wins):
 >
-> ```bash
-> export WORKSHOP_WIFI_SSID='reinvent-pqc-iot-wifi'
-> export WORKSHOP_WIFI_PASSWORD='@reinvent2026'   # WPA2 PSK, 8–63 chars
-> ```
+> 1. **CLI flags:** `--wifi-ssid <ssid> --wifi-password <pw>`
+> 2. **Env vars:** `WORKSHOP_WIFI_SSID` / `WORKSHOP_WIFI_PASSWORD`
+> 3. **Interactive prompt** (when run from a terminal): the SSID prompt defaults
+>    to `reinvent-pqc-iot-wifi`; the password is read hidden and is **required**
+>    (re-prompts until non-empty). There is no password default, ever.
 >
-> If you skip this, the deploy still succeeds but bakes `changeme` into the
-> firmware, so devices will NOT join a real network (the script prints a WARN).
-> The values are threaded to the firmware build and published to SSM
-> (`/pqc-workshop/wifi/ssid` as String, `/pqc-workshop/wifi/password` as
-> SecureString) as the single source of truth the builder-Pi AP setup consumes.
+> Non-interactive with nothing supplied: the SSID falls back to the workshop
+> default (`reinvent-pqc-iot-wifi`, not a secret) and the password falls back to
+> `changeme` (the deploy still succeeds but devices won't join a real network —
+> the script prints a WARN). The resolved values are threaded to the firmware
+> build and published to SSM (`/pqc-workshop/wifi/ssid` as String,
+> `/pqc-workshop/wifi/password` as SecureString) as the single source of truth
+> the registrar/migration Lambdas and the builder-Pi AP setup consume.
+>
+> **Security:** a `--wifi-password` flag is visible in shell history and `ps`.
+> Prefer the env var or the interactive prompt for the real password.
 
 ```bash
 cd cloudformation
 
-# Set the workshop WiFi (see the callout above) so firmware joins the right net:
+# Simplest: run interactively and let the script prompt for the WiFi (SSID
+# defaults to reinvent-pqc-iot-wifi, password entered hidden):
+./deploy-workshop.sh <region> [--profile <name>]
+
+# Or supply the WiFi non-interactively via env vars:
 export WORKSHOP_WIFI_SSID='reinvent-pqc-iot-wifi'
-export WORKSHOP_WIFI_PASSWORD='@reinvent2026'
+export WORKSHOP_WIFI_PASSWORD='@reinvent2026'   # WPA2 PSK, 8–63 chars
+./deploy-workshop.sh <region> [--profile <name>]
+
+# Or via CLI flags (SSID is fine on the CLI; avoid the real password here):
+./deploy-workshop.sh <region> [--profile <name>] --wifi-ssid reinvent-pqc-iot-wifi
 
 # Option A — let the stack create its own VPC (recommended; required for
 # Workshop Studio / Control Tower accounts that have no usable default VPC):

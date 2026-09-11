@@ -16,7 +16,14 @@
 #     5. prints remaining manual steps
 #
 # Usage:
-#   ./deploy-workshop.sh <aws-region> [--vpc-id <vpc-xxxx> --subnets <a,b>] [--profile NAME] [--device-count N]
+#   ./deploy-workshop.sh <aws-region> [--vpc-id <vpc-xxxx> --subnets <a,b>] [--profile NAME] [--device-count N] [--wifi-ssid SSID] [--wifi-password PW]
+#
+# Workshop WiFi: supply via --wifi-ssid/--wifi-password flags, the
+# WORKSHOP_WIFI_SSID/WORKSHOP_WIFI_PASSWORD env vars, or the interactive prompt
+# (precedence: flags -> env -> prompt). The SSID prompt defaults to
+# 'reinvent-pqc-iot-wifi'; the password is always required (no default). Prefer
+# the env var or prompt for the real password — a --wifi-password flag is
+# visible in shell history and `ps`.
 #
 # VPC: pass BOTH --vpc-id and --subnets to deploy into an existing VPC, or pass
 # NEITHER to have the stack create its own VPC (2 public subnets across 2 AZs +
@@ -51,25 +58,66 @@ PROFILE=""
 # ─── Workshop WiFi (operator-supplied, NEVER committed) ──────────────────────
 # The device firmware (initial flash AND the classical->PQC migration) is built
 # with these WiFi credentials, and the builder-Pi hostapd AP broadcasts the same
-# SSID. Supply the real workshop values at deploy time via env vars, e.g.:
-#   WORKSHOP_WIFI_SSID=reinvent-pqc-iot-wifi \
-#   WORKSHOP_WIFI_PASSWORD='@reinvent2026' \
-#   ./deploy-workshop.sh us-east-1 --profile pqc-b
-# They fall through to the harmless 'changeme' placeholder if unset (devices
-# won't join a real network, but the deploy still succeeds). These are threaded
-# to the master stack as parameter overrides and published to SSM (the password
-# as a SecureString) so the builder-Pi AP setup consumes the same source.
-WORKSHOP_WIFI_SSID="${WORKSHOP_WIFI_SSID:-changeme}"
-WORKSHOP_WIFI_PASSWORD="${WORKSHOP_WIFI_PASSWORD:-changeme}"
+# SSID. Supply the real workshop values at deploy time by ONE of three methods,
+# resolved in this precedence (first match wins), per value independently:
+#   1. CLI flags:  --wifi-ssid <ssid>  --wifi-password <pw>
+#   2. Env vars:   WORKSHOP_WIFI_SSID=... WORKSHOP_WIFI_PASSWORD=...
+#   3. Interactive prompt (only when run from a terminal): the SSID prompt
+#      defaults to 'reinvent-pqc-iot-wifi'; the password is read hidden and is
+#      required (re-prompts until non-empty). No password default ever exists.
+# Non-interactive with nothing supplied: SSID falls back to the workshop default
+# (not a secret), the password falls back to the harmless 'changeme' placeholder
+# (devices won't join a real network, but the deploy still succeeds + WARNs).
+# The resolved values are threaded to the master stack as parameter overrides
+# and published to SSM (password as a SecureString) as the single source of
+# truth the registrar/migration Lambdas and the builder-Pi AP setup consume.
+#
+# SECURITY: --wifi-password lands in shell history and `ps` output. Prefer the
+# env var or the interactive prompt for the real password; the flag is best for
+# the (non-secret) SSID or scripted/non-secret scenarios.
+WORKSHOP_WIFI_SSID_DEFAULT="reinvent-pqc-iot-wifi"
+WIFI_SSID_CLI=""       # from --wifi-ssid (highest precedence)
+WIFI_PASSWORD_CLI=""   # from --wifi-password
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --vpc-id) VPC_ID="$2"; shift 2 ;;
         --subnets) SUBNETS="$2"; shift 2 ;;
         --profile) PROFILE="$2"; shift 2 ;;
         --device-count) DEVICE_COUNT="$2"; shift 2 ;;
+        --wifi-ssid) WIFI_SSID_CLI="$2"; shift 2 ;;
+        --wifi-password) WIFI_PASSWORD_CLI="$2"; shift 2 ;;
         *) echo "[ERROR] Unknown argument: $1"; exit 1 ;;
     esac
 done
+
+# Resolve WiFi SSID: CLI flag -> env var -> interactive prompt (default the
+# workshop SSID) -> non-interactive default (SSID is not a secret).
+if [[ -n "$WIFI_SSID_CLI" ]]; then
+    WORKSHOP_WIFI_SSID="$WIFI_SSID_CLI"
+elif [[ -n "${WORKSHOP_WIFI_SSID:-}" ]]; then
+    WORKSHOP_WIFI_SSID="$WORKSHOP_WIFI_SSID"
+elif [[ -t 0 ]]; then
+    read -r -p "Workshop WiFi SSID [${WORKSHOP_WIFI_SSID_DEFAULT}]: " _ssid_in
+    WORKSHOP_WIFI_SSID="${_ssid_in:-$WORKSHOP_WIFI_SSID_DEFAULT}"
+else
+    WORKSHOP_WIFI_SSID="$WORKSHOP_WIFI_SSID_DEFAULT"
+fi
+
+# Resolve WiFi password: CLI flag -> env var -> interactive hidden prompt
+# (required, no default) -> non-interactive 'changeme' placeholder + later WARN.
+if [[ -n "$WIFI_PASSWORD_CLI" ]]; then
+    WORKSHOP_WIFI_PASSWORD="$WIFI_PASSWORD_CLI"
+elif [[ -n "${WORKSHOP_WIFI_PASSWORD:-}" ]]; then
+    WORKSHOP_WIFI_PASSWORD="$WORKSHOP_WIFI_PASSWORD"
+elif [[ -t 0 ]]; then
+    while [[ -z "${WORKSHOP_WIFI_PASSWORD:-}" ]]; do
+        read -r -s -p "Workshop WiFi password (WPA2 PSK, 8-63 chars): " WORKSHOP_WIFI_PASSWORD
+        echo ""
+        [[ -z "$WORKSHOP_WIFI_PASSWORD" ]] && echo "  Password cannot be empty — try again."
+    done
+else
+    WORKSHOP_WIFI_PASSWORD="changeme"
+fi
 
 # VPC mode: if neither --vpc-id nor --subnets is given, the stack creates its
 # own VPC (CreateVpc=true). If both are given, we use that existing VPC. Giving
