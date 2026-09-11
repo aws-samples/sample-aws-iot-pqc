@@ -163,7 +163,10 @@ Resources:
       Name: pqc-workshop-broker-image-build
       Description: Builds the Mosquitto PQC broker container image
       ServiceRole: !GetAtt ImageBuilderRole.Arn
-      TimeoutInMinutes: 30
+      # 60 min: the image compiles OpenSSL 3.5 + liboqs + oqs-provider +
+      # mosquitto from source (~10-15 min) on top of an apt install that can be
+      # slow on a flaky Ubuntu mirror. 30 min was too tight and timed out.
+      TimeoutInMinutes: 60
       Source:
         Type: S3
         Location: !Sub '${BrokerSourceBucket}/broker-image/'

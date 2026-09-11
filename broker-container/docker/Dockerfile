@@ -2,8 +2,14 @@ FROM public.ecr.aws/ubuntu/ubuntu:22.04 AS builder
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Install build dependencies
-RUN apt-get update && apt-get install -y --no-install-recommends \
+# Install build dependencies.
+# Apt is configured to retry and time out per-download so a slow/flaky Ubuntu
+# mirror fails fast and retries instead of stalling the whole build for many
+# minutes (which previously blew the CodeBuild timeout). Reliability matters:
+# this image is built during the one-shot Workshop Studio deploy.
+RUN printf 'Acquire::Retries "5";\nAcquire::http::Timeout "30";\nAcquire::https::Timeout "30";\n' \
+      > /etc/apt/apt.conf.d/80-retries && \
+    apt-get update && apt-get install -y --no-install-recommends \
     build-essential git cmake pkg-config \
     libcjson-dev libsystemd-dev \
     python3 python3-pip curl ca-certificates \
