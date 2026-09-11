@@ -61,6 +61,28 @@ the teardown/rebuild. Handle these to keep a from-scratch deploy clean:
   is reused across rebuilds (fine, just don't expect the stack to own it).
 
 Backlog candidates surfaced during rebuilds (not yet fixed):
+- **Registrar partial-failure cleanup (near-term, low effort).** The
+  `device-registrar` Lambda does cert -> create thing -> create policy ->
+  DynamoDB -> start CodeBuild sequentially; if a later step fails the earlier
+  resources (IoT Thing, cert, per-device policy) are left orphaned (observed:
+  `esp32-C69E18` Thing created even though the firmware build later failed on the
+  missing builder image). Add best-effort rollback on failure so a failed
+  registration doesn't accumulate orphans. Small change to the existing Lambda,
+  no Step Function required.
+- **Initial register+flash as a Step Function (optional, deferred — decide later).**
+  The classical migration already runs on the `pqc-workshop-pqc-migration` Step
+  Function; the INITIAL register+build+flash does NOT (it's a synchronous
+  registrar Lambda + the Pi polling CodeBuild). Migrating the cloud half
+  (cert/thing/policy/ddb/start-build) to a Step Function would give consistent
+  pipeline-style observability + per-step retries + rollback, symmetric with the
+  migration flow. Caveats: the flash/USB/serial half MUST stay on the Pi
+  (hardware), so end-to-end visibility is still split; adds deploy surface; the
+  registrar isn't where current failures are. Interesting idea worth exploring:
+  make the Pi a WORKER that polls the SFN (task token / SFN activity) for "certs
+  + firmware ready, your turn to flash" and reports flash status back — this could
+  actually improve the Pi-side reliability/structure too. User's lean: not clearly
+  worth the effort, but likes the consistent observability + rollback; PARK and
+  revisit. Do NOT implement without an explicit go.
 - **Firmware builder image is a manual post-deploy build (should be automatic).**
   The broker image auto-builds via a BuildTrigger Lambda + `Custom::TriggerBuild`
   custom resource in broker-container-stack.yaml; the device-builder stack defines
