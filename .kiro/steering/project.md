@@ -50,19 +50,22 @@ which must be handled or devices cannot connect:
    healthy targets + correct SG (0.0.0.0/0 on 8883) + public subnets — all fine;
    BPA is what blocks it. This CANNOT be fixed with NAT (NAT is egress-only).
 
-**Resolution for a BPA `block-ingress` account:** add a VPC Block Public Access
-EXCLUSION for the workshop VPC:
-`aws ec2 create-vpc-block-public-access-exclusion --vpc-id <vpc> --internet-gateway-exclusion-mode allow-bidirectional`
-(pqc-b exclusion: vpcbpa-exclude-08f67396a2b74befc). This is a per-VPC opt-out
-of the guardrail; may need org/security approval.
+**Resolution — now PERMANENT in the deploy (create-VPC path):** network-stack.yaml
+creates an `AWS::EC2::VPCBlockPublicAccessExclusion` (VpcBpaExclusion,
+InternetGatewayExclusionMode: allow-bidirectional) on the workshop VPC,
+unconditionally. AWS allows creating exclusions even when BPA is off, so it is a
+harmless no-op on non-BPA accounts (e.g. pqc-a) and protects BPA accounts (e.g.
+pqc-b) — one code path, no manual step, works whether or not the account has BPA
+and even if BPA is enabled later. So a clean rebuild NO LONGER needs the manual
+`create-vpc-block-public-access-exclusion` CLI step.
+(Historical: pqc-b had a manual exclusion vpcbpa-exclude-08f67396a2b74befc created
+by hand during debugging; it is tied to the VPC and is removed on teardown — the
+CFN-managed one replaces it on rebuild.)
 
-**Workshop-Studio implication (must decide + document):** the internet-facing
-NLB design requires the target account to either NOT have BPA block-ingress, OR
-have a VPC exclusion. If Workshop Studio accounts enforce BPA, the deploy needs
-to create the exclusion (or the whole device->broker path needs rearchitecting
-to avoid public ingress). BACKLOG: fold the BPA-exclusion into the deploy
-(detect block-ingress and create the VPC exclusion automatically) so the
-one-shot deploy works in a BPA account without manual console steps.
+**BYOVPC caveat:** the exclusion lives in the network stack, which only runs on
+the create-VPC path (CreateVpc=true, the Workshop Studio default). If someone
+brings their own VPC (CreateVpc=false) into a BPA account, they must add the
+exclusion themselves. Acceptable since Workshop Studio uses create-VPC.
 
 ## Clean teardown / rebuild notes (avoid re-discovering these)
 

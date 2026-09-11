@@ -61,6 +61,26 @@ Resources:
       VpcId: !Ref Vpc
       InternetGatewayId: !Ref InternetGateway
 
+  # ─── VPC Block Public Access exclusion ──────────────────────────────────────
+  # Some accounts (e.g. Workshop Studio / Control Tower) enable account-level VPC
+  # Block Public Access = block-ingress, which drops IGW traffic and breaks BOTH
+  # workshop internet paths: the device -> internet-facing NLB INBOUND path
+  # (times out) and, for public-IP tasks, egress return traffic. This exclusion
+  # exempts the workshop VPC so the internet-facing broker NLB is reachable and
+  # egress works. It is a harmless no-op on accounts WITHOUT BPA (AWS explicitly
+  # allows creating exclusions when BPA is off), so this single unconditional
+  # resource makes the deploy work in both BPA and non-BPA accounts — no manual
+  # console/CLI step, no per-account branching.
+  VpcBpaExclusion:
+    Type: AWS::EC2::VPCBlockPublicAccessExclusion
+    DependsOn: VpcGatewayAttachment
+    Properties:
+      VpcId: !Ref Vpc
+      InternetGatewayExclusionMode: allow-bidirectional
+      Tags:
+        - Key: Name
+          Value: pqc-workshop-bpa-exclusion
+
   # ─── Two public subnets across two AZs (broker NLB + ECS tasks) ──────────────
   PublicSubnet1:
     Type: AWS::EC2::Subnet
