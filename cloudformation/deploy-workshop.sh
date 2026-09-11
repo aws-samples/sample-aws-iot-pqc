@@ -259,6 +259,37 @@ stage_extra() {
 stage_extra wolfssl_user_settings_arduino.h "$PROJECT_ROOT/raw_device_builder/codebuild/wolfssl_user_settings_arduino.h"
 stage_extra partitions_pqc_workshop.csv     "$PROJECT_ROOT/esp32-flash/partitions_pqc_workshop.csv"
 
+# ─── Verify the firmware source/ prefix is complete (fail fast) ──────────────
+# The per-device firmware build (FirmwareBuildProject) and the one-time image
+# build (ImageBuilderProject) both read from this prefix. A missing file here
+# does not surface until a device flash fails deep in CodeBuild
+# (DOWNLOAD_SOURCE "buildspec.yml: no such file", or the sketch download 404s),
+# which is confusing and easy to ship. Assert every required object exists NOW
+# so a broken deploy fails loudly here instead of at first device flash.
+echo "        - verifying firmware source/ is complete..."
+REQUIRED_FW_SOURCE=(
+    buildspec.yml                          # per-device firmware build spec
+    buildspec-image.yml                    # one-time builder-image spec
+    Dockerfile                             # builder image
+    aws_iot_pqc_esp32_v1_classical.ino     # classical sketch variant
+    aws_iot_pqc_esp32.ino                  # pqc sketch variant
+    wolfssl_user_settings_arduino.h        # wolfSSL PQC config
+    partitions_pqc_workshop.csv            # partition table
+)
+_missing_fw=0
+for obj in "${REQUIRED_FW_SOURCE[@]}"; do
+    if ! aws s3api head-object --bucket "$FIRMWARE_BUCKET" --key "source/$obj" >/dev/null 2>&1; then
+        echo "          ! MISSING: s3://${FIRMWARE_BUCKET}/source/$obj"
+        _missing_fw=1
+    fi
+done
+if [[ "$_missing_fw" -ne 0 ]]; then
+    echo "[ERROR] Firmware source/ prefix is incomplete (see MISSING above)."
+    echo "        Device firmware builds WILL fail. Aborting so this is not shipped."
+    exit 1
+fi
+echo "          firmware source/ complete (${#REQUIRED_FW_SOURCE[@]} files)"
+
 # Trigger the broker image build now that its source is in place, and wait.
 BROKER_BUILD_PROJECT=$(get_out CodeBuildProjectName 2>/dev/null || true)
 [[ -z "$BROKER_BUILD_PROJECT" || "$BROKER_BUILD_PROJECT" == "None" ]] && BROKER_BUILD_PROJECT="pqc-workshop-broker-image-build"
