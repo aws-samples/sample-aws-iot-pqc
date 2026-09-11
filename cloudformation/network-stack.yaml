@@ -2,9 +2,13 @@ AWSTemplateFormatVersion: '2010-09-09'
 Description: >
   PQC Workshop — Network stack. A self-contained VPC for the workshop so the
   deployment works in accounts with no usable default VPC (e.g. Workshop Studio /
-  Control Tower accounts). Creates a VPC with two public subnets across two AZs,
-  an internet gateway, and a public route table. Outputs feed the broker stack
-  (VpcId / SubnetIds / RouteTableId).
+  Control Tower accounts). Creates a VPC with two public subnets (for the
+  internet-facing NLB) and two private subnets (for the Fargate broker task)
+  across two AZs, an internet gateway, and a NAT gateway. The broker task
+  egresses via the NAT gateway rather than a public IP + IGW, so it keeps
+  working under VPC Block Public Access (block-ingress), which drops IGW return
+  traffic to public-IP tasks. Outputs feed the broker stack (VpcId / public
+  SubnetIds / private SubnetIds / route table ids).
 
 Parameters:
   VpcCidr:
@@ -21,6 +25,16 @@ Parameters:
     Type: String
     Default: 10.20.16.0/20
     Description: CIDR for the second public subnet.
+
+  PrivateSubnet1Cidr:
+    Type: String
+    Default: 10.20.32.0/20
+    Description: CIDR for the first private subnet (Fargate broker task).
+
+  PrivateSubnet2Cidr:
+    Type: String
+    Default: 10.20.48.0/20
+    Description: CIDR for the second private subnet (Fargate broker task).
 
 Resources:
 
@@ -99,15 +113,97 @@ Resources:
       RouteTableId: !Ref PublicRouteTable
       SubnetId: !Ref PublicSubnet2
 
+  # ─── NAT gateway (in a public subnet) for private-subnet egress ─────────────
+  # The Fargate broker task runs in the private subnets and egresses to the
+  # public internet (AWS IoT Core data endpoint on 8883) via this NAT gateway.
+  # NAT-sourced egress + its return traffic is NOT blocked by VPC Block Public
+  # Access (block-ingress), unlike a public-IP task's IGW return traffic.
+  NatEip:
+    Type: AWS::EC2::EIP
+    DependsOn: VpcGatewayAttachment
+    Properties:
+      Domain: vpc
+      Tags:
+        - Key: Name
+          Value: pqc-workshop-nat-eip
+
+  NatGateway:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt NatEip.AllocationId
+      SubnetId: !Ref PublicSubnet1
+      Tags:
+        - Key: Name
+          Value: pqc-workshop-nat
+
+  # ─── Two private subnets across two AZs (Fargate broker task) ───────────────
+  PrivateSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: !Ref PrivateSubnet1Cidr
+      AvailabilityZone: !Select [0, !GetAZs '']
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: pqc-workshop-private-1
+
+  PrivateSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: !Ref PrivateSubnet2Cidr
+      AvailabilityZone: !Select [1, !GetAZs '']
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: pqc-workshop-private-2
+
+  # ─── Private route table + default route to the NAT gateway ─────────────────
+  PrivateRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Vpc
+      Tags:
+        - Key: Name
+          Value: pqc-workshop-private-rt
+
+  PrivateDefaultRoute:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NatGateway
+
+  PrivateSubnet1RouteAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable
+      SubnetId: !Ref PrivateSubnet1
+
+  PrivateSubnet2RouteAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable
+      SubnetId: !Ref PrivateSubnet2
+
 Outputs:
   VpcId:
     Description: The workshop VPC id
     Value: !Ref Vpc
 
   SubnetIds:
-    Description: Comma-separated public subnet ids (two AZs)
+    Description: Comma-separated public subnet ids (two AZs) — internet-facing NLB
     Value: !Join [',', [!Ref PublicSubnet1, !Ref PublicSubnet2]]
 
+  PrivateSubnetIds:
+    Description: Comma-separated private subnet ids (two AZs) — Fargate broker task
+    Value: !Join [',', [!Ref PrivateSubnet1, !Ref PrivateSubnet2]]
+
   RouteTableId:
-    Description: Public route table id (for the broker S3 gateway VPC endpoint)
+    Description: Public route table id
     Value: !Ref PublicRouteTable
+
+  PrivateRouteTableId:
+    Description: Private route table id (for the broker S3 gateway VPC endpoint)
+    Value: !Ref PrivateRouteTable

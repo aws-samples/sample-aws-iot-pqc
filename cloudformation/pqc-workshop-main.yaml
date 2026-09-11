@@ -79,8 +79,18 @@ Parameters:
     Default: ''
     Description: >
       Route table IDs for the broker's S3 gateway VPC endpoint (only used when
-      CreateVpc=false). When CreateVpc=true the created route table is used
-      automatically. Leave empty to skip the S3 gateway endpoint.
+      CreateVpc=false). When CreateVpc=true the created (private) route table is
+      used automatically. Leave empty to skip the S3 gateway endpoint.
+
+  BrokerTaskSubnetIds:
+    Type: CommaDelimitedList
+    Default: ''
+    Description: >
+      Private (NAT-routed) subnet ids for the Fargate broker task (only used
+      when CreateVpc=false). Strongly recommended in accounts with VPC Block
+      Public Access enabled, so the broker egresses to IoT Core via NAT rather
+      than a public IP. Leave empty to run the task in the public SubnetIds
+      (only safe when Block Public Access is off).
 
   BrokerCreateVpcEndpoints:
     Type: String
@@ -128,6 +138,7 @@ Parameters:
 
 Conditions:
   ShouldCreateVpc: !Equals [!Ref CreateVpc, 'true']
+  HasBrokerTaskSubnets: !Not [!Equals [!Join ['', !Ref BrokerTaskSubnetIds], '']]
 
 Resources:
 
@@ -155,8 +166,18 @@ Resources:
       TemplateURL: !Sub 'https://${TemplateBucketName}.s3.amazonaws.com/${TemplateBucketPrefix}/templates/broker-container-stack.yaml'
       Parameters:
         VpcId: !If [ShouldCreateVpc, !GetAtt NetworkStack.Outputs.VpcId, !Ref VpcId]
+        # Public subnets host the internet-facing NLB (devices connect here).
         SubnetIds: !If [ShouldCreateVpc, !GetAtt NetworkStack.Outputs.SubnetIds, !Join [',', !Ref SubnetIds]]
-        RouteTableIds: !If [ShouldCreateVpc, !GetAtt NetworkStack.Outputs.RouteTableId, !Join [',', !Ref BrokerRouteTableIds]]
+        # Private (NAT-routed) subnets host the Fargate broker task so it egresses
+        # to IoT Core via NAT and works under VPC Block Public Access. In BYOVPC
+        # mode, fall back to the public SubnetIds if no private subnets are given.
+        TaskSubnetIds: !If
+          - ShouldCreateVpc
+          - !GetAtt NetworkStack.Outputs.PrivateSubnetIds
+          - !If [HasBrokerTaskSubnets, !Join [',', !Ref BrokerTaskSubnetIds], !Join [',', !Ref SubnetIds]]
+        # S3 gateway endpoint must attach to the task's route table (private in
+        # the create-VPC path).
+        RouteTableIds: !If [ShouldCreateVpc, !GetAtt NetworkStack.Outputs.PrivateRouteTableId, !Join [',', !Ref BrokerRouteTableIds]]
         IoTEndpoint: !Ref IoTEndpoint
         TriggerBuild: !Ref BrokerTriggerBuild
         CreateVpcEndpoints: !Ref BrokerCreateVpcEndpoints

@@ -11,7 +11,18 @@ Parameters:
 
   SubnetIds:
     Type: List<AWS::EC2::Subnet::Id>
-    Description: Subnets for the NLB and ECS tasks (at least 2 AZs)
+    Description: >
+      Public subnets (>=2 AZs) for the internet-facing NLB. Devices connect to
+      the NLB here on 8883.
+
+  TaskSubnetIds:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: >
+      Private subnets (>=2 AZs) for the Fargate broker task. The task egresses
+      to AWS IoT Core via a NAT gateway (no public IP), so it works under VPC
+      Block Public Access (block-ingress). The VPC interface/S3 endpoints also
+      attach here. When bringing your own VPC, pass private (NAT-routed) subnets;
+      if you only have public subnets, pass the same values as SubnetIds.
 
   IoTEndpoint:
     Type: String
@@ -503,7 +514,7 @@ Resources:
       ServiceName: !Sub 'com.amazonaws.${AWS::Region}.ecr.api'
       VpcEndpointType: Interface
       PrivateDnsEnabled: true
-      SubnetIds: !Ref SubnetIds
+      SubnetIds: !Ref TaskSubnetIds
       SecurityGroupIds:
         - !Ref VpcEndpointSecurityGroup
 
@@ -515,7 +526,7 @@ Resources:
       ServiceName: !Sub 'com.amazonaws.${AWS::Region}.ecr.dkr'
       VpcEndpointType: Interface
       PrivateDnsEnabled: true
-      SubnetIds: !Ref SubnetIds
+      SubnetIds: !Ref TaskSubnetIds
       SecurityGroupIds:
         - !Ref VpcEndpointSecurityGroup
 
@@ -527,7 +538,7 @@ Resources:
       ServiceName: !Sub 'com.amazonaws.${AWS::Region}.secretsmanager'
       VpcEndpointType: Interface
       PrivateDnsEnabled: true
-      SubnetIds: !Ref SubnetIds
+      SubnetIds: !Ref TaskSubnetIds
       SecurityGroupIds:
         - !Ref VpcEndpointSecurityGroup
 
@@ -539,7 +550,7 @@ Resources:
       ServiceName: !Sub 'com.amazonaws.${AWS::Region}.logs'
       VpcEndpointType: Interface
       PrivateDnsEnabled: true
-      SubnetIds: !Ref SubnetIds
+      SubnetIds: !Ref TaskSubnetIds
       SecurityGroupIds:
         - !Ref VpcEndpointSecurityGroup
 
@@ -596,10 +607,13 @@ Resources:
       LaunchType: FARGATE
       NetworkConfiguration:
         AwsvpcConfiguration:
-          AssignPublicIp: ENABLED
+          # Private subnets + NAT egress (no public IP). A public-IP task would
+          # rely on IGW return traffic, which VPC Block Public Access
+          # (block-ingress) drops — breaking the broker->IoT Core bridge.
+          AssignPublicIp: DISABLED
           SecurityGroups:
             - !Ref BrokerSecurityGroup
-          Subnets: !Ref SubnetIds
+          Subnets: !Ref TaskSubnetIds
       LoadBalancers:
         - ContainerName: mosquitto-pqc
           ContainerPort: 8883
