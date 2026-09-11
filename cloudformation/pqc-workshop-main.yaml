@@ -94,11 +94,15 @@ Parameters:
 
   BrokerCreateVpcEndpoints:
     Type: String
-    Default: 'true'
+    Default: 'false'
     AllowedValues: ['true', 'false']
     Description: >
-      Create VPC endpoints (ECR/Secrets Manager/Logs interface + S3 gateway) so
-      the broker task pulls its image and secrets over private AWS networking.
+      Create VPC endpoints (ECR/Secrets Manager/Logs interface + S3 gateway) for
+      the broker task to reach AWS service APIs over private networking. Default
+      'false': the broker task runs in private subnets that egress via the NAT
+      gateway, which already reaches ECR/Secrets Manager/Logs/S3 over the public
+      AWS endpoints, so the interface endpoints are redundant (and cost ~8 ENIs).
+      Set 'true' only if you must avoid NAT egress to the AWS APIs.
 
   # ─── Default device WiFi (used by the firmware build; overridable) ──────────
   DefaultWifiSsid:

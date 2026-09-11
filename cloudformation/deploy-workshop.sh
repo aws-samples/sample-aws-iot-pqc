@@ -200,7 +200,7 @@ aws cloudformation deploy \
         TemplateBucketPrefix="$TEMPLATE_PREFIX" \
         IoTEndpoint="$IOT_ENDPOINT" \
         BrokerTriggerBuild=false \
-        BrokerCreateVpcEndpoints=true \
+        BrokerCreateVpcEndpoints=false \
         $VPC_PARAMS \
     --capabilities CAPABILITY_NAMED_IAM CAPABILITY_AUTO_EXPAND \
     --tags Workshop=pqc-reinvent

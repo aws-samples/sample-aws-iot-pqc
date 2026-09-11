@@ -51,11 +51,12 @@ Parameters:
     Type: String
     Description: >
       Create VPC interface endpoints (ECR api/dkr, Secrets Manager, CloudWatch
-      Logs) + an S3 gateway endpoint so the Fargate broker task can pull its
-      image and fetch secrets over private AWS networking. Set 'true' when the
-      subnets lack reliable internet egress to the AWS APIs (the default here,
-      since it is the safe choice for both default and provisioned VPCs).
-    Default: 'true'
+      Logs) + an S3 gateway endpoint so the Fargate broker task reaches AWS
+      service APIs over private networking. Default 'false': the task runs in
+      private subnets with NAT egress, which already reaches those AWS APIs over
+      their public endpoints, making the interface endpoints redundant (~8 ENIs
+      of cost). Set 'true' only if you must avoid NAT egress to the AWS APIs.
+    Default: 'false'
     AllowedValues:
       - 'true'
       - 'false'
