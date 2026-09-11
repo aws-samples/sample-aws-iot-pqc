@@ -93,6 +93,12 @@ the teardown/rebuild. Handle these to keep a from-scratch deploy clean:
   is reused across rebuilds (fine, just don't expect the stack to own it).
 
 Backlog candidates surfaced during rebuilds (not yet fixed):
+- **Dashboard LED button not working (low priority, later fix).** On the device
+  dashboard, the LED (command) button does not actuate the device. Likely the
+  cmd/<thing>/+ command path (dashboard -> AppSync/API -> IoT -> broker bridge
+  inbound topic -> device) or the firmware's command handler. Device DOES
+  subscribe to cmd/esp32-<serial>/+ (seen in broker logs), so the downlink wiring
+  is the place to check. Defer — not blocking device connect/telemetry/migration.
 - **Registrar partial-failure cleanup (near-term, low effort).** The
   `device-registrar` Lambda does cert -> create thing -> create policy ->
   DynamoDB -> start CodeBuild sequentially; if a later step fails the earlier
