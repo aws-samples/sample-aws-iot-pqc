@@ -32,6 +32,38 @@ Practical implications for any change:
 - Validate changes by reasoning about (and ultimately performing) a clean
   destroy + redeploy, not just an in-place update.
 
+## VPC Block Public Access (BPA) — CRITICAL for device connectivity
+
+`pqc-b` has account-level VPC Block Public Access = `block-ingress` (set by
+"Customer Action"). This breaks the workshop in TWO independent ways, both of
+which must be handled or devices cannot connect:
+
+1. **Broker -> IoT Core bridge (OUTBOUND).** A public-IP Fargate task egressing
+   via IGW has its return traffic dropped by block-ingress. FIXED in the
+   templates by running the broker task in private subnets behind a NAT gateway
+   (network-stack.yaml). NAT egress is not blocked by block-ingress.
+2. **Device -> Broker NLB (INBOUND).** The ESP32 connects into the
+   internet-facing NLB from the public internet = IGW *ingress*, which
+   block-ingress DROPS. Symptom: device serial shows WiFi connected + IP
+   assigned but "TCP connection failed to <nlb>:8883" (timeout), and even a
+   public openssl s_client to the NLB:8883 times out (errno 60). The NLB shows
+   healthy targets + correct SG (0.0.0.0/0 on 8883) + public subnets — all fine;
+   BPA is what blocks it. This CANNOT be fixed with NAT (NAT is egress-only).
+
+**Resolution for a BPA `block-ingress` account:** add a VPC Block Public Access
+EXCLUSION for the workshop VPC:
+`aws ec2 create-vpc-block-public-access-exclusion --vpc-id <vpc> --internet-gateway-exclusion-mode allow-bidirectional`
+(pqc-b exclusion: vpcbpa-exclude-08f67396a2b74befc). This is a per-VPC opt-out
+of the guardrail; may need org/security approval.
+
+**Workshop-Studio implication (must decide + document):** the internet-facing
+NLB design requires the target account to either NOT have BPA block-ingress, OR
+have a VPC exclusion. If Workshop Studio accounts enforce BPA, the deploy needs
+to create the exclusion (or the whole device->broker path needs rearchitecting
+to avoid public ingress). BACKLOG: fold the BPA-exclusion into the deploy
+(detect block-ingress and create the VPC exclusion automatically) so the
+one-shot deploy works in a BPA account without manual console steps.
+
 ## Clean teardown / rebuild notes (avoid re-discovering these)
 
 Deleting the master stack `pqc-workshop` cascades to all nested stacks, but a
