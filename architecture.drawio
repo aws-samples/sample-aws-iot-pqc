@@ -1,257 +1,338 @@
-<mxfile host="drawio.corp.amazon.com" modified="2026-07-15T00:00:00.000Z" agent="Kiro" version="21.7.4" type="device" pages="2">
+<mxfile host="drawio.corp.amazon.com" modified="2026-09-15T11:29:07.383Z" agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/153.0.0.0 Safari/537.36" version="21.7.4" etag="2jg9DtWj5IcN4BLrSLCq" type="device" pages="2">
   <diagram id="diagram-1" name="PQC Workshop Architecture">
-    <mxGraphModel dx="1400" dy="800" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1500" pageHeight="960" math="0" shadow="0">
+    <mxGraphModel dx="1404" dy="737" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1500" pageHeight="960" math="0" shadow="0">
       <root>
         <mxCell id="0" />
         <mxCell id="1" parent="0" />
-
-        <!-- Physical room boundary -->
         <mxCell id="room" value="re:Invent Physical Room" style="rounded=0;whiteSpace=wrap;html=1;fillColor=none;verticalAlign=top;strokeColor=#5A6C86;dashed=1;fontColor=#5A6C86;" parent="1" vertex="1">
-          <mxGeometry x="20" y="60" width="330" height="860" as="geometry" />
+          <mxGeometry x="30" y="260" width="330" height="750" as="geometry" />
         </mxCell>
-
-        <!-- ESP32 devices (PQC / OTA_1) -->
-        <mxCell id="esp32-pqc" value="ESP32-S3 Device&#10;OTA_1 (PQC TLS 1.3)&#10;ML-KEM-768 hybrid" style="shape=mxgraph.aws4.client;sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#232F3D;strokeColor=none;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=11;aspect=fixed;" parent="1" vertex="1">
-          <mxGeometry x="55" y="120" width="110" height="75" as="geometry" />
+        <mxCell id="builder-pi" value="Builder-Pi (Raspberry Pi)&#xa;• workshop-builder CLI + Flask GUI&#xa;• WiFi AP: reinvent-pqc-iot-wifi (2.4GHz)&#xa;• NAT bridge Alfa(AP)→onboard(uplink)&#xa;• SSM managed instance" style="shape=mxgraph.aws4.traditional_server;sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#232F3D;strokeColor=none;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=9;aspect=fixed;" parent="1" vertex="1">
+          <mxGeometry x="95" y="660" width="120" height="90" as="geometry" />
         </mxCell>
-        <!-- ESP32 devices (classical / OTA_0) -->
-        <mxCell id="esp32-classical" value="ESP32-S3 Device&#10;OTA_0 (Classical TLS 1.3)&#10;ECDHE P-256" style="shape=mxgraph.aws4.client;sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#879196;strokeColor=none;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=11;aspect=fixed;" parent="1" vertex="1">
-          <mxGeometry x="55" y="245" width="110" height="75" as="geometry" />
+        <mxCell id="attendee" value="Operator /&#xa;Attendee" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#232F3D;strokeColor=none;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=11;aspect=fixed;shape=mxgraph.aws4.user;" parent="1" vertex="1">
+          <mxGeometry x="120" y="890" width="70" height="70" as="geometry" />
         </mxCell>
-
-        <!-- Builder-Pi (now also the WiFi AP) -->
-        <mxCell id="builder-pi" value="Builder-Pi (Raspberry Pi)&#10;• workshop-builder CLI + Flask GUI&#10;• WiFi AP: reinvent-pqc-iot-wifi (2.4GHz)&#10;• NAT bridge Alfa(AP)&#8594;onboard(uplink)&#10;• SSM managed instance" style="shape=mxgraph.aws4.traditional_server;sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#232F3D;strokeColor=none;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=9;aspect=fixed;" parent="1" vertex="1">
-          <mxGeometry x="95" y="470" width="120" height="90" as="geometry" />
-        </mxCell>
-
-        <!-- Operator / Attendee -->
-        <mxCell id="attendee" value="Operator /&#10;Attendee" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#232F3D;strokeColor=none;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=11;aspect=fixed;shape=mxgraph.aws4.user;" parent="1" vertex="1">
-          <mxGeometry x="120" y="700" width="70" height="70" as="geometry" />
-        </mxCell>
-
-        <!-- AWS Cloud group -->
         <mxCell id="aws-cloud" value="AWS Cloud (us-east-1)" style="points=[[0,0],[0.25,0],[0.5,0],[0.75,0],[1,0],[1,0.25],[1,0.5],[1,0.75],[1,1],[0.75,1],[0.5,1],[0.25,1],[0,1],[0,0.75],[0,0.5],[0,0.25]];outlineConnect=0;gradientColor=none;html=1;whiteSpace=wrap;fontSize=12;container=1;pointerEvents=0;collapsible=0;recursiveResize=0;shape=mxgraph.aws4.group;grIcon=mxgraph.aws4.group_aws_cloud_alt;strokeColor=#232F3E;fillColor=none;verticalAlign=top;align=left;spacingLeft=30;fontColor=#232F3E;" parent="1" vertex="1">
-          <mxGeometry x="390" y="60" width="1080" height="860" as="geometry" />
+          <mxGeometry x="390" y="60" width="1080" height="946" as="geometry" />
         </mxCell>
-
-        <!-- VPC group -->
         <mxCell id="vpc" value="VPC 10.20.0.0/16  (IGW attached; VPC Block Public Access = allow-bidirectional exclusion)" style="points=[[0,0],[0.25,0],[0.5,0],[0.75,0],[1,0],[1,0.25],[1,0.5],[1,0.75],[1,1],[0.75,1],[0.5,1],[0.25,1],[0,1],[0,0.75],[0,0.5],[0,0.25]];outlineConnect=0;gradientColor=none;html=1;whiteSpace=wrap;fontSize=11;container=1;pointerEvents=0;collapsible=0;recursiveResize=0;shape=mxgraph.aws4.group;grIcon=mxgraph.aws4.group_vpc;strokeColor=#248814;fillColor=none;verticalAlign=top;align=left;spacingLeft=30;fontColor=#248814;" parent="aws-cloud" vertex="1">
           <mxGeometry x="30" y="60" width="470" height="470" as="geometry" />
         </mxCell>
-
-        <!-- Public subnet -->
-        <mxCell id="public-subnet" value="Public subnets (2 AZs)&#10;route 0.0.0.0/0 &#8594; IGW" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#E9F3E6;strokeColor=#248814;verticalAlign=top;fontSize=10;fontColor=#248814;" parent="vpc" vertex="1">
+        <mxCell id="public-subnet" value="Public subnets (2 AZs)&#xa;route 0.0.0.0/0 → IGW" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#E9F3E6;strokeColor=#248814;verticalAlign=top;fontSize=10;fontColor=#248814;" parent="vpc" vertex="1">
           <mxGeometry x="20" y="60" width="200" height="380" as="geometry" />
         </mxCell>
-        <mxCell id="nlb" value="Network Load Balancer&#10;pqc-broker-nlb :8883&#10;(internet-facing, TCP passthrough)" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=#4D72F3;gradientDirection=north;fillColor=#4D72F3;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=9;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.elastic_load_balancing;" parent="public-subnet" vertex="1">
+        <mxCell id="nlb" value="Network Load Balancer&#xa;pqc-broker-nlb :8883&#xa;(internet-facing, TCP passthrough)" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=#4D72F3;gradientDirection=north;fillColor=#4D72F3;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=9;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.elastic_load_balancing;" parent="public-subnet" vertex="1">
           <mxGeometry x="65" y="40" width="66" height="66" as="geometry" />
         </mxCell>
-        <mxCell id="natgw" value="NAT Gateway&#10;(+ EIP)&#10;private egress" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=#4D72F3;gradientDirection=north;fillColor=#4D72F3;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=9;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.nat_gateway;" parent="public-subnet" vertex="1">
+        <mxCell id="natgw" value="NAT Gateway&#xa;(+ EIP)&#xa;private egress" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=#4D72F3;gradientDirection=north;fillColor=#4D72F3;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=9;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.nat_gateway;" parent="public-subnet" vertex="1">
           <mxGeometry x="65" y="230" width="66" height="66" as="geometry" />
         </mxCell>
-
-        <!-- Private subnet -->
-        <mxCell id="private-subnet" value="Private subnets (2 AZs)&#10;MapPublicIpOnLaunch=false&#10;route 0.0.0.0/0 &#8594; NAT" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#F2F7FC;strokeColor=#4D72F3;verticalAlign=top;fontSize=10;fontColor=#3334B9;" parent="vpc" vertex="1">
+        <mxCell id="private-subnet" value="Private subnets (2 AZs)&#xa;MapPublicIpOnLaunch=false&#xa;route 0.0.0.0/0 → NAT" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#F2F7FC;strokeColor=#4D72F3;verticalAlign=top;fontSize=10;fontColor=#3334B9;" parent="vpc" vertex="1">
           <mxGeometry x="250" y="60" width="200" height="380" as="geometry" />
         </mxCell>
-        <mxCell id="ecs" value="ECS Fargate&#10;Mosquitto PQC broker&#10;(OpenSSL 3.5 + ML-KEM)&#10;NO public IP" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=#F78E04;gradientDirection=north;fillColor=#D05C17;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=9;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.fargate;" parent="private-subnet" vertex="1">
+        <mxCell id="ecs" value="ECS Fargate&#xa;Mosquitto PQC broker&#xa;(OpenSSL 3.5 + ML-KEM)&#xa;NO public IP" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=#F78E04;gradientDirection=north;fillColor=#D05C17;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=9;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.fargate;" parent="private-subnet" vertex="1">
           <mxGeometry x="65" y="150" width="66" height="66" as="geometry" />
         </mxCell>
-
-        <!-- SSM Parameter Store - single source of truth -->
-        <mxCell id="ssm" value="SSM Parameter Store&#10;— single source of truth —&#10;/pqc-workshop/wifi/ssid&#10;/pqc-workshop/wifi/password (SecureString)&#10;/pqc-workshop/broker/endpoint" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=#F78E04;gradientDirection=north;fillColor=#D05C17;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=9;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.systems_manager_parameter_store;" parent="aws-cloud" vertex="1">
-          <mxGeometry x="560" y="70" width="70" height="70" as="geometry" />
+        <mxCell id="privateca" value="AWS Private CA&#xa;(broker + device certs)" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=#F54749;gradientDirection=north;fillColor=#C7131F;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=9;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.certificate_manager;" parent="aws-cloud" vertex="1">
+          <mxGeometry x="560" y="200" width="70" height="70" as="geometry" />
         </mxCell>
-
-        <!-- Private CA + Secrets -->
-        <mxCell id="privateca" value="AWS Private CA&#10;(broker + device certs)" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=#F54749;gradientDirection=north;fillColor=#C7131F;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=9;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.certificate_manager;" parent="aws-cloud" vertex="1">
-          <mxGeometry x="770" y="70" width="70" height="70" as="geometry" />
-        </mxCell>
-        <mxCell id="secrets" value="Secrets Manager&#10;pqc-broker/*" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=#F54749;gradientDirection=north;fillColor=#C7131F;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=9;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.secrets_manager;" parent="aws-cloud" vertex="1">
+        <mxCell id="secrets" value="Secrets Manager&#xa;pqc-broker/*" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=#F54749;gradientDirection=north;fillColor=#C7131F;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=9;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.secrets_manager;" parent="aws-cloud" vertex="1">
           <mxGeometry x="770" y="200" width="70" height="70" as="geometry" />
         </mxCell>
-
-        <!-- IoT Core -->
-        <mxCell id="iot-core" value="AWS IoT Core&#10;(via broker MQTT bridge)" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=#F34482;gradientDirection=north;fillColor=#BC1356;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=9;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.iot_core;" parent="aws-cloud" vertex="1">
+        <mxCell id="iot-core" value="AWS IoT Core&#xa;(via broker MQTT bridge)" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=#F34482;gradientDirection=north;fillColor=#BC1356;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=9;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.iot_core;" parent="aws-cloud" vertex="1">
           <mxGeometry x="560" y="330" width="70" height="70" as="geometry" />
         </mxCell>
-        <!-- Lambdas (telemetry + message logger) -->
-        <mxCell id="lambda-telemetry" value="Lambda&#10;telemetry-processor&#10;message-logger" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=#F78E04;gradientDirection=north;fillColor=#D05C17;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=9;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.lambda;" parent="aws-cloud" vertex="1">
+        <mxCell id="lambda-telemetry" value="Lambda&#xa;telemetry-processor&#xa;message-logger" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=#F78E04;gradientDirection=north;fillColor=#D05C17;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=9;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.lambda;" parent="aws-cloud" vertex="1">
           <mxGeometry x="770" y="330" width="70" height="70" as="geometry" />
         </mxCell>
-        <!-- DynamoDB -->
-        <mxCell id="dynamodb" value="DynamoDB&#10;devices / device-registry&#10;message-log" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=#4D72F3;gradientDirection=north;fillColor=#3334B9;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=9;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.dynamodb;" parent="aws-cloud" vertex="1">
+        <mxCell id="dynamodb" value="DynamoDB&#xa;devices / device-registry&#xa;message-log" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=#4D72F3;gradientDirection=north;fillColor=#3334B9;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=9;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.dynamodb;" parent="aws-cloud" vertex="1">
           <mxGeometry x="960" y="330" width="70" height="70" as="geometry" />
         </mxCell>
-        <!-- AppSync -->
-        <mxCell id="appsync" value="AppSync&#10;pqc-workshop-device-api" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=#F34482;gradientDirection=north;fillColor=#BC1356;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=9;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.appsync;" parent="aws-cloud" vertex="1">
+        <mxCell id="appsync" value="AppSync&#xa;pqc-workshop-device-api" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=#F34482;gradientDirection=north;fillColor=#BC1356;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=9;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.appsync;" parent="aws-cloud" vertex="1">
           <mxGeometry x="960" y="470" width="70" height="70" as="geometry" />
         </mxCell>
-        <!-- Cognito -->
-        <mxCell id="cognito" value="Cognito&#10;(unauth identity pool)" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=#F54749;gradientDirection=north;fillColor=#C7131F;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=9;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.cognito;" parent="aws-cloud" vertex="1">
+        <mxCell id="cognito" value="Cognito&#xa;(unauth identity pool)" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=#F54749;gradientDirection=north;fillColor=#C7131F;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=9;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.cognito;" parent="aws-cloud" vertex="1">
           <mxGeometry x="770" y="470" width="70" height="70" as="geometry" />
         </mxCell>
-        <!-- CloudFront + S3 dashboard -->
-        <mxCell id="cloudfront" value="CloudFront + S3&#10;v2 PQC Firmware Manager&#10;dashboard" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=#945DF2;gradientDirection=north;fillColor=#5A30B5;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=9;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.cloudfront;" parent="aws-cloud" vertex="1">
-          <mxGeometry x="960" y="610" width="70" height="70" as="geometry" />
+        <mxCell id="cloudfront" value="CloudFront + S3&#xa;v2 PQC Firmware Manager&#xa;dashboard" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=#945DF2;gradientDirection=north;fillColor=#5A30B5;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=9;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.cloudfront;" parent="aws-cloud" vertex="1">
+          <mxGeometry x="960" y="830" width="70" height="70" as="geometry" />
         </mxCell>
-        <!-- CloudWatch broker logs -->
-        <mxCell id="cloudwatch" value="CloudWatch Logs&#10;/pqc-workshop/broker-container&#10;/pqc-workshop/builder-pi" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=#F34482;gradientDirection=north;fillColor=#BC1356;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=9;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.cloudwatch;" parent="aws-cloud" vertex="1">
+        <mxCell id="cloudwatch" value="CloudWatch Logs&#xa;/pqc-workshop/broker-container&#xa;/pqc-workshop/builder-pi" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=#F34482;gradientDirection=north;fillColor=#BC1356;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=9;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.cloudwatch;" parent="aws-cloud" vertex="1">
           <mxGeometry x="560" y="470" width="70" height="70" as="geometry" />
         </mxCell>
-        <!-- Builder API -->
-        <mxCell id="builder-api" value="API Gateway&#10;device-builder-api&#10;(register / firmware)" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=#F34482;gradientDirection=north;fillColor=#BC1356;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=9;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.api_gateway;" parent="aws-cloud" vertex="1">
-          <mxGeometry x="560" y="610" width="70" height="70" as="geometry" />
+        <mxCell id="builder-api" value="API Gateway&#xa;device-builder-api&#xa;(register / firmware)" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=#F34482;gradientDirection=north;fillColor=#BC1356;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=9;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.api_gateway;" parent="aws-cloud" vertex="1">
+          <mxGeometry x="70" y="790" width="70" height="70" as="geometry" />
         </mxCell>
-        <!-- Registrar Lambda (reads SSM) -->
-        <mxCell id="registrar" value="Lambda&#10;device-registrar&#10;(reads SSM wifi+broker)" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=#F78E04;gradientDirection=north;fillColor=#D05C17;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=9;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.lambda;" parent="aws-cloud" vertex="1">
-          <mxGeometry x="770" y="610" width="70" height="70" as="geometry" />
+        <mxCell id="registrar" value="Lambda&#xa;device-registrar&#xa;(reads SSM wifi+broker)" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=#F78E04;gradientDirection=north;fillColor=#D05C17;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=9;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.lambda;" parent="aws-cloud" vertex="1">
+          <mxGeometry x="260" y="790" width="70" height="70" as="geometry" />
         </mxCell>
-
-        <!-- ===== Edges ===== -->
-        <!-- devices join the Pi WiFi AP -->
-        <mxCell id="e-pqc-ap" value="join WiFi (PQC firmware)" style="strokeColor=#00CC00;strokeWidth=2;html=1;endArrow=classic;" parent="1" source="esp32-pqc" target="builder-pi" edge="1"><mxGeometry relative="1" as="geometry" /></mxCell>
-        <mxCell id="e-cls-ap" value="join WiFi (classical firmware)" style="strokeColor=#FF9900;strokeWidth=2;dashed=1;html=1;endArrow=classic;" parent="1" source="esp32-classical" target="builder-pi" edge="1"><mxGeometry relative="1" as="geometry" /></mxCell>
-        <!-- Pi AP NAT bridge to NLB (device MQTT traffic) -->
-        <mxCell id="e-ap-nlb" value="MQTT 8883 via NAT bridge&#10;(device traffic &#8594; venue uplink &#8594; NLB)" style="strokeColor=#00874A;strokeWidth=2;html=1;endArrow=classic;" parent="1" source="builder-pi" target="nlb" edge="1"><mxGeometry relative="1" as="geometry" /></mxCell>
-        <!-- NLB to ECS -->
-        <mxCell id="e-nlb-ecs" value="TCP :8883" style="strokeWidth=2;html=1;endArrow=classic;" parent="1" source="nlb" target="ecs" edge="1"><mxGeometry relative="1" as="geometry" /></mxCell>
-        <!-- ECS egress via NAT (bridge to IoT) -->
-        <mxCell id="e-ecs-nat" value="egress" style="strokeWidth=1;html=1;dashed=1;strokeColor=#4D72F3;endArrow=classic;" parent="1" source="ecs" target="natgw" edge="1"><mxGeometry relative="1" as="geometry" /></mxCell>
-        <!-- ECS to IoT Core (bridge) -->
-        <mxCell id="e-ecs-iot" value="MQTT bridge (mTLS)" style="strokeWidth=2;html=1;endArrow=classic;" parent="aws-cloud" source="ecs" target="iot-core" edge="1"><mxGeometry relative="1" as="geometry" /></mxCell>
-        <!-- Private CA issues broker cert -->
-        <mxCell id="e-ca-ecs" value="broker cert" style="strokeWidth=1;dashed=1;strokeColor=#666666;html=1;endArrow=classic;" parent="1" source="privateca" target="ecs" edge="1"><mxGeometry relative="1" as="geometry" /></mxCell>
-        <mxCell id="e-ca-secrets" value="" style="strokeWidth=1;dashed=1;strokeColor=#666666;html=1;endArrow=classic;" parent="aws-cloud" source="privateca" target="secrets" edge="1"><mxGeometry relative="1" as="geometry" /></mxCell>
-        <!-- IoT rules to lambda -->
-        <mxCell id="e-iot-lambda" value="IoT Rules" style="strokeWidth=1;html=1;endArrow=classic;" parent="aws-cloud" source="iot-core" target="lambda-telemetry" edge="1"><mxGeometry relative="1" as="geometry" /></mxCell>
-        <mxCell id="e-lambda-ddb" value="" style="strokeWidth=1;html=1;endArrow=classic;" parent="aws-cloud" source="lambda-telemetry" target="dynamodb" edge="1"><mxGeometry relative="1" as="geometry" /></mxCell>
-        <mxCell id="e-ddb-appsync" value="" style="strokeWidth=1;html=1;endArrow=classic;" parent="aws-cloud" source="dynamodb" target="appsync" edge="1"><mxGeometry relative="1" as="geometry" /></mxCell>
-        <mxCell id="e-appsync-cf" value="" style="strokeWidth=1;html=1;endArrow=classic;" parent="aws-cloud" source="appsync" target="cloudfront" edge="1"><mxGeometry relative="1" as="geometry" /></mxCell>
-        <mxCell id="e-cognito-appsync" value="signs GraphQL" style="strokeWidth=1;dashed=1;strokeColor=#666666;html=1;endArrow=classic;" parent="aws-cloud" source="cognito" target="appsync" edge="1"><mxGeometry relative="1" as="geometry" /></mxCell>
-        <!-- ECS to CloudWatch -->
-        <mxCell id="e-ecs-cw" value="awslogs" style="strokeWidth=1;dashed=1;strokeColor=#999999;html=1;endArrow=classic;" parent="1" source="ecs" target="cloudwatch" edge="1"><mxGeometry relative="1" as="geometry" /></mxCell>
-        <!-- registrar reads SSM -->
-        <mxCell id="e-reg-ssm" value="GetParameter&#10;(wifi + broker)" style="strokeWidth=1;dashed=1;strokeColor=#D05C17;html=1;endArrow=classic;" parent="aws-cloud" source="registrar" target="ssm" edge="1"><mxGeometry relative="1" as="geometry" /></mxCell>
-        <!-- Pi reads SSM (AP creds + endpoints) -->
-        <mxCell id="e-pi-ssm" value="GetParameter (AP SSID/PSK, endpoints)" style="strokeWidth=1;dashed=1;strokeColor=#D05C17;html=1;endArrow=classic;" parent="1" source="builder-pi" target="ssm" edge="1"><mxGeometry relative="1" as="geometry" /></mxCell>
-        <!-- builder-api to registrar -->
-        <mxCell id="e-api-reg" value="" style="strokeWidth=1;html=1;endArrow=classic;" parent="aws-cloud" source="builder-api" target="registrar" edge="1"><mxGeometry relative="1" as="geometry" /></mxCell>
-        <!-- attendee to dashboard -->
-        <mxCell id="e-att-cf" value="Browser" style="strokeWidth=1;strokeColor=#ff0000;html=1;endArrow=classic;" parent="1" source="attendee" target="cloudfront" edge="1"><mxGeometry relative="1" as="geometry" /></mxCell>
-        <!-- operator uses builder-pi -->
-        <mxCell id="e-att-pi" value="plug &amp; flash" style="strokeWidth=1;strokeColor=#ff0000;html=1;endArrow=classic;" parent="1" source="attendee" target="builder-pi" edge="1"><mxGeometry relative="1" as="geometry" /></mxCell>
-        <!-- builder-pi USB flash devices -->
-        <mxCell id="e-pi-flash" value="USB flash" style="endArrow=classic;html=1;strokeColor=#ff0000;" parent="1" source="builder-pi" target="esp32-classical" edge="1"><mxGeometry relative="1" as="geometry" /></mxCell>
-        <!-- builder-pi to builder API -->
-        <mxCell id="e-pi-api" value="register {serialNumber} (SigV4)" style="endArrow=classic;html=1;strokeWidth=1;" parent="1" source="builder-pi" target="builder-api" edge="1"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e-ecs-iot" value="MQTT bridge (mTLS)" style="strokeWidth=2;html=1;endArrow=classic;" parent="aws-cloud" source="ecs" target="iot-core" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e-ca-secrets" value="" style="strokeWidth=1;dashed=1;strokeColor=#666666;html=1;endArrow=classic;" parent="aws-cloud" source="privateca" target="secrets" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e-iot-lambda" value="IoT Rules" style="strokeWidth=1;html=1;endArrow=classic;" parent="aws-cloud" source="iot-core" target="lambda-telemetry" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e-lambda-ddb" value="" style="strokeWidth=1;html=1;endArrow=classic;" parent="aws-cloud" source="lambda-telemetry" target="dynamodb" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e-ddb-appsync" value="" style="strokeWidth=1;html=1;endArrow=classic;" parent="aws-cloud" source="dynamodb" target="appsync" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e-appsync-cf" value="" style="strokeWidth=1;html=1;endArrow=classic;" parent="aws-cloud" source="appsync" target="cloudfront" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e-cognito-appsync" value="signs GraphQL" style="strokeWidth=1;dashed=1;strokeColor=#666666;html=1;endArrow=classic;" parent="aws-cloud" source="cognito" target="appsync" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e-reg-ssm" value="GetParameter&#xa;(wifi + broker)" style="strokeWidth=1;dashed=1;strokeColor=#D05C17;html=1;endArrow=classic;entryX=1;entryY=0.5;entryDx=0;entryDy=0;entryPerimeter=0;" parent="aws-cloud" source="registrar" target="aFNdO6TFIPTcEUccaWIf-1" edge="1">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="420" y="666.3888888888889" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e-api-reg" value="" style="strokeWidth=1;html=1;endArrow=classic;" parent="aws-cloud" source="builder-api" target="registrar" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="aFNdO6TFIPTcEUccaWIf-1" value="SSM Parameter Store&lt;br style=&quot;border-color: rgb(218, 220, 224); font-size: 9px;&quot;&gt;&lt;span style=&quot;font-size: 9px;&quot;&gt;— single source of truth —&lt;/span&gt;&lt;br style=&quot;border-color: rgb(218, 220, 224); font-size: 9px;&quot;&gt;&lt;span style=&quot;font-size: 9px;&quot;&gt;/pqc-workshop/wifi/ssid&lt;/span&gt;&lt;br style=&quot;border-color: rgb(218, 220, 224); font-size: 9px;&quot;&gt;&lt;span style=&quot;font-size: 9px;&quot;&gt;/pqc-workshop/wifi/password (SecureString)&lt;/span&gt;&lt;br style=&quot;border-color: rgb(218, 220, 224); font-size: 9px;&quot;&gt;&lt;span style=&quot;font-size: 9px;&quot;&gt;/pqc-workshop/broker/endpoint&lt;/span&gt;" style="sketch=0;points=[[0,0,0],[0.25,0,0],[0.5,0,0],[0.75,0,0],[1,0,0],[0,1,0],[0.25,1,0],[0.5,1,0],[0.75,1,0],[1,1,0],[0,0.25,0],[0,0.5,0],[0,0.75,0],[1,0.25,0],[1,0.5,0],[1,0.75,0]];points=[[0,0,0],[0.25,0,0],[0.5,0,0],[0.75,0,0],[1,0,0],[0,1,0],[0.25,1,0],[0.5,1,0],[0.75,1,0],[1,1,0],[0,0.25,0],[0,0.5,0],[0,0.75,0],[1,0.25,0],[1,0.5,0],[1,0.75,0]];outlineConnect=0;fontColor=#232F3E;fillColor=#E7157B;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=12;fontStyle=0;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.systems_manager;" vertex="1" parent="aws-cloud">
+          <mxGeometry x="70" y="606" width="78" height="78" as="geometry" />
+        </mxCell>
+        <mxCell id="lMr7mYp3GNsIypNb93vH-1" value="S3 Firmware Bucket&#xa;&lt;serial&gt;/&lt;version&gt;/firmware.bin" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=#60A337;gradientDirection=north;fillColor=#277116;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=9;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.s3;" vertex="1" parent="aws-cloud">
+          <mxGeometry x="260" y="612" width="66" height="66" as="geometry" />
+        </mxCell>
+        <mxCell id="e-pqc-ap" value="join WiFi (PQC firmware)" style="strokeColor=#00CC00;strokeWidth=2;html=1;endArrow=classic;" parent="1" source="JLdUDDwpD9lQ-XHNJEZ7-1" target="lMr7mYp3GNsIypNb93vH-1" edge="1">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="253.54007633587798" y="290.5" as="sourcePoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="lMr7mYp3GNsIypNb93vH-2" value="OTA Update&lt;br&gt;S3 End point" style="edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];" vertex="1" connectable="0" parent="e-pqc-ap">
+          <mxGeometry x="0.1369" y="-1" relative="1" as="geometry">
+            <mxPoint as="offset" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e-ap-nlb" value="MQTT 8883 via NAT bridge&#xa;(device traffic → venue uplink → NLB)" style="strokeColor=#00874A;strokeWidth=2;html=1;endArrow=classic;" parent="1" source="JLdUDDwpD9lQ-XHNJEZ7-4" target="nlb" edge="1">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="308.15601477557857" y="253" as="sourcePoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e-nlb-ecs" value="TCP :8883" style="strokeWidth=2;html=1;endArrow=classic;" parent="1" source="nlb" target="ecs" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e-ecs-nat" value="egress" style="strokeWidth=1;html=1;dashed=1;strokeColor=#4D72F3;endArrow=classic;" parent="1" source="ecs" target="natgw" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e-ca-ecs" value="broker cert" style="strokeWidth=1;dashed=1;strokeColor=#666666;html=1;endArrow=classic;" parent="1" source="privateca" target="ecs" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e-ecs-cw" value="awslogs" style="strokeWidth=1;dashed=1;strokeColor=#999999;html=1;endArrow=classic;" parent="1" source="ecs" target="cloudwatch" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e-pi-ssm" value="GetParameter (AP SSID/PSK, endpoints)" style="strokeWidth=1;dashed=1;strokeColor=#D05C17;html=1;endArrow=classic;" parent="1" source="builder-pi" target="aFNdO6TFIPTcEUccaWIf-1" edge="1">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="810" y="695.3623188405797" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e-att-cf" value="Browser" style="strokeWidth=1;strokeColor=#ff0000;html=1;endArrow=classic;" parent="1" source="attendee" target="cloudfront" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e-att-pi" value="plug &amp; flash" style="strokeWidth=1;strokeColor=#ff0000;html=1;endArrow=classic;" parent="1" source="attendee" target="builder-pi" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e-pi-flash" value="USB flash" style="endArrow=classic;html=1;strokeColor=#ff0000;" parent="1" source="builder-pi" target="JLdUDDwpD9lQ-XHNJEZ7-3" edge="1">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="119.19580419580416" y="195" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e-pi-api" value="register {serialNumber} (SigV4)" style="endArrow=classic;html=1;strokeWidth=1;" parent="1" source="builder-pi" target="builder-api" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="JLdUDDwpD9lQ-XHNJEZ7-1" value="ESP32-S3 Device&lt;br&gt;&lt;span style=&quot;font-size: 11px;&quot;&gt;&amp;nbsp;(PQC TLS 1.3)&lt;/span&gt;&lt;br style=&quot;border-color: rgb(218, 220, 224); font-size: 11px;&quot;&gt;&lt;span style=&quot;font-size: 11px;&quot;&gt;ML-KEM-768 hybrid&lt;/span&gt;" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#277116;strokeColor=none;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=10;aspect=fixed;shape=mxgraph.aws4.iot_thing_freertos_device;" vertex="1" parent="1">
+          <mxGeometry x="240" y="470" width="70" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="JLdUDDwpD9lQ-XHNJEZ7-3" value="ESP32-S3 Device&lt;br&gt;&lt;span style=&quot;font-size: 11px;&quot;&gt;&amp;nbsp;(Classical TLS 1.3)&lt;/span&gt;&lt;br style=&quot;border-color: rgb(218, 220, 224); font-size: 11px;&quot;&gt;&lt;span style=&quot;font-size: 11px;&quot;&gt;ECDHE P-256&lt;/span&gt;" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#277116;strokeColor=none;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=10;aspect=fixed;shape=mxgraph.aws4.iot_thing_freertos_device;" vertex="1" parent="1">
+          <mxGeometry x="120" y="470" width="70" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="JLdUDDwpD9lQ-XHNJEZ7-4" value="Workshop WiFi" style="image;html=1;image=img/lib/clip_art/networking/Wireless_Router_128x128.png" vertex="1" parent="1">
+          <mxGeometry x="180" y="320" width="80" height="80" as="geometry" />
+        </mxCell>
       </root>
     </mxGraphModel>
   </diagram>
   <diagram id="deploy-pipelines" name="Deployment Pipelines">
-    <mxGraphModel dx="1400" dy="800" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1400" pageHeight="960" math="0" shadow="0">
+    <mxGraphModel dx="1404" dy="737" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1400" pageHeight="960" math="0" shadow="0">
       <root>
         <mxCell id="0" />
         <mxCell id="1" parent="0" />
-
-        <!-- ===================== Pipeline 1: Classical (OTA_0) build+flash ===================== -->
+        <mxCell id="p2-cloud" value="AWS Cloud" style="points=[[0,0],[0.25,0],[0.5,0],[0.75,0],[1,0],[1,0.25],[1,0.5],[1,0.75],[1,1],[0.75,1],[0.5,1],[0.25,1],[0,1],[0,0.75],[0,0.5],[0,0.25]];outlineConnect=0;gradientColor=none;html=1;whiteSpace=wrap;fontSize=12;container=1;pointerEvents=0;collapsible=0;recursiveResize=0;shape=mxgraph.aws4.group;grIcon=mxgraph.aws4.group_aws_cloud_alt;strokeColor=#232F3E;fillColor=none;verticalAlign=top;align=left;spacingLeft=30;fontColor=#232F3E;" parent="1" vertex="1">
+          <mxGeometry x="68" y="890" width="842" height="500" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-appsync" value="AppSync&#xa;migrateFirmware" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=#F34482;gradientDirection=north;fillColor=#BC1356;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=9;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.appsync;" parent="p2-cloud" vertex="1">
+          <mxGeometry x="160" y="221.5" width="62" height="62" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-start" value="Lambda&#xa;start-migration" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=#F78E04;gradientDirection=north;fillColor=#D05C17;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=9;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.lambda;" parent="p2-cloud" vertex="1">
+          <mxGeometry x="290" y="221.5" width="62" height="62" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-sfn" value="Step Functions&#xa;pqc-migration&#xa;Building→Build→Push→Reboot" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=#F34482;gradientDirection=north;fillColor=#CD2264;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=9;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.step_functions;" parent="p2-cloud" vertex="1">
+          <mxGeometry x="430" y="216.5" width="62" height="62" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-prepare" value="Lambda&#xa;prepare-build&#xa;(reads SSM wifi+broker)" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=#F78E04;gradientDirection=north;fillColor=#D05C17;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=9;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.lambda;" parent="p2-cloud" vertex="1">
+          <mxGeometry x="600" y="70" width="62" height="62" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-ssm" value="SSM Parameter Store&#xa;wifi + broker&#xa;(single source of truth)" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=#F78E04;gradientDirection=north;fillColor=#D05C17;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=9;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.systems_manager_parameter_store;" parent="p2-cloud" vertex="1">
+          <mxGeometry x="740" y="8" width="62" height="62" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-codebuild" value="CodeBuild&#xa;firmware-build (PQC)&#xa;startBuild.sync" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=#4AB29A;gradientDirection=north;fillColor=#3B8272;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=9;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.codebuild;" parent="p2-cloud" vertex="1">
+          <mxGeometry x="740" y="140" width="62" height="62" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-publish" value="Lambda&#xa;publish-ota&#xa;(presigned S3 URL)" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=#F78E04;gradientDirection=north;fillColor=#D05C17;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=9;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.lambda;" parent="p2-cloud" vertex="1">
+          <mxGeometry x="600" y="370" width="62" height="62" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-iot" value="IoT Core&#xa;cmd/&lt;thing&gt;/ota" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=#F34482;gradientDirection=north;fillColor=#BC1356;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=9;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.iot_core;" parent="p2-cloud" vertex="1">
+          <mxGeometry x="740" y="378" width="62" height="62" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-ddb" value="DynamoDB&#xa;pqc-workshop-devices&#xa;migrationStatus" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=#4D72F3;gradientDirection=north;fillColor=#3334B9;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=9;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.dynamodb;" parent="p2-cloud" vertex="1">
+          <mxGeometry x="600" y="216.5" width="62" height="62" as="geometry" />
+        </mxCell>
+        <mxCell id="p2e2" value="2. invoke" style="endArrow=classic;html=1;" parent="p2-cloud" source="p2-appsync" target="p2-start" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="p2e3" value="3. Start&lt;br&gt;Execution" style="endArrow=classic;html=1;" parent="p2-cloud" source="p2-start" target="p2-sfn" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="p2e4" value="4. prepare" style="endArrow=classic;html=1;" parent="p2-cloud" source="p2-sfn" target="p2-prepare" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="p2e-ssm" value="resolve &lt;br&gt;wifi+broker" style="endArrow=classic;html=1;dashed=1;strokeColor=#D05C17;" parent="p2-cloud" source="p2-prepare" target="p2-ssm" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="p2e5" value="5. build (.sync)" style="endArrow=classic;html=1;" parent="p2-cloud" source="p2-prepare" target="p2-codebuild" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="p2e6" value="6. publish OTA" style="endArrow=classic;html=1;" parent="p2-cloud" source="p2-sfn" target="p2-publish" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="p2e7" value="7. cmd/&lt;thing&gt;/ota" style="endArrow=classic;html=1;" parent="p2-cloud" source="p2-publish" target="p2-iot" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="p2e8" value="migration&lt;br&gt;Status" style="endArrow=classic;html=1;dashed=1;strokeColor=#666666;" parent="p2-cloud" source="p2-sfn" target="p2-ddb" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-dash" value="Dashboard&#xa;Migrate to PQC" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=#945DF2;gradientDirection=north;fillColor=#5A30B5;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=9;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.cloudfront;" parent="p2-cloud" vertex="1">
+          <mxGeometry x="24" y="221.5" width="62" height="62" as="geometry" />
+        </mxCell>
+        <mxCell id="p2e1" value="1. click" style="endArrow=classic;html=1;" parent="p2-cloud" source="p2-dash" target="p2-appsync" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
         <mxCell id="title1" value="Firmware 0 (Classical) — plug-and-flash build &amp; flash pipeline" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;fontSize=20;fontStyle=1;" parent="1" vertex="1">
           <mxGeometry x="120" y="20" width="900" height="30" as="geometry" />
         </mxCell>
-
         <mxCell id="p1-cloud" value="AWS Cloud" style="points=[[0,0],[0.25,0],[0.5,0],[0.75,0],[1,0],[1,0.25],[1,0.5],[1,0.75],[1,1],[0.75,1],[0.5,1],[0.25,1],[0,1],[0,0.75],[0,0.5],[0,0.25]];outlineConnect=0;gradientColor=none;html=1;whiteSpace=wrap;fontSize=12;container=1;pointerEvents=0;collapsible=0;recursiveResize=0;shape=mxgraph.aws4.group;grIcon=mxgraph.aws4.group_aws_cloud_alt;strokeColor=#232F3E;fillColor=none;verticalAlign=top;align=left;spacingLeft=30;fontColor=#232F3E;" parent="1" vertex="1">
-          <mxGeometry x="60" y="70" width="1000" height="290" as="geometry" />
+          <mxGeometry x="60" y="70" width="420" height="450" as="geometry" />
         </mxCell>
-        <mxCell id="p1-api" value="API Gateway&#10;/register" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=#F34482;gradientDirection=north;fillColor=#BC1356;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=10;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.api_gateway;" parent="p1-cloud" vertex="1">
+        <mxCell id="p1-api" value="API Gateway&#xa;/register" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=#F34482;gradientDirection=north;fillColor=#BC1356;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=10;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.api_gateway;" parent="p1-cloud" vertex="1">
           <mxGeometry x="30" y="80" width="66" height="66" as="geometry" />
         </mxCell>
-        <mxCell id="p1-registrar" value="Lambda&#10;device-registrar&#10;Thing + Private CA cert" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=#F78E04;gradientDirection=north;fillColor=#D05C17;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=9;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.lambda;" parent="p1-cloud" vertex="1">
+        <mxCell id="p1-registrar" value="Lambda&#xa;device-registrar&#xa;Thing + Private CA cert" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=#F78E04;gradientDirection=north;fillColor=#D05C17;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=9;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.lambda;" parent="p1-cloud" vertex="1">
           <mxGeometry x="190" y="80" width="66" height="66" as="geometry" />
         </mxCell>
-        <mxCell id="p1-ssm" value="SSM Parameter Store&#10;wifi/ssid, wifi/password&#10;broker/endpoint&#10;(single source of truth)" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=#F78E04;gradientDirection=north;fillColor=#D05C17;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=9;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.systems_manager_parameter_store;" parent="p1-cloud" vertex="1">
-          <mxGeometry x="190" y="200" width="66" height="66" as="geometry" />
+        <mxCell id="p1-codebuild" value="CodeBuild&#xa;firmware-build&#xa;(ECR toolchain image)" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=#4AB29A;gradientDirection=north;fillColor=#3B8272;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=9;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.codebuild;" parent="p1-cloud" vertex="1">
+          <mxGeometry x="320" y="160" width="66" height="66" as="geometry" />
         </mxCell>
-        <mxCell id="p1-codebuild" value="CodeBuild&#10;firmware-build&#10;(ECR toolchain image)" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=#4AB29A;gradientDirection=north;fillColor=#3B8272;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=9;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.codebuild;" parent="p1-cloud" vertex="1">
-          <mxGeometry x="410" y="80" width="66" height="66" as="geometry" />
+        <mxCell id="p1-s3" value="S3 Firmware Bucket&#xa;&lt;serial&gt;/&lt;version&gt;/firmware.bin" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=#60A337;gradientDirection=north;fillColor=#277116;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=9;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.s3;" parent="p1-cloud" vertex="1">
+          <mxGeometry x="320" y="350" width="66" height="66" as="geometry" />
         </mxCell>
-        <mxCell id="p1-s3" value="S3 Firmware Bucket&#10;&lt;serial&gt;/&lt;version&gt;/firmware.bin" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=#60A337;gradientDirection=north;fillColor=#277116;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=9;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.s3;" parent="p1-cloud" vertex="1">
-          <mxGeometry x="620" y="80" width="66" height="66" as="geometry" />
+        <mxCell id="p1-registry" value="DynamoDB&#xa;device-registry&#xa;(wifiPassword persist —&#xa;flagged for removal)" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=#4D72F3;gradientDirection=north;fillColor=#3334B9;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=9;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.dynamodb;" parent="p1-cloud" vertex="1">
+          <mxGeometry x="320" y="10" width="66" height="66" as="geometry" />
         </mxCell>
-        <mxCell id="p1-registry" value="DynamoDB&#10;device-registry&#10;(wifiPassword persist —&#10;flagged for removal)" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=#4D72F3;gradientDirection=north;fillColor=#3334B9;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=9;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.dynamodb;" parent="p1-cloud" vertex="1">
-          <mxGeometry x="820" y="80" width="66" height="66" as="geometry" />
+        <mxCell id="p1e2" value="2. create &lt;br&gt;Thing + cert" style="endArrow=classic;html=1;" parent="p1-cloud" source="p1-api" target="p1-registrar" edge="1">
+          <mxGeometry relative="1" as="geometry" />
         </mxCell>
-
-        <mxCell id="p1-pi" value="Builder-Pi&#10;workshop-builder CLI / GUI" style="shape=mxgraph.aws4.traditional_server;sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#232F3D;strokeColor=none;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=10;aspect=fixed;" parent="1" vertex="1">
-          <mxGeometry x="120" y="410" width="110" height="80" as="geometry" />
+        <mxCell id="p1e-ssm" value="resolve wifi+broker" style="endArrow=classic;html=1;dashed=1;strokeColor=#D05C17;entryX=0.5;entryY=0;entryDx=0;entryDy=0;entryPerimeter=0;" parent="p1-cloud" source="p1-registrar" target="_RLsk04u8q2es8kFdOGS-2" edge="1">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="223" y="230" as="targetPoint" />
+          </mxGeometry>
         </mxCell>
-        <mxCell id="p1-device" value="ESP32-S3&#10;OTA_0 classical" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#277116;strokeColor=none;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=10;aspect=fixed;shape=mxgraph.aws4.iot_thing_freertos_device;" parent="1" vertex="1">
-          <mxGeometry x="700" y="405" width="70" height="70" as="geometry" />
+        <mxCell id="p1e3" value="3. start build" style="endArrow=classic;html=1;" parent="p1-cloud" source="p1-registrar" target="p1-codebuild" edge="1">
+          <mxGeometry relative="1" as="geometry" />
         </mxCell>
-
-        <!-- pipeline 1 edges -->
-        <mxCell id="p1e1" value="1. register {serialNumber} (SigV4)" style="endArrow=classic;html=1;" parent="1" source="p1-pi" target="p1-api" edge="1"><mxGeometry relative="1" as="geometry" /></mxCell>
-        <mxCell id="p1e2" value="2. create Thing + cert" style="endArrow=classic;html=1;" parent="p1-cloud" source="p1-api" target="p1-registrar" edge="1"><mxGeometry relative="1" as="geometry" /></mxCell>
-        <mxCell id="p1e-ssm" value="resolve wifi+broker" style="endArrow=classic;html=1;dashed=1;strokeColor=#D05C17;" parent="p1-cloud" source="p1-registrar" target="p1-ssm" edge="1"><mxGeometry relative="1" as="geometry" /></mxCell>
-        <mxCell id="p1e3" value="3. start build" style="endArrow=classic;html=1;" parent="p1-cloud" source="p1-registrar" target="p1-codebuild" edge="1"><mxGeometry relative="1" as="geometry" /></mxCell>
-        <mxCell id="p1e3b" value="registry" style="endArrow=classic;html=1;dashed=1;strokeColor=#666666;" parent="p1-cloud" source="p1-registrar" target="p1-registry" edge="1"><mxGeometry relative="1" as="geometry" /></mxCell>
-        <mxCell id="p1e4" value="4. upload firmware.bin" style="endArrow=classic;html=1;" parent="p1-cloud" source="p1-codebuild" target="p1-s3" edge="1"><mxGeometry relative="1" as="geometry" /></mxCell>
-        <mxCell id="p1e5" value="5. download .merged.bin" style="endArrow=classic;html=1;" parent="1" source="p1-s3" target="p1-pi" edge="1"><mxGeometry relative="1" as="geometry" /></mxCell>
-        <mxCell id="p1e6" value="6. arduino-cli flash (USB)" style="endArrow=classic;html=1;strokeColor=#ff0000;" parent="1" source="p1-pi" target="p1-device" edge="1"><mxGeometry relative="1" as="geometry" /></mxCell>
-
-        <!-- ===================== Pipeline 2: PQC OTA migration (Step Functions) ===================== -->
+        <mxCell id="p1e3b" value="registry" style="endArrow=classic;html=1;dashed=1;strokeColor=#666666;" parent="p1-cloud" source="p1-registrar" target="p1-registry" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="p1e4" value="4. upload&lt;br&gt;&amp;nbsp;firmware.bin" style="endArrow=classic;html=1;" parent="p1-cloud" source="p1-codebuild" target="p1-s3" edge="1">
+          <mxGeometry x="-0.0028" relative="1" as="geometry">
+            <mxPoint as="offset" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="_RLsk04u8q2es8kFdOGS-2" value="SSM Parameter Store&lt;br style=&quot;border-color: rgb(218, 220, 224); font-size: 9px;&quot;&gt;&lt;span style=&quot;font-size: 9px;&quot;&gt;wifi/ssid, wifi/password&lt;/span&gt;&lt;br style=&quot;border-color: rgb(218, 220, 224); font-size: 9px;&quot;&gt;&lt;span style=&quot;font-size: 9px;&quot;&gt;broker/endpoint&lt;/span&gt;&lt;br style=&quot;border-color: rgb(218, 220, 224); font-size: 9px;&quot;&gt;&lt;span style=&quot;font-size: 9px;&quot;&gt;(single source of truth)&lt;/span&gt;" style="sketch=0;points=[[0,0,0],[0.25,0,0],[0.5,0,0],[0.75,0,0],[1,0,0],[0,1,0],[0.25,1,0],[0.5,1,0],[0.75,1,0],[1,1,0],[0,0.25,0],[0,0.5,0],[0,0.75,0],[1,0.25,0],[1,0.5,0],[1,0.75,0]];points=[[0,0,0],[0.25,0,0],[0.5,0,0],[0.75,0,0],[1,0,0],[0,1,0],[0.25,1,0],[0.5,1,0],[0.75,1,0],[1,1,0],[0,0.25,0],[0,0.5,0],[0,0.75,0],[1,0.25,0],[1,0.5,0],[1,0.75,0]];outlineConnect=0;fontColor=#232F3E;fillColor=#E7157B;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=12;fontStyle=0;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.systems_manager;" vertex="1" parent="p1-cloud">
+          <mxGeometry x="184" y="240" width="78" height="78" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-pi" value="Builder-Pi&#xa;workshop-builder CLI / GUI" style="shape=mxgraph.aws4.traditional_server;sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#232F3D;strokeColor=none;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=10;aspect=fixed;" parent="1" vertex="1">
+          <mxGeometry x="68" y="530" width="110" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-device" value="ESP32-S3&lt;br&gt;TLS classical&lt;br&gt;WiFi" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#277116;strokeColor=none;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=10;aspect=fixed;shape=mxgraph.aws4.iot_thing_freertos_device;" parent="1" vertex="1">
+          <mxGeometry x="998" y="535" width="70" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="p1e1" value="1. register &lt;br&gt;{serialNumber} &lt;br&gt;(SigV4)" style="endArrow=classic;html=1;" parent="1" source="p1-pi" target="p1-api" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="p1e5" value="5. download&lt;br&gt;&amp;nbsp;.merged.bin" style="endArrow=classic;html=1;" parent="1" source="p1-s3" target="p1-pi" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="p1e6" value="6. arduino-cli flash (USB)" style="endArrow=classic;html=1;strokeColor=#ff0000;" parent="1" source="p1-pi" target="p1-device" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
         <mxCell id="title2" value="Firmware 1+ (PQC) — over-the-air migration pipeline (Step Functions)" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;fontSize=20;fontStyle=1;" parent="1" vertex="1">
-          <mxGeometry x="120" y="530" width="1000" height="30" as="geometry" />
+          <mxGeometry x="128" y="850" width="1000" height="30" as="geometry" />
         </mxCell>
-
-        <mxCell id="p2-cloud" value="AWS Cloud" style="points=[[0,0],[0.25,0],[0.5,0],[0.75,0],[1,0],[1,0.25],[1,0.5],[1,0.75],[1,1],[0.75,1],[0.5,1],[0.25,1],[0,1],[0,0.75],[0,0.5],[0,0.25]];outlineConnect=0;gradientColor=none;html=1;whiteSpace=wrap;fontSize=12;container=1;pointerEvents=0;collapsible=0;recursiveResize=0;shape=mxgraph.aws4.group;grIcon=mxgraph.aws4.group_aws_cloud_alt;strokeColor=#232F3E;fillColor=none;verticalAlign=top;align=left;spacingLeft=30;fontColor=#232F3E;" parent="1" vertex="1">
-          <mxGeometry x="60" y="580" width="1240" height="340" as="geometry" />
+        <mxCell id="_RLsk04u8q2es8kFdOGS-6" value="" style="endArrow=classic;startArrow=classic;html=1;rounded=0;" edge="1" parent="1" source="0z9N_BPFk2cQaVaZK6lA-1" target="p1-pi">
+          <mxGeometry width="50" height="50" relative="1" as="geometry">
+            <mxPoint x="123" y="700" as="sourcePoint" />
+            <mxPoint x="690" y="410" as="targetPoint" />
+          </mxGeometry>
         </mxCell>
-        <mxCell id="p2-dash" value="Dashboard&#10;Migrate to PQC" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=#945DF2;gradientDirection=north;fillColor=#5A30B5;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=9;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.cloudfront;" parent="p2-cloud" vertex="1">
-          <mxGeometry x="20" y="130" width="62" height="62" as="geometry" />
+        <mxCell id="KMTH2VXRiIwXGMeOTdVC-1" value="" style="endArrow=classic;startArrow=classic;html=1;rounded=0;" edge="1" parent="1" source="p2-dash" target="0z9N_BPFk2cQaVaZK6lA-1">
+          <mxGeometry width="50" height="50" relative="1" as="geometry">
+            <mxPoint x="133" y="710" as="sourcePoint" />
+            <mxPoint x="123" y="760" as="targetPoint" />
+          </mxGeometry>
         </mxCell>
-        <mxCell id="p2-appsync" value="AppSync&#10;migrateFirmware" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=#F34482;gradientDirection=north;fillColor=#BC1356;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=9;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.appsync;" parent="p2-cloud" vertex="1">
-          <mxGeometry x="150" y="130" width="62" height="62" as="geometry" />
+        <mxCell id="0z9N_BPFk2cQaVaZK6lA-1" value="Operator /&#xa;Attendee" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#232F3D;strokeColor=none;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=11;aspect=fixed;shape=mxgraph.aws4.user;" vertex="1" parent="1">
+          <mxGeometry x="88" y="700" width="70" height="70" as="geometry" />
         </mxCell>
-        <mxCell id="p2-start" value="Lambda&#10;start-migration" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=#F78E04;gradientDirection=north;fillColor=#D05C17;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=9;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.lambda;" parent="p2-cloud" vertex="1">
-          <mxGeometry x="280" y="130" width="62" height="62" as="geometry" />
+        <mxCell id="mg3TJclTOMIs0vgiIchF-1" value="" style="shape=mxgraph.signs.transportation.truck_1;html=1;pointerEvents=1;fillColor=#000000;strokeColor=none;verticalLabelPosition=bottom;verticalAlign=top;align=center;" vertex="1" parent="1">
+          <mxGeometry x="981" y="700" width="99" height="51" as="geometry" />
         </mxCell>
-        <mxCell id="p2-sfn" value="Step Functions&#10;pqc-migration&#10;Building&#8594;Build&#8594;Push&#8594;Reboot" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=#F34482;gradientDirection=north;fillColor=#CD2264;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=9;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.step_functions;" parent="p2-cloud" vertex="1">
-          <mxGeometry x="420" y="125" width="62" height="62" as="geometry" />
+        <mxCell id="mg3TJclTOMIs0vgiIchF-2" value="ESP32-S3&lt;br style=&quot;border-color: rgb(218, 220, 224); font-size: 9px;&quot;&gt;&lt;span style=&quot;font-size: 9px;&quot;&gt;OTA_1 PQC&lt;/span&gt;&lt;br style=&quot;border-color: rgb(218, 220, 224); font-size: 9px;&quot;&gt;&lt;span style=&quot;font-size: 9px;&quot;&gt;(rejoins WiFi, ML-KEM)&lt;/span&gt;" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#277116;strokeColor=none;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=10;aspect=fixed;shape=mxgraph.aws4.iot_thing_freertos_device;" vertex="1" parent="1">
+          <mxGeometry x="995.5" y="1268" width="70" height="70" as="geometry" />
         </mxCell>
-        <mxCell id="p2-prepare" value="Lambda&#10;prepare-build&#10;(reads SSM wifi+broker)" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=#F78E04;gradientDirection=north;fillColor=#D05C17;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=9;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.lambda;" parent="p2-cloud" vertex="1">
-          <mxGeometry x="560" y="45" width="62" height="62" as="geometry" />
+        <mxCell id="p2e9" value="8. OTA download → &lt;br&gt;reboot into PQC → &lt;br&gt;rejoin WiFi → &lt;br&gt;reconnect (ML-KEM)" style="endArrow=classic;html=1;strokeColor=#00CC00;strokeWidth=2;" parent="1" source="p2-iot" target="mg3TJclTOMIs0vgiIchF-2" edge="1">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="1008" y="1302.313725490196" as="targetPoint" />
+          </mxGeometry>
         </mxCell>
-        <mxCell id="p2-ssm" value="SSM Parameter Store&#10;wifi + broker&#10;(single source of truth)" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=#F78E04;gradientDirection=north;fillColor=#D05C17;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=9;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.systems_manager_parameter_store;" parent="p2-cloud" vertex="1">
-          <mxGeometry x="900" y="45" width="62" height="62" as="geometry" />
+        <mxCell id="mg3TJclTOMIs0vgiIchF-3" value="" style="endArrow=classic;html=1;rounded=0;" edge="1" parent="1" source="p1-device">
+          <mxGeometry width="50" height="50" relative="1" as="geometry">
+            <mxPoint x="890" y="670" as="sourcePoint" />
+            <mxPoint x="1033" y="690" as="targetPoint" />
+          </mxGeometry>
         </mxCell>
-        <mxCell id="p2-codebuild" value="CodeBuild&#10;firmware-build (PQC)&#10;startBuild.sync" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=#4AB29A;gradientDirection=north;fillColor=#3B8272;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=9;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.codebuild;" parent="p2-cloud" vertex="1">
-          <mxGeometry x="720" y="45" width="62" height="62" as="geometry" />
+        <mxCell id="mg3TJclTOMIs0vgiIchF-4" value="Factory" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#7AA116;strokeColor=none;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=12;fontStyle=0;aspect=fixed;pointerEvents=1;shape=mxgraph.aws4.factory;" vertex="1" parent="1">
+          <mxGeometry x="990" y="408" width="78" height="78" as="geometry" />
         </mxCell>
-        <mxCell id="p2-publish" value="Lambda&#10;publish-ota&#10;(presigned S3 URL)" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=#F78E04;gradientDirection=north;fillColor=#D05C17;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=9;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.lambda;" parent="p2-cloud" vertex="1">
-          <mxGeometry x="560" y="240" width="62" height="62" as="geometry" />
+        <mxCell id="mg3TJclTOMIs0vgiIchF-5" value="" style="endArrow=classic;html=1;rounded=0;" edge="1" parent="1" source="mg3TJclTOMIs0vgiIchF-4" target="p1-device">
+          <mxGeometry width="50" height="50" relative="1" as="geometry">
+            <mxPoint x="830" y="430" as="sourcePoint" />
+            <mxPoint x="880" y="380" as="targetPoint" />
+          </mxGeometry>
         </mxCell>
-        <mxCell id="p2-iot" value="IoT Core&#10;cmd/&lt;thing&gt;/ota" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=#F34482;gradientDirection=north;fillColor=#BC1356;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=9;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.iot_core;" parent="p2-cloud" vertex="1">
-          <mxGeometry x="740" y="240" width="62" height="62" as="geometry" />
+        <mxCell id="mg3TJclTOMIs0vgiIchF-6" value="" style="endArrow=classic;html=1;rounded=0;exitX=0.505;exitY=1.02;exitDx=0;exitDy=0;exitPerimeter=0;" edge="1" parent="1" source="mg3TJclTOMIs0vgiIchF-1" target="mg3TJclTOMIs0vgiIchF-2">
+          <mxGeometry width="50" height="50" relative="1" as="geometry">
+            <mxPoint x="1120" y="830" as="sourcePoint" />
+            <mxPoint x="1170" y="780" as="targetPoint" />
+          </mxGeometry>
         </mxCell>
-        <mxCell id="p2-ddb" value="DynamoDB&#10;pqc-workshop-devices&#10;migrationStatus" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=#4D72F3;gradientDirection=north;fillColor=#3334B9;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=9;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.dynamodb;" parent="p2-cloud" vertex="1">
-          <mxGeometry x="420" y="245" width="62" height="62" as="geometry" />
-        </mxCell>
-
-        <mxCell id="p2-device" value="ESP32-S3&#10;OTA_1 PQC&#10;(rejoins WiFi, ML-KEM)" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#232F3D;strokeColor=none;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=9;aspect=fixed;shape=mxgraph.aws4.iot_thing_freertos_device;" parent="1" vertex="1">
-          <mxGeometry x="1120" y="830" width="70" height="70" as="geometry" />
-        </mxCell>
-
-        <!-- pipeline 2 edges -->
-        <mxCell id="p2e1" value="1. click" style="endArrow=classic;html=1;" parent="p2-cloud" source="p2-dash" target="p2-appsync" edge="1"><mxGeometry relative="1" as="geometry" /></mxCell>
-        <mxCell id="p2e2" value="2. invoke" style="endArrow=classic;html=1;" parent="p2-cloud" source="p2-appsync" target="p2-start" edge="1"><mxGeometry relative="1" as="geometry" /></mxCell>
-        <mxCell id="p2e3" value="3. StartExecution" style="endArrow=classic;html=1;" parent="p2-cloud" source="p2-start" target="p2-sfn" edge="1"><mxGeometry relative="1" as="geometry" /></mxCell>
-        <mxCell id="p2e4" value="4. prepare" style="endArrow=classic;html=1;" parent="p2-cloud" source="p2-sfn" target="p2-prepare" edge="1"><mxGeometry relative="1" as="geometry" /></mxCell>
-        <mxCell id="p2e-ssm" value="resolve wifi+broker" style="endArrow=classic;html=1;dashed=1;strokeColor=#D05C17;" parent="p2-cloud" source="p2-prepare" target="p2-ssm" edge="1"><mxGeometry relative="1" as="geometry" /></mxCell>
-        <mxCell id="p2e5" value="5. build (.sync)" style="endArrow=classic;html=1;" parent="p2-cloud" source="p2-prepare" target="p2-codebuild" edge="1"><mxGeometry relative="1" as="geometry" /></mxCell>
-        <mxCell id="p2e6" value="6. publish OTA" style="endArrow=classic;html=1;" parent="p2-cloud" source="p2-sfn" target="p2-publish" edge="1"><mxGeometry relative="1" as="geometry" /></mxCell>
-        <mxCell id="p2e7" value="7. cmd/&lt;thing&gt;/ota" style="endArrow=classic;html=1;" parent="p2-cloud" source="p2-publish" target="p2-iot" edge="1"><mxGeometry relative="1" as="geometry" /></mxCell>
-        <mxCell id="p2e8" value="migrationStatus" style="endArrow=classic;html=1;dashed=1;strokeColor=#666666;" parent="p2-cloud" source="p2-sfn" target="p2-ddb" edge="1"><mxGeometry relative="1" as="geometry" /></mxCell>
-        <mxCell id="p2e9" value="8. OTA download &#8594; reboot into PQC &#8594; rejoin WiFi &#8594; reconnect (ML-KEM)" style="endArrow=classic;html=1;strokeColor=#00CC00;strokeWidth=2;" parent="1" source="p2-iot" target="p2-device" edge="1"><mxGeometry relative="1" as="geometry" /></mxCell>
       </root>
     </mxGraphModel>
   </diagram>
