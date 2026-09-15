@@ -56,8 +56,12 @@ Parameters:
 
   BuilderPiInstanceId:
     Type: String
-    Description: SSM Managed Instance ID of the builder Raspberry Pi
-    Default: mi-0f2c31334f3e87c8b
+    Description: >-
+      SSM Managed Instance ID of the builder Raspberry Pi (e.g. mi-0123456789abcdef0).
+      Supply per deployment — the Pi's managed-instance ID is created when the Pi
+      registers with SSM (see bundle-for-builder-pi.sh), so it is account/deploy
+      specific and has no meaningful default.
+    Default: ''
 
 Resources:
 

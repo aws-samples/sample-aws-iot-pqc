@@ -16,7 +16,9 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REGION="${AWS_DEFAULT_REGION:-us-east-1}"
-INSTANCE_ID="${1:-mi-0edb5bc536ce8b7fc}"
+# Pass the broker-Pi's SSM managed-instance ID as $1 (mi-...). No real default —
+# it is account/deploy specific.
+INSTANCE_ID="${1:?Usage: $0 <mi-XXXXXXXX>  (broker-Pi SSM managed-instance ID)}"
 
 echo "Deploying cert generation script to broker-pi ($INSTANCE_ID)..."
 

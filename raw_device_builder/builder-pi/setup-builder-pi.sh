@@ -6,9 +6,9 @@
 # Installs arduino-cli, ESP32 platform, wolfSSL config, Python dependencies,
 # and the builder-pi web GUI application.
 #
-# Usage (via SSM from your workstation):
+# Usage (via SSM from your workstation; replace with your Pi's managed-instance ID):
 #   aws ssm send-command \
-#     --instance-ids mi-0f2c31334f3e87c8b \
+#     --instance-ids mi-0123456789abcdef0 \
 #     --document-name AWS-RunShellScript \
 #     --parameters 'commands=["curl -fsSL https://raw.githubusercontent.com/.../setup-builder-pi.sh | bash"]' \
 #     --timeout-seconds 600
