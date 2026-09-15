@@ -179,12 +179,15 @@ the `workshop-builder` CLI. After this the Pi appears in
 
 The ESP32 devices are **2.4 GHz only** and must join `reinvent-pqc-iot-wifi` —
 the SSID baked into their firmware. At the venue you control that network by
-running it *on the Builder-Pi itself*: the Pi becomes a WiFi access point for the
-devices and bridges their traffic up to the venue backbone. This is optional and
-only needed when you can't (or don't want to) rely on venue-provided WiFi.
+running it *on the Builder-Pi itself*: the Pi becomes a high-density WiFi access
+point for the devices and bridges their traffic up to the venue backbone. This is
+optional and only needed when you can't (or don't want to) rely on venue-provided
+WiFi. The steps below are sized for a full workshop room (up to ~150 devices
+across one or two Pis; the deploy default is 100).
 
-**Hardware:** a Raspberry Pi (the Builder-Pi, or a dedicated second Pi — see the
-SPOF note) plus an **Alfa AWUS036ACM** USB WiFi adapter (MediaTek MT7612U).
+**Hardware:** a Raspberry Pi 5 running Raspberry Pi OS (Bookworm) — the
+Builder-Pi, or a dedicated second Pi (see the SPOF note) — plus an **Alfa
+AWUS036ACM** USB WiFi adapter (MediaTek MT7612U).
 
 **Radio role assignment (this split is deliberate — do not swap it):**
 
@@ -211,10 +214,24 @@ the same channel/band, which would defeat the 2.4↔5 split.
 > but verify — the steps below assume Alfa=`wlan1`, onboard=`wlan0`. If they
 > differ, substitute throughout.
 
-**1. Pull the workshop WiFi credentials from SSM** (the single source of truth
+**1. Install the DHCP helper package.** NetworkManager's `shared` mode runs its
+own `dnsmasq` instance for DHCP/NAT, but on a minimal image it needs the base
+files present:
+
+```bash
+sudo apt update
+sudo apt install dnsmasq-base -y
+```
+
+**2. Pull the workshop WiFi credentials from SSM** (the single source of truth
 published by the deploy — `/pqc-workshop/wifi/ssid` + `/pqc-workshop/wifi/password`).
 Run this on the Pi (it has the `pqc-workshop-builder-pi-ssm` role, which grants
-`ssm:GetParameter` on `/pqc-workshop/*` plus SSM-scoped `kms:Decrypt`):
+`ssm:GetParameter` on `/pqc-workshop/*` plus SSM-scoped `kms:Decrypt`).
+
+> **Always pull from SSM — do not hand-type the SSID/PSK.** A mistyped PSK is
+> exactly what caused a `4WAY_HANDSHAKE_TIMEOUT` device failure during testing.
+> SSM is the single source of truth the firmware is built against, so pulling
+> from it guarantees the AP PSK matches what the devices expect.
 
 ```bash
 REGION=<region>
@@ -225,10 +242,11 @@ WIFI_PSK=$(aws ssm get-parameter --name /pqc-workshop/wifi/password --with-decry
 echo "AP SSID: $WIFI_SSID"   # sanity check; do NOT echo the PSK in shared logs
 ```
 
-**2. Create the AP connection profile on the Alfa (`wlan1`).** `ipv4.method
+**3. Create the AP connection profile on the Alfa (`wlan1`).** `ipv4.method
 shared` is what makes NM run a DHCP server on the AP subnet AND set up NAT to the
 active uplink automatically — no separate dnsmasq/iptables needed. `band bg` +
-`channel 6` pin it to 2.4 GHz for the ESP32s:
+`channel 6` pin it to 2.4 GHz for the ESP32s. `autoconnect yes` means the AP
+comes back on its own after a reboot:
 
 ```bash
 sudo nmcli connection add type wifi ifname wlan1 con-name workshop-ap \
@@ -244,26 +262,54 @@ sudo nmcli connection modify workshop-ap \
 
 > `channel 6` is a safe default (1/6/11 are the non-overlapping 2.4 GHz choices).
 > At the venue, scan for the quietest with `sudo nmcli device wifi list ifname
-> wlan1` and set `802-11-wireless.channel` accordingly. NM's `shared` mode uses
-> the `10.42.0.0/24` subnet by default (Pi = `10.42.0.1`); that's fine — the
+> wlan1` and set `802-11-wireless.channel` accordingly. **If you run two AP Pis,
+> put them on different non-overlapping channels** (e.g. Pi #1 on `channel 1`,
+> Pi #2 on `channel 11`) so they don't step on each other. NM's `shared` mode
+> uses the `10.42.0.0/24` subnet by default (Pi = `10.42.0.1`); that's fine — the
 > ESP32s get a lease automatically.
 
-**3. Bring the AP up:**
+**4. Raise the client cap past NetworkManager's default 50.** NM's built-in
+`dnsmasq` caps concurrent DHCP clients at 50 by default — well short of a full
+workshop room. Add a drop-in to expand the pool and shorten the lease so inactive
+IPs recycle quickly:
 
 ```bash
-sudo nmcli connection up workshop-ap
-nmcli connection show --active         # expect workshop-ap (wifi) + your uplink
-nmcli -f GENERAL.STATE device show wlan1   # expect connected (as AP)
+sudo mkdir -p /etc/NetworkManager/dnsmasq-shared.d
+sudo tee /etc/NetworkManager/dnsmasq-shared.d/iot-density.conf >/dev/null <<'EOF'
+# Raise maximum concurrent clients to 150
+dhcp-lease-max=150
+# Set a 2-hour DHCP lease window to recycle IPs quickly
+dhcp-range=10.42.0.10,10.42.0.250,2h
+EOF
 ```
 
-`autoconnect yes` means the AP comes back on its own after a reboot.
+**5. Disable WiFi power saving on the AP radio.** Stop the MT7612U from dropping
+into a low-power sleep state under intermittent load, which wrecks MQTT latency.
+Set the value from `3` (enabled) to `2` (disabled):
+
+```bash
+sudo tee /etc/NetworkManager/conf.d/default-wifi-powersave-on.conf >/dev/null <<'EOF'
+[connection]
+wifi.powersave = 2
+EOF
+```
+
+**6. Push changes live.** Restart NetworkManager to pick up the density and
+power-save drop-ins, then bring the AP up:
+
+```bash
+sudo systemctl restart NetworkManager
+sudo nmcli connection up workshop-ap
+nmcli connection show --active            # expect workshop-ap (wifi) + your uplink
+nmcli -f GENERAL.STATE device show wlan1  # expect connected (as AP)
+```
 
 An ESP32 flashed for the workshop should now associate to `reinvent-pqc-iot-wifi`,
 pick up a `10.42.0.x` lease, and reach AWS IoT / the broker through the Pi's
 `wlan0` uplink (NM masquerades the AP subnet onto whichever interface has the
 default route).
 
-**Pre-event checklist (both flagged during design):**
+**Pre-event checklist (all flagged during design):**
 
 - **Outbound MQTT (8883) must be allowed** from the `wlan0` uplink to the broker
   NLB and AWS IoT. The whole chain dies if the venue blocks it — test end to end
@@ -274,6 +320,34 @@ default route).
 - **SPOF:** if this AP Pi dies, every device drops. Keep a spare Pi imaged and
   ready, and prefer running the AP on a *dedicated* Pi rather than the Builder-Pi
   so a flashing hiccup and a WiFi hiccup can't take each other down.
+
+#### Monitoring & troubleshooting
+
+Handy commands for watching the AP during the workshop:
+
+```bash
+# Live count of stations authenticated to the Alfa AP
+sudo iw dev wlan1 station dump | grep -c Station
+
+# DHCP leases: match MAC ↔ IP ↔ hostname
+cat /var/lib/misc/dnsmasq.leases
+
+# Per-client signal strength (worse than ~-80 dBm → expect MQTT packet loss)
+sudo iw dev wlan1 station dump | grep -E "Station|signal:"
+
+# Watch devices register and claim leases as they boot
+watch -n 1 cat /var/lib/misc/dnsmasq.leases
+
+# Raw interface packet/error counters
+ip -s link show wlan1
+```
+
+> **Architecture note — NAT conntrack vs. MQTT KeepAlive.** Because the Pi routes
+> via IP masquerade (NAT), the Linux firewall keeps a conntrack entry per ESP32's
+> outbound flow. If a device goes silent too long, that entry is evicted and the
+> broker's downstream packets get dropped. Set the ESP32 firmware's **MQTT
+> KeepAlive to 15–30 s** so each client pings often enough to keep its conntrack
+> slot alive.
 
 ### 6. Validate readiness
 
