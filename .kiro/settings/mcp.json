@@ -7,7 +7,7 @@
         "BrazilBuildAnalyzerTool"
       ],
       "disabled": false,
-      "timeout": 60,
+      "timeout": 60000,
       "type": "stdio",
       "command": "builder-mcp",
       "args": [],
