@@ -58,8 +58,10 @@ This module simulates a real-world IoT production line scenario. A "builder-pi" 
 ## Prerequisites
 
 1. **Builder-Pi** — Raspberry Pi with:
-   - SSM Agent installed and registered (see `setup-builder-pi.sh`)
-   - Python 3.9+, Flask, esptool, arduino-cli
+   - SSM Agent registered via the bundle (`bundle-for-builder-pi.sh` →
+     `setup-ssm.sh`); the toolchain (Python/Flask/esptool/arduino-cli), GUI app,
+     and systemd service are then installed remotely by the SSM documents the
+     orchestrator runs (`setup-builder-pi-remote.sh`)
    - USB ports available for ESP32 connection
    - Network access to AWS (for API calls and S3 downloads)
 
@@ -83,12 +85,18 @@ aws cloudformation deploy \
 
 ### 2. Setup Builder-Pi
 
-Copy the `builder-pi/` directory to the Pi (via SSM, SCP, or USB):
+Two steps (see `cloudformation/DEPLOYMENT.md` §5 for detail):
 
 ```bash
-# On the builder-pi
-chmod +x setup-builder-pi.sh
-./setup-builder-pi.sh
+# On the deploy host: generate the SSM-bootstrap bundle
+raw_device_builder/bundle-for-builder-pi.sh --region us-east-1
+
+# On the Pi: register the SSM agent
+unzip builder-pi-bundle.zip && cd builder-pi-bundle && sudo ./setup-ssm.sh
+
+# Back on the deploy host: provision the Pi via SSM documents (installs the
+# toolchain + GUI app; the GUI auto-starts)
+./raw_device_builder/setup-builder-pi-remote.sh --region us-east-1
 ```
 
 ### 3. Access the GUI
@@ -110,9 +118,10 @@ raw_device_builder/
 ├── codebuild/
 │   ├── buildspec.yml                  # Build spec for firmware compilation
 │   └── Dockerfile                     # arduino-cli + ESP32 toolchain image
+├── bundle-for-builder-pi.sh           # Deploy host: mint SSM bundle (bootstrap only)
+├── setup-builder-pi-remote.sh         # Deploy host: run the 3 SSM provisioning docs
 ├── builder-pi/
-│   ├── setup-builder-pi.sh            # One-time Pi setup
-│   ├── app.py                         # Flask web GUI
+│   ├── app.py                         # Flask web GUI (deployed via SSM deploy-app doc)
 │   ├── templates/index.html           # Web UI template
 │   ├── static/styles.css              # UI styles
 │   ├── device_manager.py              # USB detection, serial read, flash

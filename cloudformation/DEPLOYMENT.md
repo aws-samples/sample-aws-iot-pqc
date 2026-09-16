@@ -150,19 +150,60 @@ aws codebuild batch-get-builds [--profile <name>] \
 Confirm the image landed: `aws ecr describe-images --repository-name pqc-workshop-firmware-builder`
 should list at least one image.
 
-### 5. Register the Builder-Pi (on the physical Raspberry Pi)
+### 5. Provision the Builder-Pi (two steps: register on the Pi, provision from the host)
 
-This runs on the Pi itself, not the deploy host. From this repo, generate the
-bundle and copy it to the Pi:
+The Builder-Pi is provisioned in two phases. The **bundle only registers the
+SSM agent**; everything else (arduino-cli, the ESP32 core, the GUI app, the
+systemd service) is installed *remotely* by SSM documents run from the deploy
+host. This is deliberate: running the provisioning via SSM (as root, with a
+consistent environment, output captured to SSM + CloudWatch, each step
+independently re-runnable) is far more reliable and debuggable than a big
+self-contained script run under `sudo` on the Pi.
+
+**Step 5.1 — register the Pi as an SSM managed instance.** From this repo,
+generate the (now tiny) bundle and copy it to the Pi:
 
 ```bash
-raw_device_builder/bundle-for-builder-pi.sh
+raw_device_builder/bundle-for-builder-pi.sh            # add --region if not us-east-1
+# copy raw_device_builder/builder-pi-bundle.zip to the Pi (USB / scp)
 ```
 
-Then on the Pi, run the bundle's `setup-all.sh`. It installs the SSM agent
-(registering the Pi as an SSM managed instance using the stack's activation) and
-the `workshop-builder` CLI. After this the Pi appears in
-`aws ssm describe-instance-information`.
+Then on the Pi:
+
+```bash
+unzip builder-pi-bundle.zip
+cd builder-pi-bundle
+sudo ./setup-ssm.sh
+```
+
+After ~30s the Pi appears Online in `aws ssm describe-instance-information`.
+
+**Step 5.2 — provision the Pi from the deploy host.** Back on the machine with
+AWS credentials, run the orchestrator. It waits for the Pi to be Online, then
+runs the three SSM documents in order (install-toolchain → deploy-app →
+configure-service):
+
+```bash
+./raw_device_builder/setup-builder-pi-remote.sh            # add --region / --profile if needed
+```
+
+The GUI **auto-starts** at the end (systemd `enable`d + started), reachable at
+`http://<pi-ip>:8080`. The toolchain step is slow (~10-15 min: the ~5 GB ESP32
+core). Every step's output is captured by SSM and shipped to the
+`/pqc-workshop/builder-pi` CloudWatch log group.
+
+**If a step fails**, the orchestrator prints the failing document's output and a
+console link, then stops. Fix the cause and re-run just that document without
+repeating the slow toolchain install, e.g.:
+
+```bash
+./raw_device_builder/setup-builder-pi-remote.sh --only deploy-app
+```
+
+The app + assets the deploy-app document installs are staged to
+`s3://pqc-workshop-firmware-<acct>/builder-pi/` by `deploy-workshop.sh`. To ship
+an updated GUI to an already-provisioned Pi: re-run `deploy-workshop.sh` (or just
+re-stage `builder-pi/app.tgz`), then `setup-builder-pi-remote.sh --only deploy-app`.
 
 > **Plug-and-flash — no GUI configuration.** The Builder-Pi GUI takes no WiFi,
 > broker, or firmware-version input. Every device value is resolved server-side

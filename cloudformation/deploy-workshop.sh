@@ -12,7 +12,8 @@
 #     2. deploys the single master stack (broker image build deferred)
 #     3. stages the Docker build contexts to S3, builds the broker container
 #        image, and scales the broker ECS service up
-#     4. builds + syncs the v2 dashboard (a build step CFN can't do)
+#     4. publishes dashboard config to SSM, stages the dashboard source, and
+#        triggers the dashboard CodeBuild project (build + sync + invalidate)
 #     5. prints remaining manual steps
 #
 # Usage:
@@ -354,6 +355,58 @@ if [[ "$_missing_fw" -ne 0 ]]; then
 fi
 echo "          firmware source/ complete (${#REQUIRED_FW_SOURCE[@]} files)"
 
+# ─── Stage the builder-Pi app + assets for the SSM deploy-app document ────────
+# The builder-Pi is no longer provisioned from a self-contained bundle; the SSM
+# documents (pqc-workshop-deploy-app) fetch the app + assets from the firmware
+# bucket instead of the bundle shipping them. So stage them here, next to the
+# firmware source, under the builder-pi/ prefix:
+#   - app.tgz                          the Flask GUI + workshop-builder CLI tree
+#   - partitions_pqc_workshop.csv      custom ESP32 partition table
+#   - wolfssl_user_settings_arduino.h  wolfSSL PQC config applied to the lib
+# The deploy-app document unpacks app.tgz into /opt/pqc-workshop/builder-app and
+# applies the two asset files. config.json is written by the document from SSM
+# (not from the tarball), so the tarball's config.json is just a harmless
+# template. setup-builder-pi.sh is deliberately excluded — it is retired.
+echo "        - staging builder-Pi app + assets -> s3://${FIRMWARE_BUCKET}/builder-pi/"
+BUILDER_PI_SRC="$PROJECT_ROOT/raw_device_builder/builder-pi"
+APP_TGZ="$(mktemp -t builder-pi-app.XXXX.tgz)"
+# Pack the app tree, excluding: the retired on-Pi setup script, python caches,
+# and the tests dir (not needed on the Pi). Paths inside the tarball are
+# relative to builder-pi/ so they unpack directly into $APP_DIR.
+tar -czf "$APP_TGZ" -C "$BUILDER_PI_SRC" \
+    --exclude 'setup-builder-pi.sh' \
+    --exclude '__pycache__' \
+    --exclude '*.pyc' \
+    --exclude 'tests' \
+    .
+aws s3 cp "$APP_TGZ" "s3://${FIRMWARE_BUCKET}/builder-pi/app.tgz" >/dev/null
+rm -f "$APP_TGZ"
+
+# Partition table (canonical copy under esp32-flash/) and the wolfSSL PQC header
+# (with the firmware-builder codebuild sources). Reuse stage_extra's fallback
+# search so a moved file still resolves.
+_stage_builder_asset() {
+    local name="$1" f="$2"
+    [[ -f "$f" ]] || f=$(find "$PROJECT_ROOT" -name "$name" -not -path '*/arduino-cli/data/*' 2>/dev/null | head -1)
+    if [[ -n "$f" && -f "$f" ]]; then
+        echo "          - $name"
+        aws s3 cp "$f" "s3://${FIRMWARE_BUCKET}/builder-pi/$name" >/dev/null
+    else
+        echo "          ! WARN: $name not found; builder-Pi deploy-app doc will warn"
+    fi
+}
+_stage_builder_asset partitions_pqc_workshop.csv     "$PROJECT_ROOT/esp32-flash/partitions_pqc_workshop.csv"
+_stage_builder_asset wolfssl_user_settings_arduino.h "$PROJECT_ROOT/raw_device_builder/codebuild/wolfssl_user_settings_arduino.h"
+
+# Fail fast if the app tarball didn't land — the deploy-app SSM doc hard-depends
+# on it, and a missing object only surfaces as a confusing SSM failure later.
+if ! aws s3api head-object --bucket "$FIRMWARE_BUCKET" --key "builder-pi/app.tgz" >/dev/null 2>&1; then
+    echo "[ERROR] builder-Pi app.tgz did not upload to s3://${FIRMWARE_BUCKET}/builder-pi/."
+    echo "        The builder-Pi deploy-app SSM document would fail. Aborting."
+    exit 1
+fi
+echo "          builder-Pi app + assets staged"
+
 # Trigger the broker image build now that its source is in place, and wait.
 BROKER_BUILD_PROJECT=$(get_out CodeBuildProjectName 2>/dev/null || true)
 [[ -z "$BROKER_BUILD_PROJECT" || "$BROKER_BUILD_PROJECT" == "None" ]] && BROKER_BUILD_PROJECT="pqc-workshop-broker-image-build"
@@ -381,13 +434,15 @@ if ! aws ecs update-service --cluster pqc-workshop-broker --service pqc-workshop
     echo "            aws ecs update-service --cluster pqc-workshop-broker --service pqc-workshop-broker --desired-count 1${PROFILE:+ --profile $PROFILE}"
 fi
 
-# ─── Step 4: build + sync the v2 dashboard (post-deploy build step) ──────────
-echo "[4/5] Building + deploying the v2 dashboard..."
+# ─── Step 4: publish config to SSM + build the dashboard via CodeBuild ───────
+echo "[4/5] Publishing config + building the v2 dashboard (CodeBuild)..."
 APPSYNC_ENDPOINT=$(get_out AppSyncEndpoint)
 IDENTITY_POOL=$(get_out CognitoIdentityPoolId)
 API_ENDPOINT=$(get_out BuilderApiEndpoint)
-DASH_BUCKET=$(get_out DashboardBucketName)
-DASH_DIST=$(get_out DashboardDistributionId)
+# The dashboard's site bucket + CloudFront distribution are consumed by the
+# CodeBuild project (via its stack-supplied DASHBOARD_BUCKET /
+# DASHBOARD_DISTRIBUTION_ID env vars), so the deploy script no longer needs
+# them here — it only stages source + triggers the build.
 # FIRMWARE_BUCKET already set in step 3 (pqc-workshop-firmware-${ACCOUNT_ID}).
 
 # ─── Publish deployment config to SSM Parameter Store (canonical source) ─────
@@ -433,29 +488,42 @@ if [[ "$WORKSHOP_WIFI_SSID" == "changeme" || "$WORKSHOP_WIFI_PASSWORD" == "chang
     echo "          WORKSHOP_WIFI_PASSWORD set to the real workshop credentials."
 fi
 
-# ─── Materialize the dashboard's runtime config.json ─────────────────────────
-# Written into public/ so Vite copies it into build/ as a normal asset. This
-# keeps the built bundle environment-agnostic (no endpoints compiled in) and
-# means the ordinary `s3 sync` handles config.json — avoiding a separate upload
-# that `--delete` would otherwise remove. The SPA fetches /config.json at load.
-mkdir -p "$V2_FRONTEND/public"
-cat > "$V2_FRONTEND/public/config.json" <<CONFIG
-{
-  "appSyncEndpoint": "${APPSYNC_ENDPOINT}",
-  "identityPoolId": "${IDENTITY_POOL}",
-  "apiEndpoint": "${API_ENDPOINT}",
-  "region": "${AWS_REGION}",
-  "pollInterval": 5000
-}
-CONFIG
+# ─── Build + deploy the dashboard via CodeBuild (not on this host) ───────────
+# The Vite/React build used to run here (npm ci && npm run build) and sync from
+# the operator's laptop, making the deploy laptop-dependent and slow. It now
+# runs in the pqc-workshop-dashboard-build CodeBuild project (mirrors how the
+# broker image is built above): we stage the frontend source to the dashboard
+# source bucket, trigger the build, and wait. The build reads its config from
+# the SSM parameters published just above, materializes public/config.json,
+# builds, syncs build/ to the site bucket, and invalidates CloudFront.
+DASHBOARD_SOURCE_BUCKET="pqc-workshop-dashboard-source-${ACCOUNT_ID}"
 
-( cd "$V2_FRONTEND" && npm ci && npm run build )
-aws s3 sync "$V2_FRONTEND/build/" "s3://$DASH_BUCKET/" --delete
-if [[ -n "$DASH_DIST" && "$DASH_DIST" != "None" ]]; then
-    aws cloudfront create-invalidation --distribution-id "$DASH_DIST" --paths '/*' >/dev/null
-else
-    echo "  WARN: DashboardDistributionId output missing; skipping CloudFront invalidation."
-fi
+# Stage the frontend build source. Exclude node_modules and the local build/
+# output (regenerated in CodeBuild) and the gitignored public/config.json (the
+# build materializes it from SSM). --delete keeps the source prefix clean across
+# redeploys.
+echo "        - staging dashboard source -> s3://${DASHBOARD_SOURCE_BUCKET}/frontend/"
+aws s3 sync "$V2_FRONTEND/" "s3://${DASHBOARD_SOURCE_BUCKET}/frontend/" --delete \
+    --exclude "node_modules/*" \
+    --exclude "build/*" \
+    --exclude "public/config.json" >/dev/null
+
+# Trigger the dashboard build now that its source is in place, and wait.
+DASHBOARD_BUILD_PROJECT=$(get_out DashboardBuildProjectName 2>/dev/null || true)
+[[ -z "$DASHBOARD_BUILD_PROJECT" || "$DASHBOARD_BUILD_PROJECT" == "None" ]] && DASHBOARD_BUILD_PROJECT="pqc-workshop-dashboard-build"
+echo "        - starting dashboard build ($DASHBOARD_BUILD_PROJECT)..."
+DASH_BUILD_ID=$(aws codebuild start-build --project-name "$DASHBOARD_BUILD_PROJECT" \
+    --query 'build.id' --output text)
+echo "          build: $DASH_BUILD_ID (waiting for completion)"
+while true; do
+    st=$(aws codebuild batch-get-builds --ids "$DASH_BUILD_ID" \
+        --query 'builds[0].buildStatus' --output text)
+    case "$st" in
+        SUCCEEDED) echo "          dashboard build SUCCEEDED"; break ;;
+        FAILED|FAULT|TIMED_OUT|STOPPED) echo "[ERROR] dashboard build $st ($DASH_BUILD_ID)"; exit 1 ;;
+        *) sleep 15 ;;
+    esac
+done
 
 echo ""
 echo "═══════════════════════════════════════════════════════════════"
@@ -472,6 +540,9 @@ echo "REMAINING MANUAL STEPS:"
 echo "  1. Build the firmware image once (source already staged by this script;"
 echo "     needed before any device firmware build):"
 echo "       aws codebuild start-build --project-name $(get_out FirmwareImageBuilderProject)${PROFILE_ARG}"
-echo "  2. Register the Builder-Pi via SSM (see raw_device_builder/bundle-for-builder-pi.sh)"
+echo "  2. Provision the Builder-Pi (two steps — see DEPLOYMENT.md §5):"
+echo "       a. Register the Pi:  raw_device_builder/bundle-for-builder-pi.sh --region $AWS_REGION"
+echo "          then on the Pi:   unzip builder-pi-bundle.zip && cd builder-pi-bundle && sudo ./setup-ssm.sh"
+echo "       b. Provision via SSM: ./raw_device_builder/setup-builder-pi-remote.sh --region $AWS_REGION${PROFILE_ARG}"
 echo "  3. Validate:  ./check_setup_status.sh --region $AWS_REGION${PROFILE_ARG}"
 echo ""

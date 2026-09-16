@@ -2,24 +2,32 @@
 # ─────────────────────────────────────────────────────────────────────────────
 # bundle-for-builder-pi.sh
 #
-# Creates a self-contained zip bundle with everything needed to set up
-# the builder Raspberry Pi:
-#   - SSM Agent setup script (registers Pi as managed instance)
-#   - Builder GUI application (Flask web server)
-#   - Device manager (USB detection, esptool flash)
-#   - Configuration defaults
+# Creates a MINIMAL zip bundle whose ONLY job is to register the builder
+# Raspberry Pi as an SSM managed instance. Everything else (arduino-cli, the
+# ESP32 core, the builder GUI app, systemd service, CloudWatch agent) is
+# installed AFTER registration by SSM documents run from the deploy host — see
+# setup-builder-pi-remote.sh and the pqc-workshop-{install-toolchain,deploy-app,
+# configure-service} documents created by the SSM activation stack.
 #
-# The bundle is designed to be copied to the Pi (via USB stick, SCP, or
-# any file transfer method) and executed without needing AWS credentials
-# on the Pi itself (SSM activation code is pre-fetched and included).
+# WHY SO SMALL: the old bundle carried the whole app + a heavy on-Pi setup
+# script that the operator ran under sudo. A mid-script failure under `set -e`
+# once died silently (the $HOME-unset abort), leaving the GUI down with no
+# captured output. Running the provisioning remotely via SSM (as root, with a
+# consistent env, output captured to SSM + CloudWatch, each step re-runnable in
+# isolation) fixed that. So this bundle is now just the SSM bootstrap.
+#
+# The bundle is copied to the Pi (USB stick / SCP / any transfer) and run once.
+# It contains only:
+#   - setup-ssm.sh   (installs + registers the SSM agent; activation baked in)
+#   - README.txt     (the two-step runbook)
 #
 # Prerequisites:
-#   - AWS CLI with credentials (to fetch SSM activation)
-#   - The device-builder CloudFormation stack deployed
-#     OR the SSM hybrid activation stack deployed
+#   - AWS CLI with credentials for the workshop account
+#   - The workshop stack deployed (so the CFN-owned builder-Pi IAM role
+#     'pqc-workshop-builder-pi-ssm' and the SSM documents exist)
 #
 # Usage:
-#   ./bundle-for-builder-pi.sh [--api-endpoint URL]
+#   ./bundle-for-builder-pi.sh [--region REGION]
 #
 # Output:
 #   ./builder-pi-bundle/           (directory ready to copy)
@@ -32,22 +40,27 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 BUNDLE_DIR="$SCRIPT_DIR/builder-pi-bundle"
 REGION="${AWS_DEFAULT_REGION:-us-east-1}"
-API_ENDPOINT=""
+
+# The builder-Pi IAM role is now created by CloudFormation (the SSM activation
+# stack), not by this script. We reference it by name when minting the
+# activation, and fail fast if it does not exist.
+SSM_ROLE_NAME="pqc-workshop-builder-pi-ssm"
 
 # ─── Parse Arguments ─────────────────────────────────────────────────────────
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --api-endpoint) API_ENDPOINT="$2"; shift 2 ;;
         --region) REGION="$2"; shift 2 ;;
         --help|-h)
-            echo "Usage: $0 [--api-endpoint URL] [--region REGION]"
+            echo "Usage: $0 [--region REGION]"
             echo ""
             echo "Options:"
-            echo "  --api-endpoint   API Gateway URL for device registration"
-            echo "  --region         AWS region (default: us-east-1)"
+            echo "  --region   AWS region (default: \$AWS_DEFAULT_REGION or us-east-1)"
+            echo ""
+            echo "Creates builder-pi-bundle.zip containing only the SSM agent"
+            echo "bootstrap. After registering the Pi, run setup-builder-pi-remote.sh"
+            echo "from the deploy host to provision it via SSM documents."
             exit 0
             ;;
         *) echo "[ERROR] Unknown argument: $1"; exit 1 ;;
@@ -67,7 +80,7 @@ CALLER_ARN=$(aws sts get-caller-identity --query Arn --output text 2>/dev/null) 
 ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
 
 echo "═══════════════════════════════════════════════════════════════"
-echo "  Builder-Pi Bundle Generator"
+echo "  Builder-Pi Bundle Generator (SSM bootstrap only)"
 echo "═══════════════════════════════════════════════════════════════"
 echo ""
 echo "  Profile:        ${AWS_PROFILE:-<ambient/default credentials>}"
@@ -76,7 +89,8 @@ echo "  Caller:         $CALLER_ARN"
 echo "  Region:         $REGION"
 echo "  Output:         $BUNDLE_DIR"
 echo ""
-echo "  The Pi will register as an SSM managed instance in account $ACCOUNT_ID."
+echo "  The Pi will register as an SSM managed instance in account $ACCOUNT_ID"
+echo "  using the CloudFormation-owned role '$SSM_ROLE_NAME'."
 echo "  This MUST be the account you deployed the workshop stack into."
 echo ""
 # Confirm unless CONFIRM_BUNDLE=yes (for automation). Only prompts on a TTY.
@@ -86,182 +100,71 @@ if [[ "${CONFIRM_BUNDLE:-}" != "yes" && -t 0 ]]; then
     echo ""
 fi
 
-# ─── Step 1: Create SSM Hybrid Activation ────────────────────────────────────
-echo "[1/4] Creating SSM hybrid activation..."
-
-# Check if an activation already exists
-EXISTING_ACTIVATION=$(aws ssm describe-activations \
-    --query "ActivationList[?Description=='pqc-workshop-builder-pi' && ExpirationDate>='$(date -u +%Y-%m-%dT%H:%M:%S)'].{Id:ActivationId,Code:DefaultInstanceName}" \
-    --output text --region "$REGION" 2>/dev/null | head -1) || EXISTING_ACTIVATION=""
-
-if [[ -n "$EXISTING_ACTIVATION" ]]; then
-    echo "       Using existing activation"
-    ACTIVATION_ID=$(echo "$EXISTING_ACTIVATION" | awk '{print $1}')
-else
-    # Find the SSM role (either from device-builder stack or create inline)
-    SSM_ROLE_NAME="pqc-workshop-builder-pi-ssm"
-    SSM_ROLE_ARN=$(aws iam get-role --role-name "$SSM_ROLE_NAME" \
-        --query 'Role.Arn' --output text --region "$REGION" 2>/dev/null) || SSM_ROLE_ARN=""
-
-    if [[ -z "$SSM_ROLE_ARN" ]]; then
-        echo "       Creating SSM role: $SSM_ROLE_NAME"
-        aws iam create-role \
-            --role-name "$SSM_ROLE_NAME" \
-            --assume-role-policy-document '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"ssm.amazonaws.com"},"Action":"sts:AssumeRole"}]}' \
-            --region "$REGION" > /dev/null
-        aws iam attach-role-policy \
-            --role-name "$SSM_ROLE_NAME" \
-            --policy-arn arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore \
-            --region "$REGION"
-        # Allow reading firmware from S3
-        aws iam put-role-policy \
-            --role-name "$SSM_ROLE_NAME" \
-            --policy-name S3FirmwareAccess \
-            --policy-document '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":["s3:GetObject","s3:ListBucket"],"Resource":["arn:aws:s3:::pqc-workshop-firmware-*","arn:aws:s3:::pqc-workshop-firmware-*/*"]}]}' \
-            --region "$REGION"
-        # Allow calling API Gateway
-        aws iam put-role-policy \
-            --role-name "$SSM_ROLE_NAME" \
-            --policy-name ApiGatewayAccess \
-            --policy-document '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":["execute-api:Invoke"],"Resource":["*"]}]}' \
-            --region "$REGION"
-        SSM_ROLE_ARN=$(aws iam get-role --role-name "$SSM_ROLE_NAME" \
-            --query 'Role.Arn' --output text --region "$REGION")
-        echo "       Waiting for role propagation..."
-        sleep 10
-    fi
-
-    # Create activation (valid for 7 days, 1 instance)
-    ACTIVATION=$(aws ssm create-activation \
-        --description "pqc-workshop-builder-pi" \
-        --iam-role "$SSM_ROLE_NAME" \
-        --registration-limit 1 \
-        --expiration-date "$(date -u -v+7d +%Y-%m-%dT%H:%M:%S 2>/dev/null || date -u -d '+7 days' +%Y-%m-%dT%H:%M:%S)" \
-        --default-instance-name "pqc-workshop-builder-pi" \
-        --region "$REGION" --output json)
-
-    ACTIVATION_ID=$(echo "$ACTIVATION" | python3 -c "import sys,json; print(json.load(sys.stdin)['ActivationId'])")
-    ACTIVATION_CODE=$(echo "$ACTIVATION" | python3 -c "import sys,json; print(json.load(sys.stdin)['ActivationCode'])")
+# ─── Step 1: Verify the CFN-owned SSM role exists ────────────────────────────
+# The role is created by the SSM activation stack (nested in the master). If it
+# is missing, the workshop stack has not been deployed (or was deployed without
+# the builder-Pi role) — minting an activation against a non-existent role would
+# fail later, so stop now with a clear message.
+echo "[1/4] Verifying the builder-Pi IAM role ($SSM_ROLE_NAME)..."
+if ! aws iam get-role --role-name "$SSM_ROLE_NAME" >/dev/null 2>&1; then
+    echo "[ERROR] IAM role '$SSM_ROLE_NAME' not found in account $ACCOUNT_ID."
+    echo "        It is created by the workshop's SSM activation stack. Deploy the"
+    echo "        workshop first (cloudformation/deploy-workshop.sh), then re-run."
+    exit 1
 fi
+echo "       role present"
 
-# If we don't have the code yet, we can't proceed (existing activation doesn't expose the code)
-if [[ -z "${ACTIVATION_CODE:-}" ]]; then
-    echo "       [WARN] Could not retrieve activation code. Creating new activation..."
-    SSM_ROLE_NAME="pqc-workshop-builder-pi-ssm"
-    ACTIVATION=$(aws ssm create-activation \
-        --description "pqc-workshop-builder-pi-$(date +%s)" \
-        --iam-role "$SSM_ROLE_NAME" \
-        --registration-limit 1 \
-        --expiration-date "$(date -u -v+7d +%Y-%m-%dT%H:%M:%S 2>/dev/null || date -u -d '+7 days' +%Y-%m-%dT%H:%M:%S)" \
-        --default-instance-name "pqc-workshop-builder-pi" \
-        --region "$REGION" --output json)
-    ACTIVATION_ID=$(echo "$ACTIVATION" | python3 -c "import sys,json; print(json.load(sys.stdin)['ActivationId'])")
-    ACTIVATION_CODE=$(echo "$ACTIVATION" | python3 -c "import sys,json; print(json.load(sys.stdin)['ActivationCode'])")
-fi
-
+# ─── Step 2: Create the SSM hybrid activation ────────────────────────────────
+echo "[2/4] Creating SSM hybrid activation..."
+ACTIVATION=$(aws ssm create-activation \
+    --description "pqc-workshop-builder-pi" \
+    --iam-role "$SSM_ROLE_NAME" \
+    --registration-limit 1 \
+    --expiration-date "$(date -u -v+7d +%Y-%m-%dT%H:%M:%S 2>/dev/null || date -u -d '+7 days' +%Y-%m-%dT%H:%M:%S)" \
+    --default-instance-name "pqc-workshop-builder-pi" \
+    --region "$REGION" --output json)
+ACTIVATION_ID=$(echo "$ACTIVATION" | python3 -c "import sys,json; print(json.load(sys.stdin)['ActivationId'])")
+ACTIVATION_CODE=$(echo "$ACTIVATION" | python3 -c "import sys,json; print(json.load(sys.stdin)['ActivationCode'])")
 echo "       Activation ID: $ACTIVATION_ID"
 echo "       ✅ SSM activation ready"
 
-# ─── Step 2: Resolve API endpoint + firmware bucket ──────────────────────────
-echo "[2/4] Resolving API endpoint + firmware bucket..."
-
-# Canonical source is SSM Parameter Store (written by deploy-workshop.sh under
-# /pqc-workshop/builder-pi/*). Fall back to CloudFormation outputs / account-id
-# derivation so the bundler still works if the parameters aren't present yet
-# (e.g. an older deploy or a standalone device-builder stack).
-ssm_param() {
-    aws ssm get-parameter --name "$1" --query 'Parameter.Value' \
-        --output text --region "$REGION" 2>/dev/null || echo ""
-}
-
-if [[ -z "$API_ENDPOINT" ]]; then
-    # 1. Parameter Store (canonical).
-    API_ENDPOINT=$(ssm_param /pqc-workshop/builder-pi/apiEndpoint)
-
-    # 2. Master stack's BuilderApiEndpoint output (single-master deploy).
-    if [[ -z "$API_ENDPOINT" || "$API_ENDPOINT" == "None" ]]; then
-        API_ENDPOINT=$(aws cloudformation describe-stacks \
-            --stack-name pqc-workshop \
-            --query "Stacks[0].Outputs[?OutputKey=='BuilderApiEndpoint'].OutputValue | [0]" \
-            --output text --region "$REGION" 2>/dev/null) || API_ENDPOINT=""
-    fi
-
-    # 3. Standalone/nested device-builder stack's ApiEndpoint output.
-    if [[ -z "$API_ENDPOINT" || "$API_ENDPOINT" == "None" ]]; then
-        DB_STACK=$(aws cloudformation list-stacks \
-            --stack-status-filter CREATE_COMPLETE UPDATE_COMPLETE \
-            --query "StackSummaries[?contains(StackName,'DeviceBuilder') || StackName=='pqc-workshop-device-builder'].StackName | [0]" \
-            --output text --region "$REGION" 2>/dev/null) || DB_STACK=""
-        if [[ -n "$DB_STACK" && "$DB_STACK" != "None" ]]; then
-            API_ENDPOINT=$(aws cloudformation describe-stacks \
-                --stack-name "$DB_STACK" \
-                --query "Stacks[0].Outputs[?OutputKey=='ApiEndpoint'].OutputValue | [0]" \
-                --output text --region "$REGION" 2>/dev/null) || API_ENDPOINT=""
-        fi
-    fi
-
-    if [[ -z "$API_ENDPOINT" || "$API_ENDPOINT" == "None" ]]; then
-        API_ENDPOINT="https://REPLACE_WITH_API_GATEWAY_URL/prod"
-        echo "       [WARN] Could not resolve the builder API endpoint from Parameter"
-        echo "       Store, the 'pqc-workshop' master stack, or a DeviceBuilder stack."
-        echo "       Using a placeholder — update config.json on the Pi after deployment."
-    fi
+# ─── Step 2b: Prune stale managed instances ──────────────────────────────────
+# Each new bundle mints a new activation, and the Pi re-registers under a new
+# mi-... id; the old ids linger as ConnectionLost. Auto-prune them so
+# `describe-instance-information` (and the orchestrator's Online check) stays
+# clean. Best-effort — never fail the bundle over this.
+echo "       Pruning stale (ConnectionLost) builder-Pi managed instances..."
+STALE=$(aws ssm describe-instance-information \
+    --filters "Key=tag:Name,Values=pqc-workshop-builder-pi" \
+    --query "InstanceInformationList[?PingStatus=='ConnectionLost'].InstanceId" \
+    --output text --region "$REGION" 2>/dev/null || true)
+# Fall back to the DefaultInstanceName-based lookup if the tag filter finds none
+# (hybrid instances may not carry the Name tag depending on registration).
+if [[ -z "$STALE" ]]; then
+    STALE=$(aws ssm describe-instance-information \
+        --query "InstanceInformationList[?PingStatus=='ConnectionLost' && Name=='pqc-workshop-builder-pi'].InstanceId" \
+        --output text --region "$REGION" 2>/dev/null || true)
 fi
-echo "       API: $API_ENDPOINT"
+for mi in $STALE; do
+    [[ "$mi" == mi-* ]] || continue
+    echo "         - deregistering $mi"
+    aws ssm deregister-managed-instance --instance-id "$mi" --region "$REGION" >/dev/null 2>&1 \
+        || echo "           (could not deregister $mi; ignoring)"
+done
 
-# Firmware bucket: prefer Parameter Store, else derive from account id (the
-# stack names it pqc-workshop-firmware-<accountId>).
-FIRMWARE_BUCKET=$(ssm_param /pqc-workshop/builder-pi/firmwareBucket)
-if [[ -z "$FIRMWARE_BUCKET" || "$FIRMWARE_BUCKET" == "None" ]]; then
-    FIRMWARE_BUCKET="pqc-workshop-firmware-${ACCOUNT_ID}"
-fi
-echo "       Firmware bucket: $FIRMWARE_BUCKET"
-
-# ─── Step 3: Create bundle directory ────────────────────────────────────────
+# ─── Step 3: Create the bundle directory (SSM bootstrap only) ────────────────
 echo "[3/4] Creating bundle..."
-
 rm -rf "$BUNDLE_DIR"
 mkdir -p "$BUNDLE_DIR"
 
-# Copy builder-pi application
-cp -r "$SCRIPT_DIR/builder-pi/"* "$BUNDLE_DIR/"
-
-# Bundle the wolfSSL PQC user_settings header so setup-builder-pi.sh can apply
-# it to the Arduino wolfSSL library (step 5). The header lives with the
-# firmware-builder pipeline sources (codebuild/), not in builder-pi/, so copy
-# it in explicitly. Without this, step 5 emits a "not found" warning and the
-# Pi's wolfSSL library keeps its default (non-PQC) settings.
-WOLFSSL_HEADER="$SCRIPT_DIR/codebuild/wolfssl_user_settings_arduino.h"
-if [[ -f "$WOLFSSL_HEADER" ]]; then
-    cp "$WOLFSSL_HEADER" "$BUNDLE_DIR/wolfssl_user_settings_arduino.h"
-    echo "       wolfSSL PQC header bundled"
-else
-    echo "       [WARN] wolfSSL header not found at $WOLFSSL_HEADER;"
-    echo "              step 5 on the Pi will warn and skip the PQC config."
-fi
-
-# Update config with actual, per-deployment values (resolved in step 2 from
-# Parameter Store with CFN/account-id fallback). Everything else in config.json
-# is a static default or a field the operator sets in the GUI
-# (wifi_ssid/wifi_password/broker_endpoint).
-python3 -c "
-import json
-with open('$BUNDLE_DIR/config.json', 'r') as f:
-    config = json.load(f)
-config['api_endpoint'] = '$API_ENDPOINT'
-config['region'] = '$REGION'
-config['firmware_bucket'] = '$FIRMWARE_BUCKET'
-with open('$BUNDLE_DIR/config.json', 'w') as f:
-    json.dump(config, f, indent=2)
-print('       config.json updated (api_endpoint, region, firmware_bucket)')
-"
-echo "       firmware_bucket: $FIRMWARE_BUCKET"
-
-# Create SSM setup script with embedded activation credentials
+# The SSM agent installer/register script, with the activation baked in. This is
+# the ONLY executable in the bundle now.
 cat > "$BUNDLE_DIR/setup-ssm.sh" << 'SSMEOF'
 #!/bin/bash
 # ─── SSM Agent Setup for Builder-Pi ─────────────────────────────────────────
-# This script installs and registers the SSM agent. Run once with sudo.
+# Installs and registers the SSM agent so the Pi becomes a managed instance.
+# Run once with sudo. After this, provision the Pi from the deploy host with
+# setup-builder-pi-remote.sh (which runs the SSM documents remotely).
 
 set -euo pipefail
 
@@ -320,67 +223,68 @@ echo "✅ SSM Agent registered!"
 INSTANCE_ID=$(cat /var/lib/amazon/ssm/registration | python3 -c "import sys,json; print(json.load(sys.stdin)['ManagedInstanceID'])")
 echo "   Instance ID: $INSTANCE_ID"
 echo "   Connect with: aws ssm start-session --target $INSTANCE_ID --region $REGION"
+echo ""
+echo "   NEXT: from the deploy host, provision this Pi via SSM:"
+echo "     ./raw_device_builder/setup-builder-pi-remote.sh --region $REGION"
 SSMEOF
 
-# Inject activation values
+# Inject activation values.
 sed -i.bak "s|__ACTIVATION_ID__|$ACTIVATION_ID|g" "$BUNDLE_DIR/setup-ssm.sh"
 sed -i.bak "s|__ACTIVATION_CODE__|$ACTIVATION_CODE|g" "$BUNDLE_DIR/setup-ssm.sh"
 sed -i.bak "s|__REGION__|$REGION|g" "$BUNDLE_DIR/setup-ssm.sh"
 rm -f "$BUNDLE_DIR/setup-ssm.sh.bak"
 chmod +x "$BUNDLE_DIR/setup-ssm.sh"
-chmod +x "$BUNDLE_DIR/setup-builder-pi.sh"
 
-# Create a master setup script
-cat > "$BUNDLE_DIR/setup-all.sh" << 'EOF'
-#!/bin/bash
-# ─── Builder-Pi Complete Setup ───────────────────────────────────────────────
-# Runs all setup steps in order. Execute with sudo.
-set -euo pipefail
+# A short README with the two-step runbook.
+cat > "$BUNDLE_DIR/README.txt" << README
+PQC Workshop — Builder-Pi bundle (SSM bootstrap only)
+=====================================================
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-echo "═══════════════════════════════════════════════════════════════"
-echo "  Builder-Pi — Complete Setup"
-echo "═══════════════════════════════════════════════════════════════"
-echo ""
+This bundle only registers the Pi as an SSM managed instance. All software
+(arduino-cli, ESP32 core, the builder GUI, systemd service) is installed
+afterwards from the deploy host via SSM documents — nothing else runs here.
 
-echo "Step 1: SSM Agent..."
-"$SCRIPT_DIR/setup-ssm.sh"
-echo ""
+On the Pi:
+  unzip builder-pi-bundle.zip
+  cd builder-pi-bundle
+  sudo ./setup-ssm.sh
 
-echo "Step 2: Builder Application..."
-"$SCRIPT_DIR/setup-builder-pi.sh"
-echo ""
+Then, from the deploy host (the machine with AWS credentials for this account):
+  ./raw_device_builder/setup-builder-pi-remote.sh --region $REGION
 
-echo "═══════════════════════════════════════════════════════════════"
-echo "  ✅ Setup complete!"
-echo "═══════════════════════════════════════════════════════════════"
-echo ""
-echo "  GUI: http://$(hostname -I | awk '{print $1}'):8080"
-echo ""
-EOF
-chmod +x "$BUNDLE_DIR/setup-all.sh"
+That orchestrator waits for the Pi to come Online, then runs, in order:
+  1. pqc-workshop-install-toolchain   (arduino-cli, ESP32 core — slow, ~5GB)
+  2. pqc-workshop-deploy-app          (GUI app + assets from S3, config.json)
+  3. pqc-workshop-configure-service   (udev, systemd; the GUI auto-starts)
+
+When it finishes, the GUI is running at http://<pi-ip>:8080
+
+Activation ID: $ACTIVATION_ID   (expires in 7 days — re-run this bundler if needed)
+README
 
 # ─── Step 4: Create zip ─────────────────────────────────────────────────────
 echo "[4/4] Creating zip..."
 cd "$SCRIPT_DIR"
 rm -f builder-pi-bundle.zip
-zip -r builder-pi-bundle.zip builder-pi-bundle/ -x "*.pyc" "*__pycache__*"
+zip -r builder-pi-bundle.zip builder-pi-bundle/ >/dev/null
 
 echo ""
 echo "═══════════════════════════════════════════════════════════════"
-echo "  ✅ Builder-Pi bundle created!"
+echo "  ✅ Builder-Pi bundle created (SSM bootstrap only)!"
 echo "═══════════════════════════════════════════════════════════════"
 echo ""
 echo "  Directory: $BUNDLE_DIR"
 echo "  Zip:       $SCRIPT_DIR/builder-pi-bundle.zip"
 echo "  Activation ID: $ACTIVATION_ID"
 echo "  Region: $REGION"
-echo "  API: $API_ENDPOINT"
 echo ""
-echo "  Transfer to Pi and run:"
+echo "  On the Pi:"
 echo "    unzip builder-pi-bundle.zip"
 echo "    cd builder-pi-bundle"
-echo "    sudo ./setup-all.sh"
+echo "    sudo ./setup-ssm.sh"
+echo ""
+echo "  Then from the deploy host:"
+echo "    ./raw_device_builder/setup-builder-pi-remote.sh --region $REGION"
 echo ""
 echo "  ⚠️  Activation expires in 7 days. Run this script again if needed."
 echo ""

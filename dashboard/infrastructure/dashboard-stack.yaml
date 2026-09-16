@@ -30,6 +30,25 @@ Parameters:
       early validation (AWS::EarlyValidation::ResourceExistenceCheck) sees the
       function as an existing dependency at change-set time.
 
+  DashboardTriggerBuild:
+    Type: String
+    Default: 'false'
+    AllowedValues: ['true', 'false']
+    Description: >
+      Whether this stack builds + deploys the v2 dashboard via CodeBuild during
+      stack create/update. Kept 'false' for the orchestrated deploy: the build
+      source (the Vite frontend) must be uploaded to the dashboard source bucket
+      AFTER the bucket exists, so deploy-workshop.sh stages the source and
+      triggers the dashboard build as a post-deploy step (mirroring how the
+      broker image is built). Set 'true' only if the source is already staged
+      before deploy.
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Conditions
+# ─────────────────────────────────────────────────────────────────────────────
+Conditions:
+  ShouldTriggerDashboardBuild: !Equals [!Ref DashboardTriggerBuild, 'true']
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Resources
 # ─────────────────────────────────────────────────────────────────────────────
@@ -890,6 +909,236 @@ Resources:
             ResponseCode: 200
             ResponsePagePath: /index.html
 
+  # ═══════════════════════════════════════════════════════════════════════════
+  # CodeBuild — Build + deploy the v2 dashboard (moved off the deploy host)
+  # ═══════════════════════════════════════════════════════════════════════════
+  # The Vite/React frontend was previously built with npm on the operator's
+  # laptop and synced to the site bucket by deploy-workshop.sh. That made the
+  # deploy laptop-dependent and slow. This CodeBuild project runs the build in
+  # AWS: it reads the runtime config from SSM (/pqc-workshop/dashboard/*, written
+  # by the deploy script), materializes public/config.json, `npm run build`s,
+  # syncs the artifact to the site bucket, and invalidates CloudFront. The build
+  # is env-agnostic (config.json is fetched at runtime, not baked in), so the
+  # project can be re-run standalone from the console to redeploy the dashboard.
+
+  DashboardSourceBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub 'pqc-workshop-dashboard-source-${AWS::AccountId}'
+      VersioningConfiguration:
+        Status: Enabled
+      LifecycleConfiguration:
+        Rules:
+          - Id: ExpireOldVersions
+            Status: Enabled
+            NoncurrentVersionExpiration:
+              NoncurrentDays: 30
+
+  DashboardBuildRole:
+    Type: AWS::IAM::Role
+    Properties:
+      # No explicit RoleName (auto-generated); referenced only by !GetAtt .Arn.
+      # Fixed role names collide on repeated deploys in a shared account (early
+      # validation resource-name-conflict).
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codebuild.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: DashboardBuildPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              # CodeBuild log stream
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/pqc-workshop-dashboard-build*'
+              # Read the build source (Vite frontend) from the source bucket
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:GetObjectVersion
+                  - s3:ListBucket
+                  - s3:GetBucketLocation
+                Resource:
+                  - !GetAtt DashboardSourceBucket.Arn
+                  - !Sub '${DashboardSourceBucket.Arn}/*'
+              # Write the built site to the CloudFront origin bucket (--delete
+              # needs List + Delete alongside Put/Get).
+              - Effect: Allow
+                Action:
+                  - s3:PutObject
+                  - s3:GetObject
+                  - s3:DeleteObject
+                  - s3:ListBucket
+                  - s3:GetBucketLocation
+                Resource:
+                  - !GetAtt FirmwareDashboardBucket.Arn
+                  - !Sub '${FirmwareDashboardBucket.Arn}/*'
+              # Invalidate the CloudFront distribution after sync
+              - Effect: Allow
+                Action:
+                  - cloudfront:CreateInvalidation
+                Resource: !Sub 'arn:aws:cloudfront::${AWS::AccountId}:distribution/${FirmwareDashboardDistribution}'
+              # Read the deployment-derived dashboard config from SSM
+              - Effect: Allow
+                Action:
+                  - ssm:GetParameter
+                  - ssm:GetParameters
+                  - ssm:GetParametersByPath
+                Resource:
+                  - !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/pqc-workshop/dashboard/*'
+
+  DashboardBuildProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: pqc-workshop-dashboard-build
+      Description: Builds + deploys the v2 PQC dashboard (Vite/React) to S3 + CloudFront
+      ServiceRole: !GetAtt DashboardBuildRole.Arn
+      TimeoutInMinutes: 20
+      Source:
+        Type: S3
+        Location: !Sub '${DashboardSourceBucket}/frontend/'
+        # The Vite frontend ships a buildspec.yml at its root.
+        BuildSpec: buildspec.yml
+      Artifacts:
+        Type: NO_ARTIFACTS
+      Environment:
+        Type: LINUX_CONTAINER
+        ComputeType: BUILD_GENERAL1_MEDIUM
+        Image: aws/codebuild/standard:7.0
+        # No Docker needed — this is a plain npm build (unlike the broker image
+        # build, which needs PrivilegedMode for `docker build`).
+        PrivilegedMode: false
+        EnvironmentVariables:
+          - Name: AWS_DEFAULT_REGION
+            Value: !Ref AWS::Region
+          # The CloudFront origin bucket to sync the built site into.
+          - Name: DASHBOARD_BUCKET
+            Value: !Ref FirmwareDashboardBucket
+          # The distribution to invalidate after sync.
+          - Name: DASHBOARD_DISTRIBUTION_ID
+            Value: !Ref FirmwareDashboardDistribution
+          # SSM path prefix holding the runtime dashboard config.
+          - Name: SSM_PREFIX
+            Value: /pqc-workshop/dashboard
+      LogsConfig:
+        CloudWatchLogs:
+          Status: ENABLED
+          GroupName: !Sub '/aws/codebuild/pqc-workshop-dashboard-build'
+
+  # ─── Build Trigger Lambda (in-stack, gated) ────────────────────────────────
+  # Optional: build the dashboard during stack create/update when
+  # DashboardTriggerBuild=true. Default 'false' for the orchestrated deploy
+  # (deploy-workshop.sh stages source + triggers post-deploy), matching the
+  # broker image build pattern.
+
+  DashboardBuildTriggerRole:
+    Type: AWS::IAM::Role
+    Condition: ShouldTriggerDashboardBuild
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: TriggerBuild
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - codebuild:StartBuild
+                  - codebuild:BatchGetBuilds
+                Resource: !GetAtt DashboardBuildProject.Arn
+
+  DashboardBuildTriggerFunction:
+    Type: AWS::Lambda::Function
+    Condition: ShouldTriggerDashboardBuild
+    Properties:
+      Runtime: python3.12
+      Handler: index.handler
+      Timeout: 900
+      Role: !GetAtt DashboardBuildTriggerRole.Arn
+      Environment:
+        Variables:
+          PROJECT_NAME: !Ref DashboardBuildProject
+      Code:
+        ZipFile: |
+          """
+          Triggers the dashboard CodeBuild project and waits for completion.
+          Used as a CloudFormation Custom Resource to build + deploy the v2
+          dashboard during stack deployment (only when DashboardTriggerBuild=true).
+          """
+          import boto3
+          import time
+          import os
+          import cfnresponse
+
+          codebuild = boto3.client('codebuild')
+
+          def handler(event, context):
+              try:
+                  if event['RequestType'] == 'Delete':
+                      cfnresponse.send(event, context, cfnresponse.SUCCESS, {})
+                      return
+
+                  project = os.environ['PROJECT_NAME']
+                  print(f"Starting build for project: {project}")
+
+                  resp = codebuild.start_build(projectName=project)
+                  build_id = resp['build']['id']
+                  print(f"Build started: {build_id}")
+
+                  # Poll for completion (max ~14 minutes to stay within Lambda timeout)
+                  for _ in range(170):
+                      time.sleep(5)
+                      builds = codebuild.batch_get_builds(ids=[build_id])
+                      status = builds['builds'][0]['buildStatus']
+                      phase = builds['builds'][0].get('currentPhase', 'UNKNOWN')
+                      print(f"  Status: {status}, Phase: {phase}")
+
+                      if status == 'SUCCEEDED':
+                          cfnresponse.send(event, context, cfnresponse.SUCCESS, {
+                              'BuildId': build_id,
+                              'Status': 'SUCCEEDED'
+                          })
+                          return
+                      elif status in ('FAILED', 'FAULT', 'TIMED_OUT', 'STOPPED'):
+                          cfnresponse.send(event, context, cfnresponse.FAILED, {
+                              'Error': f'Build {status}: {build_id}'
+                          })
+                          return
+
+                  cfnresponse.send(event, context, cfnresponse.FAILED, {
+                      'Error': f'Build timed out (Lambda timeout): {build_id}'
+                  })
+              except Exception as e:
+                  print(f"Error: {e}")
+                  cfnresponse.send(event, context, cfnresponse.FAILED, {'Error': str(e)})
+
+  TriggerDashboardBuild:
+    Type: Custom::TriggerDashboardBuild
+    Condition: ShouldTriggerDashboardBuild
+    DependsOn:
+      - DashboardBuildProject
+      - FirmwareDashboardBucketPolicy
+    Properties:
+      ServiceToken: !GetAtt DashboardBuildTriggerFunction.Arn
+      # Change this value to force a rebuild on stack update.
+      BuildVersion: '1'
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Outputs
 # ─────────────────────────────────────────────────────────────────────────────
@@ -897,6 +1146,14 @@ Outputs:
   DashboardURL:
     Description: v2 Firmware Manager dashboard URL (CloudFront)
     Value: !Sub 'https://${FirmwareDashboardDistribution.DomainName}'
+
+  DashboardBuildProjectName:
+    Description: CodeBuild project that builds + deploys the v2 dashboard
+    Value: !Ref DashboardBuildProject
+
+  DashboardSourceBucketName:
+    Description: S3 bucket the deploy script stages the dashboard build source into
+    Value: !Ref DashboardSourceBucket
 
   DashboardBucketName:
     Description: S3 bucket for the v2 dashboard static files

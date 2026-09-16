@@ -108,6 +108,531 @@ Resources:
         - Key: ManagedBy
           Value: CloudFormation
 
+  # ─── IAM Role for the Builder-Pi managed instance ──────────────────────────
+  # The builder-Pi (the Raspberry Pi that flashes ESP32 devices) needs a broader
+  # permission set than the broker-Pi role above: it reads workshop config from
+  # SSM Parameter Store, decrypts the WiFi-password SecureString, pulls the app
+  # tarball + firmware from S3, calls the builder API Gateway, and ships logs to
+  # CloudWatch. Historically this role was created imperatively by
+  # bundle-for-builder-pi.sh (`aws iam create-role pqc-workshop-builder-pi-ssm`),
+  # which meant it lived outside CloudFormation, drifted, and survived teardown.
+  # It now lives here so it is stack-owned, versioned, and reproducible from a
+  # from-scratch deploy. The bundler references this role by name (from the
+  # BuilderPiRoleName output) instead of creating its own.
+  BuilderPiRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: pqc-workshop-builder-pi-ssm
+      Description: >
+        Role assumed by the builder Raspberry Pi SSM agent (PQC workshop). Grants
+        the SSM-document-driven provisioning + the GUI's runtime needs: SSM
+        parameter reads, KMS decrypt for the WiFi SecureString, S3 app/firmware
+        pulls, builder API access, and CloudWatch log shipping.
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ssm.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        # Core SSM agent functionality (Session Manager, Run Command, Inventory).
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+      Policies:
+        # Read deployment-derived workshop config (builder-pi/*, wifi/*,
+        # broker/*, dashboard/* region) from Parameter Store. The SSM deploy-app
+        # document materializes config.json from these, and the GUI reads
+        # wifi/ssid + broker/endpoint at runtime.
+        - PolicyName: WorkshopParameterRead
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ssm:GetParameter
+                  - ssm:GetParameters
+                  - ssm:GetParametersByPath
+                Resource:
+                  - !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/pqc-workshop/*'
+              # The WiFi password is a SecureString; the configure-service SSM
+              # document reads it with --with-decryption to set up the AP, which
+              # needs kms:Decrypt on the account default SSM key.
+              - Effect: Allow
+                Action:
+                  - kms:Decrypt
+                Resource: '*'
+                Condition:
+                  StringEquals:
+                    kms:ViaService: !Sub 'ssm.${AWS::Region}.amazonaws.com'
+        # Pull the builder-pi app tarball + device firmware from the firmware
+        # bucket (the deploy script stages both under pqc-workshop-firmware-*).
+        - PolicyName: S3FirmwareAndAppRead
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:ListBucket
+                Resource:
+                  - arn:aws:s3:::pqc-workshop-firmware-*
+                  - arn:aws:s3:::pqc-workshop-firmware-*/*
+        # Call the builder API Gateway (device registration/deregistration).
+        - PolicyName: BuilderApiAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - execute-api:Invoke
+                Resource: '*'
+        # Query AWS for status checks (device_manager, check_setup_status) and
+        # resolve the IoT endpoint.
+        - PolicyName: WorkshopReadOnlyChecks
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - iot:DescribeEndpoint
+                  - iot:DescribeThing
+                  - iot:ListThings
+                  - iot:ListThingPrincipals
+                  - sts:GetCallerIdentity
+                Resource: '*'
+        # Ship the builder-pi flash/serial logs + GUI journal to CloudWatch.
+        - PolicyName: CloudWatchLogs
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                  - logs:DescribeLogStreams
+                Resource:
+                  - !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/pqc-workshop/*'
+      Tags:
+        - Key: Workshop
+          Value: pqc-reinvent
+        - Key: ManagedBy
+          Value: CloudFormation
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # SSM Documents — Builder-Pi provisioning (replaces on-Pi setup-builder-pi.sh)
+  # ═══════════════════════════════════════════════════════════════════════════
+  # The builder-Pi used to be provisioned by a big self-contained shell script
+  # (setup-builder-pi.sh) that the operator ran under sudo from the bundle. That
+  # was fragile (a mid-script failure under `set -e` silently killed the rest,
+  # with no captured output — see the $HOME-unset abort during the pqc-a rebuild)
+  # and left the GUI service disabled (manual start). These three Run Command
+  # documents replace it. They run as root via SSM (consistent env — no operator
+  # shell/$HOME/sudo variance), capture every step's stdout/stderr/exit to SSM +
+  # CloudWatch, and each is independently re-runnable so a failure retries in
+  # isolation without repeating the slow ~5GB ESP32-core install.
+  #
+  # Split (run in this order by setup-builder-pi-remote.sh):
+  #   1. install-toolchain — apt + arduino-cli + ESP32 core + libraries (slow)
+  #   2. deploy-app        — fetch app + assets from S3, config.json from SSM
+  #   3. configure-service — udev, systemd (enable --now = auto-start), CloudWatch
+  #
+  # Self-contained: each doc reads what it needs from SSM Parameter Store
+  # (/pqc-workshop/*), so it works when run standalone from the console, not just
+  # from the orchestrator. The app source + assets are staged to the firmware
+  # bucket by deploy-workshop.sh; the docs fetch them (no more "files next to the
+  # script"). Logs go to /var/log/workshop-builder/*.log (shipped to CloudWatch
+  # by the configure-service doc).
+
+  # ─── Document 1: install the toolchain (slow, ~5GB ESP32 core) ─────────────
+  InstallToolchainDocument:
+    Type: AWS::SSM::Document
+    Properties:
+      Name: pqc-workshop-install-toolchain
+      DocumentType: Command
+      DocumentFormat: YAML
+      TargetType: /
+      Content:
+        schemaVersion: '2.2'
+        description: >
+          Install the builder-Pi toolchain: system packages, arduino-cli, the
+          ESP32 board core, and the wolfSSL + PubSubClient libraries. Idempotent
+          and safe to re-run (skips already-installed pieces).
+        mainSteps:
+          - action: aws:runShellScript
+            name: installToolchain
+            inputs:
+              timeoutSeconds: '3600'
+              runCommand:
+                - |
+                  #!/bin/bash
+                  # Do NOT use `set -e`: we want every step to run and log, and
+                  # to fail loudly at the end with a clear exit code rather than
+                  # die silently mid-script (the failure mode that motivated this
+                  # refactor). pipefail keeps piped failures visible.
+                  set -uo pipefail
+                  exec > >(tee -a /var/log/workshop-builder/install-toolchain.log) 2>&1
+                  echo "=== install-toolchain $(date -u +%FT%TZ) ==="
+
+                  INSTALL_DIR="/opt/pqc-workshop"
+                  ARDUINO_DATA_DIR="$INSTALL_DIR/arduino-data"
+                  ARDUINO_USER_DIR="$INSTALL_DIR/arduino-user"
+                  ARDUINO_CONFIG="$INSTALL_DIR/arduino-cli.yaml"
+                  mkdir -p "$INSTALL_DIR" "$ARDUINO_DATA_DIR" "$ARDUINO_USER_DIR" /var/log/workshop-builder
+                  rc=0
+
+                  echo "[1/4] System packages..."
+                  export DEBIAN_FRONTEND=noninteractive
+                  apt-get update -qq || rc=1
+                  apt-get install -y --no-install-recommends \
+                      python3 python3-pip python3-venv \
+                      curl ca-certificates git udev libusb-1.0-0 2>&1 | tail -3 || rc=1
+
+                  echo "[2/4] arduino-cli..."
+                  if command -v arduino-cli >/dev/null 2>&1; then
+                      echo "      already installed: $(arduino-cli version | head -1)"
+                  else
+                      curl -fsSL https://raw.githubusercontent.com/arduino/arduino-cli/master/install.sh \
+                          | BINDIR=/usr/local/bin sh || rc=1
+                  fi
+
+                  echo "[3/4] arduino-cli config..."
+                  cat > "$ARDUINO_CONFIG" <<EOF
+                  board_manager:
+                    additional_urls:
+                      - https://espressif.github.io/arduino-esp32/package_esp32_index.json
+                  daemon:
+                    port: "50051"
+                  directories:
+                    data: $ARDUINO_DATA_DIR
+                    downloads: $ARDUINO_DATA_DIR/staging
+                    user: $ARDUINO_USER_DIR
+                  logging:
+                    file: ""
+                    format: text
+                    level: info
+                  EOF
+                  CLI="arduino-cli --config-file $ARDUINO_CONFIG"
+
+                  echo "[4/4] ESP32 core + libraries (this is the slow ~5GB step)..."
+                  $CLI core update-index 2>&1 | tail -1 || rc=1
+                  if $CLI core list 2>/dev/null | grep -q "esp32:esp32"; then
+                      echo "      ESP32 core already installed"
+                  else
+                      $CLI core install esp32:esp32@3.3.10 2>&1 | tail -3 || rc=1
+                  fi
+                  $CLI lib list 2>/dev/null | grep -qi "wolfssl" \
+                      && echo "      wolfSSL already installed" \
+                      || { $CLI lib install "wolfssl" 2>&1 | tail -1 || rc=1; }
+                  $CLI lib list 2>/dev/null | grep -qi "PubSubClient" \
+                      && echo "      PubSubClient already installed" \
+                      || { $CLI lib install "PubSubClient" 2>&1 | tail -1 || rc=1; }
+
+                  if [ "$rc" -ne 0 ]; then
+                      echo "ERROR: install-toolchain had failures (rc=$rc); see log above."
+                      exit 1
+                  fi
+                  echo "=== install-toolchain OK ==="
+      Tags:
+        - Key: Workshop
+          Value: pqc-reinvent
+
+  # ─── Document 2: deploy the app + assets (fetched from S3), write config ────
+  DeployAppDocument:
+    Type: AWS::SSM::Document
+    Properties:
+      Name: pqc-workshop-deploy-app
+      DocumentType: Command
+      DocumentFormat: YAML
+      TargetType: /
+      Content:
+        schemaVersion: '2.2'
+        description: >
+          Deploy the builder-Pi GUI app + assets (pulled from the firmware S3
+          bucket, not baked into a bundle), install Python deps + the
+          workshop-builder CLI, apply the wolfSSL PQC config + custom partition
+          table, and materialize config.json from SSM Parameter Store. Re-run to
+          refresh the app to the latest staged version.
+        parameters:
+          FirmwareBucket:
+            type: String
+            description: >
+              Firmware S3 bucket holding builder-pi/ assets. Leave empty to
+              resolve from SSM (/pqc-workshop/builder-pi/firmwareBucket).
+            default: ''
+        mainSteps:
+          - action: aws:runShellScript
+            name: deployApp
+            inputs:
+              timeoutSeconds: '900'
+              runCommand:
+                - |
+                  #!/bin/bash
+                  set -uo pipefail
+                  exec > >(tee -a /var/log/workshop-builder/deploy-app.log) 2>&1
+                  echo "=== deploy-app $(date -u +%FT%TZ) ==="
+
+                  INSTALL_DIR="/opt/pqc-workshop"
+                  APP_DIR="$INSTALL_DIR/builder-app"
+                  ARDUINO_DATA_DIR="$INSTALL_DIR/arduino-data"
+                  ARDUINO_USER_DIR="$INSTALL_DIR/arduino-user"
+                  mkdir -p "$APP_DIR" /var/log/workshop-builder
+                  rc=0
+
+                  # Region: from SSM registration, else the instance's configured
+                  # region, else us-east-1. Needed for the aws CLI + config.json.
+                  REGION=$(cat /var/lib/amazon/ssm/registration 2>/dev/null \
+                      | python3 -c "import sys,json;print(json.load(sys.stdin).get('Region',''))" 2>/dev/null)
+                  [ -z "$REGION" ] && REGION="${AWS_DEFAULT_REGION:-us-east-1}"
+                  export AWS_DEFAULT_REGION="$REGION"
+
+                  ssm_param() { aws ssm get-parameter --name "$1" \
+                      --query 'Parameter.Value' --output text --region "$REGION" 2>/dev/null; }
+
+                  # Resolve the firmware bucket: doc parameter wins, else SSM,
+                  # else derive from the account id.
+                  FW_BUCKET="{{ FirmwareBucket }}"
+                  if [ -z "$FW_BUCKET" ]; then
+                      FW_BUCKET=$(ssm_param /pqc-workshop/builder-pi/firmwareBucket)
+                  fi
+                  if [ -z "$FW_BUCKET" ] || [ "$FW_BUCKET" = "None" ]; then
+                      ACCT=$(aws sts get-caller-identity --query Account --output text 2>/dev/null)
+                      FW_BUCKET="pqc-workshop-firmware-${ACCT}"
+                  fi
+                  echo "Firmware bucket: $FW_BUCKET"
+                  S3_PREFIX="s3://${FW_BUCKET}/builder-pi"
+
+                  echo "[1/5] Fetching + unpacking the app tarball..."
+                  TMP=$(mktemp -d)
+                  if aws s3 cp "$S3_PREFIX/app.tgz" "$TMP/app.tgz" --region "$REGION"; then
+                      # Clear the app dir but keep an existing config.json if the
+                      # tarball doesn't carry one (config is written below anyway).
+                      rm -rf "$APP_DIR"/*
+                      tar -xzf "$TMP/app.tgz" -C "$APP_DIR"
+                      echo "      unpacked to $APP_DIR"
+                  else
+                      echo "ERROR: could not fetch $S3_PREFIX/app.tgz"
+                      rc=1
+                  fi
+                  rm -rf "$TMP"
+
+                  echo "[2/5] Applying the custom partition table..."
+                  PARTITIONS_DIR=$(find "$ARDUINO_DATA_DIR" -path "*/tools/partitions" -type d 2>/dev/null | grep esp32 | head -1)
+                  if [ -n "$PARTITIONS_DIR" ] \
+                     && aws s3 cp "$S3_PREFIX/partitions_pqc_workshop.csv" "$PARTITIONS_DIR/pqc_workshop.csv" --region "$REGION"; then
+                      echo "      partition table -> $PARTITIONS_DIR/pqc_workshop.csv"
+                  else
+                      echo "      [WARN] partition table not applied (partitions dir found: ${PARTITIONS_DIR:-none})"
+                  fi
+
+                  echo "[3/5] Applying the wolfSSL PQC config..."
+                  WOLFSSL_DIR=$(find "$ARDUINO_USER_DIR" -path "*/libraries/wolfssl/src" -type d 2>/dev/null | head -1)
+                  [ -z "$WOLFSSL_DIR" ] && WOLFSSL_DIR=$(find "$ARDUINO_DATA_DIR" -path "*/libraries/wolfssl/src" -type d 2>/dev/null | head -1)
+                  if [ -n "$WOLFSSL_DIR" ] \
+                     && aws s3 cp "$S3_PREFIX/wolfssl_user_settings_arduino.h" "$WOLFSSL_DIR/user_settings.h" --region "$REGION"; then
+                      echo "      wolfSSL PQC config -> $WOLFSSL_DIR/user_settings.h"
+                  else
+                      echo "      [WARN] wolfSSL config not applied (lib dir found: ${WOLFSSL_DIR:-none})"
+                  fi
+
+                  echo "[4/5] Python deps + workshop-builder CLI..."
+                  pip3 install --no-cache-dir --break-system-packages \
+                      flask==3.1.* boto3 pyserial requests esptool 2>&1 | tail -3 || rc=1
+                  if [ -f "$APP_DIR/pyproject.toml" ]; then
+                      pip3 install --no-cache-dir --break-system-packages "$APP_DIR" 2>&1 | tail -3 || rc=1
+                      command -v workshop-builder >/dev/null 2>&1 \
+                          && echo "      workshop-builder: $(command -v workshop-builder)" \
+                          || echo "      [WARN] workshop-builder not on PATH"
+                  else
+                      echo "      [WARN] no pyproject.toml in app; skipping CLI install"
+                  fi
+
+                  echo "[5/5] Writing config.json from SSM..."
+                  API_ENDPOINT=$(ssm_param /pqc-workshop/builder-pi/apiEndpoint)
+                  CFG_FW=$(ssm_param /pqc-workshop/builder-pi/firmwareBucket)
+                  [ -z "$CFG_FW" ] || [ "$CFG_FW" = "None" ] && CFG_FW="$FW_BUCKET"
+                  python3 - "$APP_DIR/config.json" "$API_ENDPOINT" "$REGION" "$CFG_FW" <<'PY'
+                  import json, sys
+                  path, api, region, fw = sys.argv[1:5]
+                  cfg = {}
+                  try:
+                      with open(path) as f:
+                          cfg = json.load(f)
+                  except Exception:
+                      pass
+                  if api and api != "None":
+                      cfg["api_endpoint"] = api
+                  cfg["region"] = region
+                  if fw and fw != "None":
+                      cfg["firmware_bucket"] = fw
+                  cfg.setdefault("serial_baud_rate", 115200)
+                  cfg.setdefault("gui_port", 8080)
+                  with open(path, "w") as f:
+                      json.dump(cfg, f, indent=2)
+                  print("      config.json:", json.dumps(cfg))
+                  PY
+
+                  if [ "$rc" -ne 0 ]; then
+                      echo "ERROR: deploy-app had failures (rc=$rc); see log above."
+                      exit 1
+                  fi
+                  echo "=== deploy-app OK ==="
+      Tags:
+        - Key: Workshop
+          Value: pqc-reinvent
+
+  # ─── Document 3: configure the service (udev, systemd auto-start, CloudWatch) ─
+  ConfigureServiceDocument:
+    Type: AWS::SSM::Document
+    Properties:
+      Name: pqc-workshop-configure-service
+      DocumentType: Command
+      DocumentFormat: YAML
+      TargetType: /
+      Content:
+        schemaVersion: '2.2'
+        description: >
+          Configure the builder-Pi runtime: udev rules for ESP32 USB access, the
+          systemd unit for the GUI (enabled + started = auto-start on boot), and
+          the CloudWatch agent to ship Pi logs. Idempotent; re-run to restart the
+          GUI or refresh the service definition.
+        mainSteps:
+          - action: aws:runShellScript
+            name: configureService
+            inputs:
+              timeoutSeconds: '600'
+              runCommand:
+                - |
+                  #!/bin/bash
+                  set -uo pipefail
+                  exec > >(tee -a /var/log/workshop-builder/configure-service.log) 2>&1
+                  echo "=== configure-service $(date -u +%FT%TZ) ==="
+
+                  INSTALL_DIR="/opt/pqc-workshop"
+                  APP_DIR="$INSTALL_DIR/builder-app"
+                  ARDUINO_CONFIG="$INSTALL_DIR/arduino-cli.yaml"
+                  mkdir -p /var/log/workshop-builder
+                  rc=0
+
+                  REGION=$(cat /var/lib/amazon/ssm/registration 2>/dev/null \
+                      | python3 -c "import sys,json;print(json.load(sys.stdin).get('Region',''))" 2>/dev/null)
+                  [ -z "$REGION" ] && REGION="${AWS_DEFAULT_REGION:-us-east-1}"
+
+                  echo "[1/3] udev rules for ESP32 USB access..."
+                  cat > /etc/udev/rules.d/99-esp32.rules <<'UDEV'
+                  SUBSYSTEM=="tty", ATTRS{idVendor}=="10c4", MODE="0666"
+                  SUBSYSTEM=="tty", ATTRS{idVendor}=="1a86", MODE="0666"
+                  SUBSYSTEM=="tty", ATTRS{idVendor}=="0403", MODE="0666"
+                  SUBSYSTEM=="tty", ATTRS{idVendor}=="303a", MODE="0666"
+                  UDEV
+                  udevadm control --reload-rules 2>/dev/null || true
+
+                  echo "[2/3] systemd unit for the GUI (enable + start = auto-start)..."
+                  cat > /etc/systemd/system/pqc-builder-gui.service <<SERVICE
+                  [Unit]
+                  Description=PQC Workshop Builder-Pi GUI
+                  After=network.target
+
+                  [Service]
+                  Type=simple
+                  User=root
+                  WorkingDirectory=$APP_DIR
+                  Environment=ARDUINO_CLI_CONFIG=$ARDUINO_CONFIG
+                  ExecStart=/usr/bin/python3 app.py
+                  Restart=on-failure
+                  RestartSec=5
+
+                  [Install]
+                  WantedBy=multi-user.target
+                  SERVICE
+                  cat > /etc/profile.d/pqc-workshop.sh <<'PROFILE'
+                  export ARDUINO_CLI_CONFIG=/opt/pqc-workshop/arduino-cli.yaml
+                  export PATH=/usr/local/bin:$PATH
+                  PROFILE
+                  systemctl daemon-reload || rc=1
+                  # enable --now both enables at boot AND starts immediately, so
+                  # the GUI comes up automatically with no manual step (the whole
+                  # point of this task). --now restart semantics: if already
+                  # running, restart to pick up a refreshed app.
+                  systemctl enable pqc-builder-gui 2>&1 | tail -1 || rc=1
+                  systemctl restart pqc-builder-gui || rc=1
+                  sleep 2
+                  if systemctl is-active --quiet pqc-builder-gui; then
+                      echo "      pqc-builder-gui is active"
+                  else
+                      echo "      [ERROR] pqc-builder-gui failed to start:"
+                      journalctl -u pqc-builder-gui --no-pager -n 30 || true
+                      rc=1
+                  fi
+
+                  echo "[3/3] CloudWatch agent (ship /var/log/workshop-builder + journal)..."
+                  if command -v amazon-cloudwatch-agent-ctl >/dev/null 2>&1 \
+                     || [ -x /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl ]; then
+                      echo "      agent already installed"
+                  else
+                      CW_ARCH=$(dpkg --print-architecture 2>/dev/null || echo arm64)
+                      case "$CW_ARCH" in
+                          arm64) CW_PKG="arm64/latest/amazon-cloudwatch-agent.deb" ;;
+                          armhf) CW_PKG="arm/latest/amazon-cloudwatch-agent.deb" ;;
+                          *)     CW_PKG="${CW_ARCH}/latest/amazon-cloudwatch-agent.deb" ;;
+                      esac
+                      CW_URL="https://amazoncloudwatch-agent-${REGION}.s3.${REGION}.amazonaws.com/debian/${CW_PKG}"
+                      if curl -fsSL "$CW_URL" -o /tmp/amazon-cloudwatch-agent.deb; then
+                          dpkg -i -E /tmp/amazon-cloudwatch-agent.deb 2>&1 | tail -2 \
+                              || echo "      [WARN] CloudWatch agent install failed (logs stay local)"
+                      else
+                          echo "      [WARN] could not download CloudWatch agent; logs stay local"
+                      fi
+                  fi
+                  CW_AGENT_DIR="/opt/aws/amazon-cloudwatch-agent/etc"
+                  if [ -d "$CW_AGENT_DIR" ] || [ -x /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl ]; then
+                      mkdir -p "$CW_AGENT_DIR" /root/.aws
+                      cat > "$CW_AGENT_DIR/common-config.toml" <<'COMMONCFG'
+                  [credentials]
+                    shared_credential_profile = "default"
+                    shared_credential_file = "/root/.aws/credentials"
+                  COMMONCFG
+                      if [ ! -f /root/.aws/config ] || ! grep -q '^\[default\]' /root/.aws/config 2>/dev/null; then
+                          printf '[default]\nregion = %s\noutput = json\n' "$REGION" > /root/.aws/config
+                      fi
+                      cat > "$CW_AGENT_DIR/builder-pi-cloudwatch.json" <<CWCONFIG
+                  {
+                    "agent": { "region": "${REGION}", "run_as_user": "root" },
+                    "logs": {
+                      "logs_collected": {
+                        "files": {
+                          "collect_list": [
+                            {
+                              "file_path": "/var/log/workshop-builder/*.log",
+                              "log_group_name": "/pqc-workshop/builder-pi",
+                              "log_stream_name": "{hostname}/workshop-builder",
+                              "retention_in_days": 14
+                            }
+                          ]
+                        }
+                      }
+                    }
+                  }
+                  CWCONFIG
+                      /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl \
+                          -a fetch-config -m onPremise -s \
+                          -c file:"$CW_AGENT_DIR/builder-pi-cloudwatch.json" 2>&1 | tail -3 \
+                          || echo "      [WARN] could not start CloudWatch agent; logs stay local"
+                  else
+                      echo "      [WARN] CloudWatch agent not present; Pi logs stay local"
+                  fi
+
+                  IP=$(hostname -I | awk '{print $1}')
+                  echo "GUI: http://${IP}:8080"
+                  if [ "$rc" -ne 0 ]; then
+                      echo "ERROR: configure-service had failures (rc=$rc); see log above."
+                      exit 1
+                  fi
+                  echo "=== configure-service OK ==="
+      Tags:
+        - Key: Workshop
+          Value: pqc-reinvent
+
   # ─── SSM Hybrid Activation ─────────────────────────────────────────────────
   # Custom resource that creates the activation and stores credentials in
   # Secrets Manager (since CloudFormation doesn't natively support
@@ -277,6 +802,25 @@ Outputs:
   SSMRoleName:
     Description: IAM role name for SSM managed instances
     Value: !Ref SSMManagedInstanceRole
+
+  BuilderPiRoleName:
+    Description: >
+      IAM role name for the builder-Pi managed instance. The bundler passes this
+      as --iam-role when creating the SSM activation (instead of creating its own
+      role), so the Pi registers with a stack-owned, fully-scoped role.
+    Value: !Ref BuilderPiRole
+
+  InstallToolchainDocumentName:
+    Description: SSM document — install the builder-Pi toolchain (step 1)
+    Value: !Ref InstallToolchainDocument
+
+  DeployAppDocumentName:
+    Description: SSM document — deploy the builder-Pi app + assets (step 2)
+    Value: !Ref DeployAppDocument
+
+  ConfigureServiceDocumentName:
+    Description: SSM document — configure udev/systemd/CloudWatch, auto-start GUI (step 3)
+    Value: !Ref ConfigureServiceDocument
 
   SSMRoleArn:
     Description: IAM role ARN for SSM managed instances

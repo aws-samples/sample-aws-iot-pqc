@@ -1,0 +1,92 @@
+version: 0.2
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Dashboard build spec — builds + deploys the v2 PQC dashboard (Vite/React).
+#
+# This runs in the pqc-workshop-dashboard-build CodeBuild project (defined in
+# dashboard/infrastructure/dashboard-stack.yaml). It replaces the old
+# laptop-side `npm ci && npm run build && s3 sync` that deploy-workshop.sh used
+# to run, so the deploy no longer depends on the operator's machine.
+#
+# Config source (SSM, not env vars): the runtime config the SPA fetches at load
+# (/config.json) is materialized here from Parameter Store — the deploy script
+# writes /pqc-workshop/dashboard/{appSyncEndpoint,identityPoolId,apiEndpoint,region}
+# BEFORE triggering this build. Reading from SSM (rather than build env vars)
+# keeps the build re-runnable standalone: anyone can start this project from the
+# console and it self-configures from the same canonical source. The built
+# bundle is env-agnostic — config.json is fetched at runtime, never baked in.
+#
+# Environment variables supplied by the CodeBuild project:
+#   AWS_DEFAULT_REGION         — build region
+#   DASHBOARD_BUCKET           — CloudFront origin S3 bucket to sync the site to
+#   DASHBOARD_DISTRIBUTION_ID  — CloudFront distribution to invalidate
+#   SSM_PREFIX                 — SSM path prefix for the dashboard config
+#                                (default /pqc-workshop/dashboard)
+# ─────────────────────────────────────────────────────────────────────────────
+
+phases:
+  install:
+    runtime-versions:
+      # Vite 8 requires Node 20+. The standard:7.0 image ships multiple Node
+      # runtimes; pin 20 explicitly rather than rely on the image default.
+      nodejs: 20
+    commands:
+      - node --version
+      - npm --version
+
+  pre_build:
+    commands:
+      - echo "Installing dependencies (npm ci)..."
+      - npm ci
+      - echo "Resolving dashboard config from SSM ($SSM_PREFIX)..."
+      # Pull the deployment-derived config the deploy script published. Fail
+      # fast if a required value is missing — a half-configured dashboard is
+      # worse than a loud build failure.
+      - APPSYNC_ENDPOINT=$(aws ssm get-parameter --name "$SSM_PREFIX/appSyncEndpoint" --query 'Parameter.Value' --output text)
+      - IDENTITY_POOL=$(aws ssm get-parameter --name "$SSM_PREFIX/identityPoolId" --query 'Parameter.Value' --output text)
+      - API_ENDPOINT=$(aws ssm get-parameter --name "$SSM_PREFIX/apiEndpoint" --query 'Parameter.Value' --output text)
+      - CONFIG_REGION=$(aws ssm get-parameter --name "$SSM_PREFIX/region" --query 'Parameter.Value' --output text)
+      - |
+        if [ -z "$APPSYNC_ENDPOINT" ] || [ "$APPSYNC_ENDPOINT" = "None" ] \
+           || [ -z "$IDENTITY_POOL" ] || [ "$IDENTITY_POOL" = "None" ] \
+           || [ -z "$API_ENDPOINT" ] || [ "$API_ENDPOINT" = "None" ]; then
+          echo "ERROR: dashboard config is incomplete in SSM ($SSM_PREFIX/*)."
+          echo "  appSyncEndpoint=$APPSYNC_ENDPOINT identityPoolId=$IDENTITY_POOL apiEndpoint=$API_ENDPOINT"
+          echo "  The deploy script must publish these before triggering the build."
+          exit 1
+        fi
+      - |
+        if [ -z "$CONFIG_REGION" ] || [ "$CONFIG_REGION" = "None" ]; then
+          CONFIG_REGION="$AWS_DEFAULT_REGION"
+        fi
+      - echo "Materializing public/config.json (runtime config, fetched by the SPA)..."
+      - mkdir -p public
+      - |
+        cat > public/config.json <<CONFIG
+        {
+          "appSyncEndpoint": "$APPSYNC_ENDPOINT",
+          "identityPoolId": "$IDENTITY_POOL",
+          "apiEndpoint": "$API_ENDPOINT",
+          "region": "$CONFIG_REGION",
+          "pollInterval": 5000
+        }
+        CONFIG
+      - cat public/config.json
+
+  build:
+    commands:
+      - echo "Building the dashboard (vite build -> build/)..."
+      - npm run build
+
+  post_build:
+    commands:
+      - echo "Syncing build/ to s3://$DASHBOARD_BUCKET/ ..."
+      - aws s3 sync build/ "s3://$DASHBOARD_BUCKET/" --delete
+      - |
+        if [ -n "$DASHBOARD_DISTRIBUTION_ID" ] && [ "$DASHBOARD_DISTRIBUTION_ID" != "None" ]; then
+          echo "Invalidating CloudFront distribution $DASHBOARD_DISTRIBUTION_ID ..."
+          aws cloudfront create-invalidation --distribution-id "$DASHBOARD_DISTRIBUTION_ID" --paths '/*' >/dev/null
+        else
+          echo "WARN: DASHBOARD_DISTRIBUTION_ID not set; skipping CloudFront invalidation."
+        fi
+      - echo "Dashboard build + deploy complete."

@@ -151,6 +151,18 @@ Parameters:
       triggers the image build as a post-deploy step. Set 'true' only if the
       source is already staged before deploy.
 
+  DashboardTriggerBuild:
+    Type: String
+    Default: 'false'
+    AllowedValues: ['true', 'false']
+    Description: >
+      Whether the dashboard stack builds + deploys the v2 dashboard via CodeBuild
+      during stack create. Kept 'false' for the orchestrated deploy: the build
+      source (the Vite frontend) must be uploaded to the dashboard source bucket
+      AFTER the bucket exists, so deploy-workshop.sh stages the source and
+      triggers the dashboard build as a post-deploy step (mirrors the broker
+      image build). Set 'true' only if the source is already staged before deploy.
+
 Conditions:
   ShouldCreateVpc: !Equals [!Ref CreateVpc, 'true']
   HasBrokerTaskSubnets: !Not [!Equals [!Join ['', !Ref BrokerTaskSubnetIds], '']]
@@ -265,6 +277,7 @@ Resources:
         DeviceCount: !Ref DeviceCount
         DeviceNamePrefix: !Ref DeviceNamePrefix
         StartMigrationFunctionArn: !GetAtt DeviceBuilderStack.Outputs.StartMigrationFunctionArn
+        DashboardTriggerBuild: !Ref DashboardTriggerBuild
       Tags:
         - Key: Workshop
           Value: pqc-reinvent
@@ -328,6 +341,14 @@ Outputs:
     Description: CloudFront distribution ID for the dashboard (for cache invalidation)
     Value: !GetAtt DashboardStack.Outputs.DashboardDistributionId
 
+  DashboardBuildProjectName:
+    Description: CodeBuild project that builds + deploys the v2 dashboard
+    Value: !GetAtt DashboardStack.Outputs.DashboardBuildProjectName
+
+  DashboardSourceBucketName:
+    Description: S3 bucket the deploy script stages the dashboard build source into
+    Value: !GetAtt DashboardStack.Outputs.DashboardSourceBucketName
+
   # ─── SSM Hybrid Activation ────────────────────────────────────────────────
   SSMActivationSecretName:
     Description: >
@@ -338,3 +359,19 @@ Outputs:
   SSMActivationId:
     Description: SSM Hybrid Activation ID
     Value: !GetAtt SSMActivationStack.Outputs.SSMActivationId
+
+  BuilderPiRoleName:
+    Description: IAM role name for the builder-Pi SSM managed instance
+    Value: !GetAtt SSMActivationStack.Outputs.BuilderPiRoleName
+
+  InstallToolchainDocumentName:
+    Description: SSM document — install the builder-Pi toolchain (step 1)
+    Value: !GetAtt SSMActivationStack.Outputs.InstallToolchainDocumentName
+
+  DeployAppDocumentName:
+    Description: SSM document — deploy the builder-Pi app + assets (step 2)
+    Value: !GetAtt SSMActivationStack.Outputs.DeployAppDocumentName
+
+  ConfigureServiceDocumentName:
+    Description: SSM document — configure the builder-Pi service, auto-start GUI (step 3)
+    Value: !GetAtt SSMActivationStack.Outputs.ConfigureServiceDocumentName
