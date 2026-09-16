@@ -96,6 +96,38 @@ the teardown/rebuild. Handle these to keep a from-scratch deploy clean:
   is reused across rebuilds (fine, just don't expect the stack to own it).
 
 Backlog candidates surfaced during rebuilds (not yet fixed):
+- **[BUG — real, reproducible] PQC migration race: publish-ota checks S3 before
+  the build artifact lands.** Observed on pqc-a device esp32-FC22E0 (Sep 16): the
+  "Migrate to PQC" migration FAILED with
+  `RuntimeError: PQC firmware not found in S3: FC22E0/1.0.0-pqc/firmware.bin`
+  — even though the PQC build SUCCEEDED and that exact object IS in S3. Root
+  cause is a timing race: the state machine's WaitForBuild uses the CodeBuild
+  `.sync` integration, which returns when the build's BUILD phase completes, but
+  the firmware artifacts are uploaded to S3 during POST_BUILD. publish-ota ran at
+  12:49:50 and did a plain head/get for firmware.bin; the object wasn't written
+  until 12:49:53 — a ~3s gap — so it raised RuntimeError and the migration went
+  to SetStatusFailed. NOT destructive: the firmware is built and in S3, so simply
+  re-running the migration succeeds (publish-ota finds it the second time, no
+  rebuild). Fix options: (a) add a Step Functions Retry on the RuntimeError from
+  the PublishOta task (short backoff, few attempts) — cheapest; (b) make the
+  publish-ota Lambda poll/head-object with backoff for firmware.bin before giving
+  up (index.py ~line 62); (c) have the build write a final sentinel/marker object
+  LAST and gate on that. Recommend (a)+(b). This is exactly the "assumed
+  synchronous but actually eventually-consistent" class of bug seen elsewhere in
+  this project; intermittent — will bite workshop attendees randomly.
+- **[GUI bug] Builder-Pi dashboard "Migrate to PQC" button appears to revert /
+  not trigger a fresh migration.** Observed pqc-a Sep 16: pressing the migrate
+  button on the device dashboard did NOT start a new pqc-migration Step Functions
+  execution (it seems to do a revert or a no-op refresh instead). Had to trigger
+  the migration by invoking the `pqc-workshop-start-migration` Lambda directly
+  (payload `{"thingName":"esp32-<serial>"}`), which is exactly what the AppSync
+  `migrateFirmware` mutation should call — and that worked (execution SUCCEEDED,
+  OTA published). So the backend path is fine; the GUI wiring for the migrate
+  button is wrong. Fix: check the dashboard-v2 frontend's migrate action —
+  confirm it calls the `migrateFirmware` GraphQL mutation (not delete/revert),
+  and that the resolver → StartMigration path is hooked up. Relates to the
+  earlier "dashboard LED button not working" item — the command/mutation wiring
+  in the v2 frontend needs an audit pass.
 - **[TOP — do next week alongside pqc-a rebuild] Remove the duplicate WiFi
   password (and SSID) from the DynamoDB registry.** SSM
   (`/pqc-workshop/wifi/password`, a SecureString) is the single source of truth
@@ -249,6 +281,49 @@ Backlog candidates surfaced during rebuilds (not yet fixed):
   make deploy-workshop.sh degrade gracefully (skip + clear manual-fallback
   message when npm is absent). Do NOT implement without confirming the WS host
   toolchain first.
+- **[Reliability] Builder-Pi bundle should ONLY bootstrap SSM; drive all build
+  steps via SSM documents.** OBSERVED FAILURE (pqc-a rebuild, Sep 16): running
+  `setup-all.sh` interactively under `sudo` on the Pi aborted mid-way with
+  `Unable to get user home dir: $HOME is not defined` — after the ESP32 core
+  install (early step) but BEFORE the app deploy — leaving `/opt/pqc-workshop/
+  builder-app` empty, no systemd service, GUI down, and NO captured error (output
+  went to the operator's terminal, gone). Because setup-builder-pi.sh uses
+  `set -euo pipefail`, the failing step silently killed the rest. Re-running the
+  SAME script via SSM Run Command SUCCEEDED (core was cached so it fast-forwarded,
+  and SSM's root env has $HOME defined) — which is the whole point.
+  Proposal: shrink the on-Pi bundle to ONE job — register the SSM agent
+  (hybrid activation). Move everything else (arduino-cli + ESP32 core, wolfSSL
+  PQC config, partition table, Python deps, workshop-builder CLI, GUI app deploy,
+  systemd service, CloudWatch agent) into SSM documents run from the deploy host,
+  ideally split into separate docs (install-toolchain / deploy-app /
+  configure-service) so a failure re-runs in isolation without repeating the slow
+  ~5GB core install.
+  Benefits: (1) fixes THIS failure — SSM runs as root with a consistent env (no
+  operator shell/$HOME/sudo variance), the exact variable that broke it;
+  (2) full remote observability — every step's stdout/stderr/exit code captured
+  by SSM (+ CloudWatch), no lost terminal output (this is literally why we had to
+  re-run to see the error); (3) idempotent per-step recovery without repeating the
+  10-12min core install; (4) smaller bundle = less operator-side surface to break;
+  (5) consistent with the workshop's remote-execution philosophy (CFN/CodeBuild/
+  SSM everywhere else).
+  Tradeoffs: (1) inherently two-phase — SSM must be Online before the docs can
+  fire, so orchestration waits on describe-instance-information; (2) needs a
+  control-side orchestrator (a deploy-host script sequencing send-commands, or a
+  Step Function) vs today's self-contained script; (3) SSM Run Command timeout +
+  output-size caps matter for the 5GB/10-12min core install — chunk steps, log to
+  file + tail, set generous --timeout-seconds (we already hit output truncation);
+  (4) requires SSM control plane throughout the build, not just registration
+  (reduces air-gapped flexibility — fine for a cloud-connected workshop);
+  (5) migration effort — notably, setup-builder-pi.sh steps that COPY files "next
+  to this script" (app.py, builder_core, config.json, wolfssl_user_settings_
+  arduino.h, partition csv) must instead FETCH those from S3 (firmware/assets
+  bucket) in the SSM-doc model. That S3-sourced-files change is the non-obvious
+  bit that makes the split clean.
+  Recommendation: bundle = SSM bootstrap only; build steps = SSM docs that pull
+  their file deps from S3. LIGHTER INTERIM WIN (do first, cheap): always run
+  `setup-all.sh` VIA SSM (never interactively), make it log to a file + not abort
+  silently (surface which step failed), so we get the reliability + observability
+  win without the full re-architecture.
 - **Fold the NetworkManager AP into `setup-all.sh` (medium priority).** The Pi's
   hostapd/NM AP is currently a MANUAL setup (DEPLOYMENT.md §5a). During the Fri
   device test the classical device failed WiFi with `4WAY_HANDSHAKE_TIMEOUT`
