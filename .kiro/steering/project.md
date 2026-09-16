@@ -115,6 +115,140 @@ Backlog candidates surfaced during rebuilds (not yet fixed):
   right after the acceptance test); the pqc-a clean rebuild will re-verify the
   migration path for free, so do it then. Low risk: SSM is already the primary
   path. Also check for any other reader of registry wifiPassword before removing.
+- **[Workshop Studio delivery] Decide how the repo gets from the WS assets bucket
+  into the Cloud IDE so `deploy-workshop.sh` can run.** WS stages content in an
+  assets bucket; the operator/attendee runs the deploy from the Cloud IDE, which
+  is NOT on the Amazon internal network (so `git clone` from internal GitLab is
+  out). Open question: ship the whole repo or just the deploy-relevant subset
+  (`cloudformation/`, the Lambda sources, `raw_device_builder/`, firmware, the
+  dashboard build inputs)? Agent opinion / recommendation:
+  - Prefer **`git archive --format=zip HEAD -o repo.zip`** over a plain `zip -r`:
+    it snapshots only tracked files, so `.git`, `.venv`, `node_modules`,
+    `__pycache__`, `.pytest_cache`, and build artifacts are excluded for free —
+    avoids a bloated, slow artifact. (A raw recursive zip of this tree would be
+    huge because of the dashboard `node_modules` and the venv.)
+  - Add a **sanitization pass** before zipping to strip internal-only `.kiro`
+    config (ties directly to the Kiro/MCP blocker item below) — the artifact
+    attendees unzip must not carry `builder-mcp` or the `/Users/swaym` PATH.
+  - Then: upload the zip to the WS assets bucket and have the Cloud IDE
+    download + unzip it (either a WS setup step or a documented one-liner). Verify
+    how WS actually surfaces the assets bucket to the IDE — whether it auto-syncs
+    or the attendee pulls it manually.
+  - `git clone` is only viable if the repo is reachable from the workshop account
+    (e.g. public GitHub); given the internal-network constraint, the zip path is
+    the safe default.
+  - Decide whole-repo vs curated-subset: a curated subset is leaner and avoids
+    shipping test/dev cruft, but whole-repo (via git archive) is simpler and less
+    error-prone to keep in sync. Lean: git archive of the whole tracked tree,
+    minus sanitized `.kiro`, unless artifact size becomes a problem.
+- **[Workshop Studio blocker] Strip internal-only Kiro/MCP config from the repo
+  so the Workshop Studio Cloud IDE agent works for non-Amazon attendees.** The
+  WS deployment is expected to serve the repo from the assets bucket and run the
+  deploy from the Cloud IDE with Kiro support. But the Kiro agent in a *workshop
+  account* is NOT on the Amazon internal network, so anything the repo's
+  `.kiro/settings/mcp.json` points at that requires internal access will fail for
+  attendees. Concretely: the committed `builder-mcp` server (and its
+  `env.PATH: /Users/swaym/.toolbox/bin` — an internal toolbox path that only
+  exists on an Amazon employee laptop) is unreachable/meaningless in a workshop
+  account, and any internal-only MCP tools would error on connect. Fix: audit
+  everything under `.kiro/` that ships in the repo (MCP servers, autoApprove
+  lists, steering that assumes internal tools) and remove or gate anything an
+  external attendee can't use — in particular drop the `builder-mcp` entry (and
+  its hardcoded `/Users/swaym` PATH) from the *repo* copy, keeping it only in the
+  operator's personal `~/.kiro` config. Keep only MCP servers that work from a
+  vanilla workshop account (e.g. the public `drawio` server via `npx`). Net: a
+  fresh clone in a Workshop Studio Cloud IDE should give attendees a working Kiro
+  agent with no internal dependencies and no employee-specific paths.
+- **[Workshop Studio prerequisite] Slim the front-of-repo README.md down to a
+  clean entry point.** The root `README.md` has accumulated a lot of redundant
+  content and does NOT point the operator to `cloudformation/DEPLOYMENT.md` as the
+  primary source of deployment truth. This matters for building the Workshop
+  Studio artifacts — the front README is the first thing an attendee/operator
+  sees. Target end state:
+  - Keep the front `README.md` **simple**: the architecture overview/diagrams
+    (`architecture.drawio` / `.png`), a clear pointer to
+    `cloudformation/DEPLOYMENT.md` as the authoritative deploy guide, and a
+    reference to `attendee_experience.md` for the workshop attendee flow.
+  - Move other still-relevant docs into a `docs/` subfolder (rather than deleting
+    outright), so the repo root stays uncluttered but nothing useful is lost.
+  - Remove genuinely redundant/stale content (e.g. the old
+    `aws cloudformation delete-stack --stack-name esp32-pqc-iot` cleanup snippet
+    and any instructions that predate the current `pqc-workshop` master-stack +
+    `deploy-workshop.sh` flow) — cross-check against DEPLOYMENT.md so the README
+    never contradicts it.
+  - Net: root README = architecture + links (DEPLOYMENT.md, attendee_experience.md,
+    docs/); DEPLOYMENT.md remains the single deployment source of truth. Do this
+    before packaging WS artifacts.
+- **[Repeat-deploy hardening] Remove the remaining hardcoded resource names that
+  block re-deploys into a shared account.** Root cause of the entire pqc-a
+  rebuild saga: nearly every resource in the templates uses a fixed name, and
+  CloudFormation's Nov-2025 early validation (AWS::EarlyValidation::
+  ResourceExistenceCheck) rejects a create when a same-named resource already
+  exists. In Workshop Studio this is a NON-issue — the account is created and
+  torn down per event, so names never collide. It only bites when running
+  MULTIPLE deploys in one account (our testing loop), where a leftover resource
+  from a prior/failed deploy blocks the next deploy. ALREADY FIXED (dashboard
+  template): the FirmwareDashboardBucket (auto-named; consumers read the
+  DashboardBucketName output) and all 9 dashboard IAM roles (auto-named; only
+  referenced by !GetAtt .Arn). STILL HARDCODED (deferred — each has EXTERNAL
+  literal consumers, so auto-naming requires a coordinated multi-file change,
+  not a one-line template edit):
+  - DynamoDB `pqc-workshop-devices` (DeviceTable) — consumed by literal name in
+    the device-builder Step Functions state machine (DefinitionSubstitutions +
+    an IAM policy ARN), the auto-register Lambda code, tests, and
+    check_setup_status.sh. Auto-naming needs the generated name wired as an
+    output→parameter into the device-builder stack + code/test updates.
+  - DynamoDB `pqc-workshop-message-log` (MessageLogTable) — consumed by tests +
+    check_setup_status.sh.
+  - The 4 dashboard Lambda function names (telemetry-processor, command-publisher,
+    message-logger, broker-log-reader) — consumed by literal in
+    check_setup_status.sh.
+  - The 5 IoT TopicRule names (pqc_workshop_telemetry/lifecycle/message_log_dt/
+    message_log_cmd), AppSync API name pqc-workshop-device-api, Cognito pool
+    pqc_workshop_dashboard — all looked up by exact name in check_setup_status.sh.
+  Also fold in: rewrite `check_setup_status.sh` to discover resources by tag or
+  stack output instead of by hardcoded name (removes the biggest external
+  consumer and makes the whole set safe to auto-name). NOTE (observed on the
+  pqc-a rebuild): the auto-naming fix ALREADY broke two checks in
+  check_setup_status.sh — its section 9 looks for the hardcoded bucket
+  `pqc-workshop-firmware-dashboard-<acct>` (now auto-named) and a stale CloudFront
+  distribution, so it emits a false "missing index.html" warning even though the
+  dashboard is live (verified HTTP 200 at the real DashboardURL output). Fix
+  section 9 to read DashboardBucketName + DashboardURL from the DashboardStack
+  outputs. This is a real (if cosmetic) false-negative today, so bump slightly. Same hardcoded-name
+  pattern exists in the other stacks (broker-container, device-builder) — audit
+  those too. Priority: only matters for the shared-account testing workflow, so
+  medium — but it's the durable fix for the class of failure that cost most of
+  this rebuild.
+- **[Consider — decision-gated] Build the v2 dashboard in a CodeBuild project
+  instead of on the deploy host.** Today `deploy-workshop.sh` step 4 runs
+  `vite build` LOCALLY (needs Node/npm on the deploy host), syncs dist/ to the
+  dashboard bucket, and invalidates CloudFront. Proposal: move that into a
+  CodeBuild project inside the stack, mirroring how the broker + firmware-builder
+  container images build (stage source to S3 -> CodeBuild -> publish).
+  Benefits: (1) BIGGEST — removes the Node/npm dependency from the deploy host,
+  which matters for the Workshop Studio Cloud IDE where the toolchain is unknown
+  and there's no internal network (ties into the two WS backlog items above);
+  (2) consistency — all build+publish steps would follow one CodeBuild model;
+  (3) could fold into CFN via a trigger Lambda + custom resource (like the
+  broker's BuildTrigger), moving toward the one-attempt deploy goal.
+  Tradeoffs: (1) doesn't remove orchestration, just relocates it — CodeBuild
+  still needs source staged to S3 first (same chicken-and-egg as the broker
+  image, which is why that's a script step not pure CFN); (2) the frontend needs
+  deploy-time config.json (AppSync endpoint, Cognito pool id, region) which only
+  exist AFTER stack create, so the build must run post-outputs either way — pass
+  them as CodeBuild env vars; (3) more infra to maintain (project + IAM role +
+  buildspec + maybe trigger Lambda/custom resource) vs ~15 lines of shell today;
+  (4) slower + harder to debug — the Vite build is ~241ms; CodeBuild adds
+  container spin-up (~1-2 min) and moves failures to CloudWatch logs. For a
+  minutes-long Docker image build the CodeBuild overhead pays off; for a
+  sub-second Vite build it's arguably overkill.
+  Recommendation: DECISION-GATE this on whether the WS Cloud IDE can reliably run
+  the local Vite build. If yes, keep the simpler local build. If no/uncertain,
+  CodeBuild is the robust answer. Lighter middle option: keep the build local but
+  make deploy-workshop.sh degrade gracefully (skip + clear manual-fallback
+  message when npm is absent). Do NOT implement without confirming the WS host
+  toolchain first.
 - **Fold the NetworkManager AP into `setup-all.sh` (medium priority).** The Pi's
   hostapd/NM AP is currently a MANUAL setup (DEPLOYMENT.md §5a). During the Fri
   device test the classical device failed WiFi with `4WAY_HANDSHAKE_TIMEOUT`
