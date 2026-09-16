@@ -251,12 +251,20 @@ Resources:
   # Nested Stack: Dashboard (AppSync, DynamoDB, Lambdas, S3/CloudFront)
   # ═══════════════════════════════════════════════════════════════════════════
   DashboardStack:
+    # Explicit dependency: the dashboard's migrateFirmware resolver targets the
+    # StartMigration Lambda created by DeviceBuilderStack. We pass that Lambda's
+    # ARN in as a parameter below, and DependsOn ensures DeviceBuilderStack (and
+    # thus the Lambda) exists before the dashboard is created/validated — so
+    # CloudFormation early validation resolves the reference to an existing
+    # resource instead of failing ResourceExistenceCheck.
+    DependsOn: DeviceBuilderStack
     Type: AWS::CloudFormation::Stack
     Properties:
       TemplateURL: !Sub 'https://${TemplateBucketName}.s3.amazonaws.com/${TemplateBucketPrefix}/templates/dashboard-stack.yaml'
       Parameters:
         DeviceCount: !Ref DeviceCount
         DeviceNamePrefix: !Ref DeviceNamePrefix
+        StartMigrationFunctionArn: !GetAtt DeviceBuilderStack.Outputs.StartMigrationFunctionArn
       Tags:
         - Key: Workshop
           Value: pqc-reinvent

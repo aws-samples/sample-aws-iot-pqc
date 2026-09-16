@@ -20,6 +20,16 @@ Parameters:
     Default: esp32-pqc-device
     Description: Prefix for device Thing names (e.g., esp32-pqc-device-001)
 
+  StartMigrationFunctionArn:
+    Type: String
+    Description: >
+      ARN of the StartMigration Lambda (created by the device-builder stack).
+      The master stack passes this in from DeviceBuilderStack.Outputs so the
+      migrateFirmware resolver can invoke it. Passing the ARN as a resolvable
+      cross-stack value (instead of hardcoding it) is required so CloudFormation
+      early validation (AWS::EarlyValidation::ResourceExistenceCheck) sees the
+      function as an existing dependency at change-set time.
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Resources
 # ─────────────────────────────────────────────────────────────────────────────
@@ -57,7 +67,9 @@ Resources:
   CognitoUnauthRole:
     Type: AWS::IAM::Role
     Properties:
-      RoleName: pqc-workshop-cognito-unauth
+      # No explicit RoleName: let CloudFormation auto-generate a unique name.
+      # Fixed role names collide on repeated deploys in a shared account (early
+      # validation resource-name-conflict). Referenced only by !GetAtt .Arn.
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:
@@ -198,7 +210,7 @@ Resources:
   AppSyncDynamoRole:
     Type: AWS::IAM::Role
     Properties:
-      RoleName: pqc-workshop-appsync-dynamo
+      # No explicit RoleName (auto-generated); referenced only by !GetAtt .Arn.
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:
@@ -238,7 +250,7 @@ Resources:
   AppSyncLambdaRole:
     Type: AWS::IAM::Role
     Properties:
-      RoleName: pqc-workshop-appsync-lambda
+      # No explicit RoleName (auto-generated); referenced only by !GetAtt .Arn.
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:
@@ -256,11 +268,13 @@ Resources:
                   - lambda:InvokeFunction
                 Resource:
                   - !GetAtt CommandPublisherFunction.Arn
-                  # The PQC upgrader Lambda is defined in the device-builder
-                  # stack; reference it by its fixed name to avoid cross-stack
-                  # coupling. The migrateFirmware resolver invokes it to start the
-                  # PQC migration Step Functions workflow (returns immediately).
-                  - !Sub 'arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:pqc-workshop-start-migration'
+                  # The StartMigration Lambda is defined in the device-builder
+                  # stack; its ARN is passed in as a resolvable cross-stack
+                  # parameter (StartMigrationFunctionArn) rather than hardcoded,
+                  # so early validation treats it as an existing dependency. The
+                  # migrateFirmware resolver invokes it to start the PQC migration
+                  # Step Functions workflow (returns immediately).
+                  - !Ref StartMigrationFunctionArn
 
   LambdaDataSource:
     Type: AWS::AppSync::DataSource
@@ -283,7 +297,7 @@ Resources:
       Type: AWS_LAMBDA
       ServiceRoleArn: !GetAtt AppSyncLambdaRole.Arn
       LambdaConfig:
-        LambdaFunctionArn: !Sub 'arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:pqc-workshop-start-migration'
+        LambdaFunctionArn: !Ref StartMigrationFunctionArn
 
   # ─── AppSync Resolvers ─────────────────────────────────────────────────────
 
@@ -397,7 +411,7 @@ Resources:
   TelemetryProcessorRole:
     Type: AWS::IAM::Role
     Properties:
-      RoleName: pqc-workshop-telemetry-processor
+      # No explicit RoleName (auto-generated); referenced only by !GetAtt .Arn.
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:
@@ -454,7 +468,7 @@ Resources:
   CommandPublisherRole:
     Type: AWS::IAM::Role
     Properties:
-      RoleName: pqc-workshop-command-publisher
+      # No explicit RoleName (auto-generated); referenced only by !GetAtt .Arn.
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:
@@ -495,7 +509,7 @@ Resources:
   IoTRuleRole:
     Type: AWS::IAM::Role
     Properties:
-      RoleName: pqc-workshop-iot-rule
+      # No explicit RoleName (auto-generated); referenced only by !GetAtt .Arn.
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:
@@ -566,7 +580,7 @@ Resources:
   MessageLoggerRole:
     Type: AWS::IAM::Role
     Properties:
-      RoleName: pqc-workshop-message-logger
+      # No explicit RoleName (auto-generated); referenced only by !GetAtt .Arn.
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:
@@ -649,7 +663,7 @@ Resources:
   AppSyncMessageLogRole:
     Type: AWS::IAM::Role
     Properties:
-      RoleName: pqc-workshop-appsync-message-log
+      # No explicit RoleName (auto-generated); referenced only by !GetAtt .Arn.
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:
@@ -703,7 +717,7 @@ Resources:
   BrokerLogReaderRole:
     Type: AWS::IAM::Role
     Properties:
-      RoleName: pqc-workshop-broker-log-reader
+      # No explicit RoleName (auto-generated); referenced only by !GetAtt .Arn.
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:
@@ -744,7 +758,7 @@ Resources:
   AppSyncBrokerLogRole:
     Type: AWS::IAM::Role
     Properties:
-      RoleName: pqc-workshop-appsync-broker-log
+      # No explicit RoleName (auto-generated); referenced only by !GetAtt .Arn.
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:
@@ -809,7 +823,13 @@ Resources:
   FirmwareDashboardBucket:
     Type: AWS::S3::Bucket
     Properties:
-      BucketName: !Sub 'pqc-workshop-firmware-dashboard-${AWS::AccountId}'
+      # No explicit BucketName: let CloudFormation auto-generate a unique name.
+      # A fixed name (pqc-workshop-firmware-dashboard-<acct>) tripped early
+      # validation's resource-name-conflict check whenever a bucket of that name
+      # already existed (a leftover empty bucket from a prior/failed deploy),
+      # blocking the whole master stack. Consumers read the real name from the
+      # DashboardBucketName stack output (deploy-workshop.sh does), so nothing
+      # depends on the literal name.
       PublicAccessBlockConfiguration:
         BlockPublicAcls: true
         BlockPublicPolicy: true
