@@ -226,6 +226,20 @@ optional and only needed when you can't (or don't want to) rely on venue-provide
 WiFi. The steps below are sized for a full workshop room (up to ~150 devices
 across one or two Pis; the deploy default is 100).
 
+> **No keyboard/monitor needed — run these over SSM Session Manager.** The Pi is
+> already registered as an SSM managed instance (Step 5.1), so you can open a root
+> shell on it from the deploy host without physical access:
+> ```bash
+> aws ssm start-session --target <mi-id>   # add --region / --profile if needed
+> ```
+> (find `<mi-id>` with `aws ssm describe-instance-information`; it's the Online
+> `pqc-workshop-builder-pi` instance). Every `sudo`/`nmcli` command in this
+> section can be run in that session. One caveat: reconfiguring `wlan1` won't drop
+> a Session Manager session (it rides the SSM channel over the `wlan0` uplink, not
+> the AP), but if you later change the **uplink** (`wlan0`) the session may
+> briefly disconnect — Session Manager reconnects on its own once connectivity
+> returns.
+
 **Hardware:** a Raspberry Pi 5 running Raspberry Pi OS (Bookworm) — the
 Builder-Pi, or a dedicated second Pi (see the SPOF note) — plus an **Alfa
 AWUS036ACM** USB WiFi adapter (MediaTek MT7612U).
@@ -266,22 +280,43 @@ sudo apt install dnsmasq-base -y
 
 **2. Pull the workshop WiFi credentials from SSM** (the single source of truth
 published by the deploy — `/pqc-workshop/wifi/ssid` + `/pqc-workshop/wifi/password`).
-Run this on the Pi (it has the `pqc-workshop-builder-pi-ssm` role, which grants
-`ssm:GetParameter` on `/pqc-workshop/*` plus SSM-scoped `kms:Decrypt`).
+
+> **Give the `aws` CLI credentials first.** The Pi's managed-instance role
+> (`pqc-workshop-builder-pi-ssm`, which grants `ssm:GetParameter` on
+> `/pqc-workshop/*` plus SSM-scoped `kms:Decrypt`) is used by the **SSM Agent**,
+> which stores its rotating credentials in **root's** shared credentials file
+> (`/root/.aws/credentials`). An interactive `aws` command therefore only sees
+> them when it runs **as root** — a plain `aws ...` as the `pi`/`admin` user
+> fails with a "credentials not configured" error. Run the fetch with `sudo`:
+
+```bash
+REGION=<region>
+WIFI_SSID=$(sudo aws ssm get-parameter --name /pqc-workshop/wifi/ssid \
+  --region "$REGION" --query 'Parameter.Value' --output text)
+WIFI_PSK=$(sudo aws ssm get-parameter --name /pqc-workshop/wifi/password --with-decryption \
+  --region "$REGION" --query 'Parameter.Value' --output text)
+echo "AP SSID: $WIFI_SSID"   # sanity check; do NOT echo the PSK in shared logs
+```
+
+> **If `sudo aws` still reports no credentials** (e.g. the agent hasn't written
+> root's credentials file yet), fetch the two values on the **deploy host**
+> instead — where your AWS credentials already work — and paste them into the Pi
+> session as plain variables:
+> ```bash
+> # On the deploy host (add --profile if you use one):
+> aws ssm get-parameter --name /pqc-workshop/wifi/ssid \
+>   --region <region> --query 'Parameter.Value' --output text
+> aws ssm get-parameter --name /pqc-workshop/wifi/password --with-decryption \
+>   --region <region> --query 'Parameter.Value' --output text
+> # Then, in the Pi session:
+> WIFI_SSID='<ssid-from-above>'
+> WIFI_PSK='<psk-from-above>'
+> ```
 
 > **Always pull from SSM — do not hand-type the SSID/PSK.** A mistyped PSK is
 > exactly what caused a `4WAY_HANDSHAKE_TIMEOUT` device failure during testing.
 > SSM is the single source of truth the firmware is built against, so pulling
 > from it guarantees the AP PSK matches what the devices expect.
-
-```bash
-REGION=<region>
-WIFI_SSID=$(aws ssm get-parameter --name /pqc-workshop/wifi/ssid \
-  --region "$REGION" --query 'Parameter.Value' --output text)
-WIFI_PSK=$(aws ssm get-parameter --name /pqc-workshop/wifi/password --with-decryption \
-  --region "$REGION" --query 'Parameter.Value' --output text)
-echo "AP SSID: $WIFI_SSID"   # sanity check; do NOT echo the PSK in shared logs
-```
 
 **3. Create the AP connection profile on the Alfa (`wlan1`).** `ipv4.method
 shared` is what makes NM run a DHCP server on the AP subnet AND set up NAT to the
