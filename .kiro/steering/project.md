@@ -211,6 +211,42 @@ Backlog candidates surfaced during rebuilds (not yet fixed):
   - Net: root README = architecture + links (DEPLOYMENT.md, attendee_experience.md,
     docs/); DEPLOYMENT.md remains the single deployment source of truth. Do this
     before packaging WS artifacts.
+- **[Workshop Studio — FUTURE attendee experience, DESIGN ONLY, not built]
+  Let attendees edit the ESP32 `.ino` and OTA-update ONLY their own device via a
+  scoped submission to the central pipeline.** The compelling stretch experience:
+  an attendee tweaks the firmware source in their own account's Cloud IDE,
+  submits it, and the central account builds + pushes it OTA to *their* labelled
+  device. Design decisions already reasoned through (do NOT re-litigate without a
+  reason):
+  - **Invert the trust direction.** Do NOT give the attendee account broad
+    cross-account read into the central account. Instead the attendee performs
+    ONE tightly-scoped action against a single central entry point; the central
+    account holds all privilege + identity (cert/thing/policy, Private CA, IoT).
+  - **Entry point = S3 for now** (decided): the attendee drops their `.ino` into a
+    central S3 bucket under a key bound to THEIR device serial (a per-attendee
+    prefix / naming convention). A central trigger (S3 event → the existing
+    firmware pipeline) builds it. CodeCommit-as-source is a STRETCH only —
+    explicitly deferred because it means reworking the pipeline's source stage;
+    not doing that.
+  - **Enforce "only their device" server-side, not by label.** The label just
+    tells the human which device is theirs; it does not stop attendee A submitting
+    for attendee B's serial. Bind the submission to the caller's identity (e.g.
+    assumed-role session tag = their serial) and have the central build REJECT any
+    other serial. Required for a real room; a controlled demo can rely on
+    convention.
+  - **Attendee never sees secrets/keys.** The build already injects the device
+    cert + private key + WiFi inside the central pipeline (see buildspec.yml); the
+    attendee only supplies the sketch. This is an argument FOR the central-pipeline
+    model — the attendee account holds no identity material.
+  - Cross-account topology caveat: a persistent "central" account that all
+    ephemeral WS attendee accounts trust is NON-standard for Workshop Studio (WS
+    vends per-event accounts). Validate how WS supports a shared central account
+    before designing around it — likely the biggest feasibility risk.
+  - Scope: this is the weight-2 slot intentionally left open in the WS content
+    nav (introduction=0, deployment=1, [2 = future attendee-submit], attendee
+    plug-in=3, attendee migrate=4). Today's WS content ships the operator track +
+    a narrative-only attendee track (plug in → migrate via dashboard button); the
+    edit-and-submit flow is future work.
 - **[Repeat-deploy hardening] Remove the remaining hardcoded resource names that
   block re-deploys into a shared account.** Root cause of the entire pqc-a
   rebuild saga: nearly every resource in the templates uses a fixed name, and
