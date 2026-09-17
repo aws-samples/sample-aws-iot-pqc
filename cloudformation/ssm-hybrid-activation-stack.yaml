@@ -108,116 +108,15 @@ Resources:
         - Key: ManagedBy
           Value: CloudFormation
 
-  # ─── IAM Role for the Builder-Pi managed instance ──────────────────────────
-  # The builder-Pi (the Raspberry Pi that flashes ESP32 devices) needs a broader
-  # permission set than the broker-Pi role above: it reads workshop config from
-  # SSM Parameter Store, decrypts the WiFi-password SecureString, pulls the app
-  # tarball + firmware from S3, calls the builder API Gateway, and ships logs to
-  # CloudWatch. Historically this role was created imperatively by
-  # bundle-for-builder-pi.sh (`aws iam create-role pqc-workshop-builder-pi-ssm`),
-  # which meant it lived outside CloudFormation, drifted, and survived teardown.
-  # It now lives here so it is stack-owned, versioned, and reproducible from a
-  # from-scratch deploy. The bundler references this role by name (from the
-  # BuilderPiRoleName output) instead of creating its own.
-  BuilderPiRole:
-    Type: AWS::IAM::Role
-    Properties:
-      RoleName: pqc-workshop-builder-pi-ssm
-      Description: >
-        Role assumed by the builder Raspberry Pi SSM agent (PQC workshop). Grants
-        the SSM-document-driven provisioning + the GUI's runtime needs: SSM
-        parameter reads, KMS decrypt for the WiFi SecureString, S3 app/firmware
-        pulls, builder API access, and CloudWatch log shipping.
-      AssumeRolePolicyDocument:
-        Version: '2012-10-17'
-        Statement:
-          - Effect: Allow
-            Principal:
-              Service: ssm.amazonaws.com
-            Action: sts:AssumeRole
-      ManagedPolicyArns:
-        # Core SSM agent functionality (Session Manager, Run Command, Inventory).
-        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
-      Policies:
-        # Read deployment-derived workshop config (builder-pi/*, wifi/*,
-        # broker/*, dashboard/* region) from Parameter Store. The SSM deploy-app
-        # document materializes config.json from these, and the GUI reads
-        # wifi/ssid + broker/endpoint at runtime.
-        - PolicyName: WorkshopParameterRead
-          PolicyDocument:
-            Version: '2012-10-17'
-            Statement:
-              - Effect: Allow
-                Action:
-                  - ssm:GetParameter
-                  - ssm:GetParameters
-                  - ssm:GetParametersByPath
-                Resource:
-                  - !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/pqc-workshop/*'
-              # The WiFi password is a SecureString; the configure-service SSM
-              # document reads it with --with-decryption to set up the AP, which
-              # needs kms:Decrypt on the account default SSM key.
-              - Effect: Allow
-                Action:
-                  - kms:Decrypt
-                Resource: '*'
-                Condition:
-                  StringEquals:
-                    kms:ViaService: !Sub 'ssm.${AWS::Region}.amazonaws.com'
-        # Pull the builder-pi app tarball + device firmware from the firmware
-        # bucket (the deploy script stages both under pqc-workshop-firmware-*).
-        - PolicyName: S3FirmwareAndAppRead
-          PolicyDocument:
-            Version: '2012-10-17'
-            Statement:
-              - Effect: Allow
-                Action:
-                  - s3:GetObject
-                  - s3:ListBucket
-                Resource:
-                  - arn:aws:s3:::pqc-workshop-firmware-*
-                  - arn:aws:s3:::pqc-workshop-firmware-*/*
-        # Call the builder API Gateway (device registration/deregistration).
-        - PolicyName: BuilderApiAccess
-          PolicyDocument:
-            Version: '2012-10-17'
-            Statement:
-              - Effect: Allow
-                Action:
-                  - execute-api:Invoke
-                Resource: '*'
-        # Query AWS for status checks (device_manager, check_setup_status) and
-        # resolve the IoT endpoint.
-        - PolicyName: WorkshopReadOnlyChecks
-          PolicyDocument:
-            Version: '2012-10-17'
-            Statement:
-              - Effect: Allow
-                Action:
-                  - iot:DescribeEndpoint
-                  - iot:DescribeThing
-                  - iot:ListThings
-                  - iot:ListThingPrincipals
-                  - sts:GetCallerIdentity
-                Resource: '*'
-        # Ship the builder-pi flash/serial logs + GUI journal to CloudWatch.
-        - PolicyName: CloudWatchLogs
-          PolicyDocument:
-            Version: '2012-10-17'
-            Statement:
-              - Effect: Allow
-                Action:
-                  - logs:CreateLogGroup
-                  - logs:CreateLogStream
-                  - logs:PutLogEvents
-                  - logs:DescribeLogStreams
-                Resource:
-                  - !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/pqc-workshop/*'
-      Tags:
-        - Key: Workshop
-          Value: pqc-reinvent
-        - Key: ManagedBy
-          Value: CloudFormation
+  # NOTE: the builder-Pi SSM managed-instance role (pqc-workshop-builder-pi-ssm)
+  # is NOT defined here — it is created + owned by the device-builder stack
+  # (BuilderPiSsmRole), which already grants everything the Pi needs (SSM
+  # parameter reads, KMS decrypt for the WiFi SecureString, S3 firmware pulls,
+  # builder API access, CloudWatch, DynamoDB registry reads) scoped tightly to
+  # that stack's own resources. The bundler references it by name when minting
+  # the activation. Defining a second same-named role here would collide on a
+  # from-scratch deploy (duplicate RoleName -> early-validation failure), so the
+  # documents below simply run on whatever instance registered with that role.
 
   # ═══════════════════════════════════════════════════════════════════════════
   # SSM Documents — Builder-Pi provisioning (replaces on-Pi setup-builder-pi.sh)
@@ -802,13 +701,6 @@ Outputs:
   SSMRoleName:
     Description: IAM role name for SSM managed instances
     Value: !Ref SSMManagedInstanceRole
-
-  BuilderPiRoleName:
-    Description: >
-      IAM role name for the builder-Pi managed instance. The bundler passes this
-      as --iam-role when creating the SSM activation (instead of creating its own
-      role), so the Pi registers with a stack-owned, fully-scoped role.
-    Value: !Ref BuilderPiRole
 
   InstallToolchainDocumentName:
     Description: SSM document — install the builder-Pi toolchain (step 1)

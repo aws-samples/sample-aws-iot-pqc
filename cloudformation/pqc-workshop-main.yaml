@@ -360,10 +360,6 @@ Outputs:
     Description: SSM Hybrid Activation ID
     Value: !GetAtt SSMActivationStack.Outputs.SSMActivationId
 
-  BuilderPiRoleName:
-    Description: IAM role name for the builder-Pi SSM managed instance
-    Value: !GetAtt SSMActivationStack.Outputs.BuilderPiRoleName
-
   InstallToolchainDocumentName:
     Description: SSM document — install the builder-Pi toolchain (step 1)
     Value: !GetAtt SSMActivationStack.Outputs.InstallToolchainDocumentName
