@@ -7,9 +7,10 @@
 # this orchestrator waits for it to come Online, then runs the three CFN-owned
 # SSM documents in order:
 #
-#   1. pqc-workshop-install-toolchain   arduino-cli + ESP32 core (~5GB, slow)
-#   2. pqc-workshop-deploy-app          GUI app + assets from S3, config.json
-#   3. pqc-workshop-configure-service   udev + systemd (GUI auto-starts) + CW
+#   1. install-awscli       the AWS CLI (prerequisite for the S3/SSM calls below)
+#   2. install-toolchain    arduino-cli + ESP32 core (~5GB, slow)
+#   3. deploy-app           GUI app + assets from S3, config.json
+#   4. configure-service    udev + systemd (GUI auto-starts) + CloudWatch
 #
 # Each document is run with send-command and polled to completion. On any
 # non-Success the orchestrator prints the command output + a console URL and
@@ -23,7 +24,8 @@
 #   --region       AWS region (default: $AWS_DEFAULT_REGION or us-east-1)
 #   --instance-id  Target managed instance. Omit to auto-discover the single
 #                  Online pqc-workshop-builder-pi instance.
-#   --only         Run just ONE document (for isolated retry), not all three.
+#   --only         Run just ONE document (for isolated retry): awscli,
+#                  install-toolchain, deploy-app, or configure-service.
 #   --profile      AWS CLI profile (optional; else ambient credentials)
 #
 # Copyright 2024-2026 Amazon.com, Inc. or its affiliates. All Rights Reserved.
@@ -63,20 +65,28 @@ echo "════════════════════════�
 echo "  Account: $ACCOUNT_ID    Region: $REGION"
 
 # ─── Resolve the SSM document names from the master stack outputs ────────────
-# Falls back to the well-known names if the stack query fails (e.g. querying a
-# region/account where the stack name differs). The documents are account-wide
-# by name, so the fallback is safe.
+# The documents are auto-named by CloudFormation (no fixed Name, so their
+# content can be updated in place without a replacement), so we MUST read the
+# generated names from the stack outputs — there is no stable literal to fall
+# back to. A missing output is a hard error.
 get_out() {
     "${AWS[@]}" cloudformation describe-stacks --stack-name pqc-workshop \
         --query "Stacks[0].Outputs[?OutputKey=='$1'].OutputValue | [0]" \
         --output text 2>/dev/null || echo ""
 }
+DOC_AWSCLI=$(get_out InstallAwscliDocumentName)
 DOC_TOOLCHAIN=$(get_out InstallToolchainDocumentName)
 DOC_DEPLOYAPP=$(get_out DeployAppDocumentName)
 DOC_CONFIGURE=$(get_out ConfigureServiceDocumentName)
-[[ -z "$DOC_TOOLCHAIN" || "$DOC_TOOLCHAIN" == "None" ]] && DOC_TOOLCHAIN="pqc-workshop-install-toolchain"
-[[ -z "$DOC_DEPLOYAPP" || "$DOC_DEPLOYAPP" == "None" ]] && DOC_DEPLOYAPP="pqc-workshop-deploy-app"
-[[ -z "$DOC_CONFIGURE" || "$DOC_CONFIGURE" == "None" ]] && DOC_CONFIGURE="pqc-workshop-configure-service"
+for pair in "InstallAwscliDocumentName:$DOC_AWSCLI" "InstallToolchainDocumentName:$DOC_TOOLCHAIN" \
+            "DeployAppDocumentName:$DOC_DEPLOYAPP" "ConfigureServiceDocumentName:$DOC_CONFIGURE"; do
+    if [[ -z "${pair#*:}" || "${pair#*:}" == "None" ]]; then
+        echo "[ERROR] Could not resolve SSM document name '${pair%%:*}' from the"
+        echo "        'pqc-workshop' stack outputs. Is the workshop stack deployed"
+        echo "        in this account/region? (profile ${PROFILE:-<ambient>}, region $REGION)"
+        exit 1
+    fi
+done
 
 # ─── Resolve the target instance (auto-discover the Online builder-Pi) ───────
 if [[ -z "$INSTANCE_ID" ]]; then
@@ -117,7 +127,7 @@ echo "    Online."
 # invocation status. On failure prints stderr + a console deep link and returns
 # non-zero so the caller stops (each doc is independently re-runnable).
 run_doc() {
-    local doc="$1" label="$2"
+    local doc="$1" label="$2" onlykey="${3:-}"
     echo ""
     echo "───────────────────────────────────────────────────────────────"
     echo "  Running: $label  ($doc)"
@@ -155,21 +165,27 @@ run_doc() {
         --query 'StandardOutputContent' --output text 2>/dev/null | tail -30 || true
     echo "    ──────────────────────────────────────────────────────────"
     echo "    Console: https://${REGION}.console.aws.amazon.com/systems-manager/run-command/${cid}/${INSTANCE_ID}?region=${REGION}"
-    echo "    Re-run just this step with: $0 --region $REGION --instance-id $INSTANCE_ID --only ${doc#pqc-workshop-}"
+    if [[ -n "$onlykey" ]]; then
+        echo "    Re-run just this step with: $0 --region $REGION --instance-id $INSTANCE_ID${PROFILE:+ --profile $PROFILE} --only $onlykey"
+    fi
     return 1
 }
 
 # ─── Run the requested document(s) ───────────────────────────────────────────
+# Order: install-awscli (prerequisite) -> install-toolchain -> deploy-app ->
+# configure-service. awscli first because deploy-app's S3/SSM calls need it.
 case "$ONLY" in
     "")
-        run_doc "$DOC_TOOLCHAIN" "1/3 install-toolchain"
-        run_doc "$DOC_DEPLOYAPP" "2/3 deploy-app"
-        run_doc "$DOC_CONFIGURE" "3/3 configure-service"
+        run_doc "$DOC_AWSCLI"    "1/4 install-awscli"    awscli
+        run_doc "$DOC_TOOLCHAIN" "2/4 install-toolchain" install-toolchain
+        run_doc "$DOC_DEPLOYAPP" "3/4 deploy-app"        deploy-app
+        run_doc "$DOC_CONFIGURE" "4/4 configure-service" configure-service
         ;;
-    install-toolchain)  run_doc "$DOC_TOOLCHAIN" "install-toolchain" ;;
-    deploy-app)         run_doc "$DOC_DEPLOYAPP" "deploy-app" ;;
-    configure-service)  run_doc "$DOC_CONFIGURE" "configure-service" ;;
-    *) echo "[ERROR] --only must be one of: install-toolchain, deploy-app, configure-service"; exit 1 ;;
+    awscli)             run_doc "$DOC_AWSCLI"    "install-awscli"    awscli ;;
+    install-toolchain)  run_doc "$DOC_TOOLCHAIN" "install-toolchain" install-toolchain ;;
+    deploy-app)         run_doc "$DOC_DEPLOYAPP" "deploy-app"        deploy-app ;;
+    configure-service)  run_doc "$DOC_CONFIGURE" "configure-service" configure-service ;;
+    *) echo "[ERROR] --only must be one of: awscli, install-toolchain, deploy-app, configure-service"; exit 1 ;;
 esac
 
 # ─── Success: prune stale managed instances + print the GUI URL ──────────────

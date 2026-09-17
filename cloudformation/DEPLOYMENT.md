@@ -180,8 +180,8 @@ After ~30s the Pi appears Online in `aws ssm describe-instance-information`.
 
 **Step 5.2 — provision the Pi from the deploy host.** Back on the machine with
 AWS credentials, run the orchestrator. It waits for the Pi to be Online, then
-runs the three SSM documents in order (install-toolchain → deploy-app →
-configure-service):
+runs the SSM documents in order (install-awscli → install-toolchain →
+deploy-app → configure-service):
 
 ```bash
 ./raw_device_builder/setup-builder-pi-remote.sh            # add --region / --profile if needed

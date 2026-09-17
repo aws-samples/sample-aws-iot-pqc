@@ -143,11 +143,60 @@ Resources:
   # script"). Logs go to /var/log/workshop-builder/*.log (shipped to CloudWatch
   # by the configure-service doc).
 
+  # ─── Document 0: install the AWS CLI (prerequisite for the others) ─────────
+  # A fresh Raspberry Pi OS does NOT ship the AWS CLI, but deploy-app needs it
+  # (S3 fetch of the app tarball + SSM parameter reads). Install it in its own
+  # small, fast document that the orchestrator runs FIRST — separate from the
+  # slow toolchain install so this prerequisite is independently re-runnable and
+  # doesn't force the ~5GB core install to repeat. Auto-named (no fixed Name) so
+  # its content can be updated in place without CloudFormation demanding a
+  # replacement of a custom-named resource.
+  InstallAwscliDocument:
+    Type: AWS::SSM::Document
+    Properties:
+      DocumentType: Command
+      DocumentFormat: YAML
+      TargetType: /
+      Content:
+        schemaVersion: '2.2'
+        description: >
+          Install the AWS CLI on the builder-Pi (apt). Prerequisite for the
+          deploy-app document's S3 + SSM calls. Idempotent.
+        mainSteps:
+          - action: aws:runShellScript
+            name: installAwscli
+            inputs:
+              timeoutSeconds: '600'
+              runCommand:
+                - |
+                  #!/bin/bash
+                  set -uo pipefail
+                  exec > >(tee -a /var/log/workshop-builder/install-awscli.log) 2>&1
+                  mkdir -p /var/log/workshop-builder
+                  echo "=== install-awscli $(date -u +%FT%TZ) ==="
+                  if command -v aws >/dev/null 2>&1; then
+                      echo "AWS CLI already installed: $(aws --version 2>&1)"
+                      exit 0
+                  fi
+                  export DEBIAN_FRONTEND=noninteractive
+                  apt-get update -qq || true
+                  apt-get install -y --no-install-recommends awscli 2>&1 | tail -3
+                  if command -v aws >/dev/null 2>&1; then
+                      echo "AWS CLI installed: $(aws --version 2>&1)"
+                  else
+                      echo "ERROR: AWS CLI still not on PATH after install."
+                      exit 1
+                  fi
+                  echo "=== install-awscli OK ==="
+      Tags:
+        - Key: Workshop
+          Value: pqc-reinvent
+
   # ─── Document 1: install the toolchain (slow, ~5GB ESP32 core) ─────────────
+  # Auto-named (no fixed Name) so content updates don't require replacement.
   InstallToolchainDocument:
     Type: AWS::SSM::Document
     Properties:
-      Name: pqc-workshop-install-toolchain
       DocumentType: Command
       DocumentFormat: YAML
       TargetType: /
@@ -237,10 +286,10 @@ Resources:
           Value: pqc-reinvent
 
   # ─── Document 2: deploy the app + assets (fetched from S3), write config ────
+  # Auto-named (no fixed Name) so content updates don't require replacement.
   DeployAppDocument:
     Type: AWS::SSM::Document
     Properties:
-      Name: pqc-workshop-deploy-app
       DocumentType: Command
       DocumentFormat: YAML
       TargetType: /
@@ -381,10 +430,10 @@ Resources:
           Value: pqc-reinvent
 
   # ─── Document 3: configure the service (udev, systemd auto-start, CloudWatch) ─
+  # Auto-named (no fixed Name) so content updates don't require replacement.
   ConfigureServiceDocument:
     Type: AWS::SSM::Document
     Properties:
-      Name: pqc-workshop-configure-service
       DocumentType: Command
       DocumentFormat: YAML
       TargetType: /
@@ -701,6 +750,10 @@ Outputs:
   SSMRoleName:
     Description: IAM role name for SSM managed instances
     Value: !Ref SSMManagedInstanceRole
+
+  InstallAwscliDocumentName:
+    Description: SSM document — install the AWS CLI (prerequisite, step 0)
+    Value: !Ref InstallAwscliDocument
 
   InstallToolchainDocumentName:
     Description: SSM document — install the builder-Pi toolchain (step 1)

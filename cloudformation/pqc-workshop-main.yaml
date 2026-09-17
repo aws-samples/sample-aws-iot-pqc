@@ -360,6 +360,10 @@ Outputs:
     Description: SSM Hybrid Activation ID
     Value: !GetAtt SSMActivationStack.Outputs.SSMActivationId
 
+  InstallAwscliDocumentName:
+    Description: SSM document — install the AWS CLI (prerequisite, step 0)
+    Value: !GetAtt SSMActivationStack.Outputs.InstallAwscliDocumentName
+
   InstallToolchainDocumentName:
     Description: SSM document — install the builder-Pi toolchain (step 1)
     Value: !GetAtt SSMActivationStack.Outputs.InstallToolchainDocumentName

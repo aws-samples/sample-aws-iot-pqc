@@ -6,8 +6,8 @@
 # Raspberry Pi as an SSM managed instance. Everything else (arduino-cli, the
 # ESP32 core, the builder GUI app, systemd service, CloudWatch agent) is
 # installed AFTER registration by SSM documents run from the deploy host — see
-# setup-builder-pi-remote.sh and the pqc-workshop-{install-toolchain,deploy-app,
-# configure-service} documents created by the SSM activation stack.
+# setup-builder-pi-remote.sh and the install-awscli / install-toolchain /
+# deploy-app / configure-service documents created by the SSM activation stack.
 #
 # WHY SO SMALL: the old bundle carried the whole app + a heavy on-Pi setup
 # script that the operator ran under sudo. A mid-script failure under `set -e`
@@ -253,9 +253,10 @@ Then, from the deploy host (the machine with AWS credentials for this account):
   ./raw_device_builder/setup-builder-pi-remote.sh --region $REGION
 
 That orchestrator waits for the Pi to come Online, then runs, in order:
-  1. pqc-workshop-install-toolchain   (arduino-cli, ESP32 core — slow, ~5GB)
-  2. pqc-workshop-deploy-app          (GUI app + assets from S3, config.json)
-  3. pqc-workshop-configure-service   (udev, systemd; the GUI auto-starts)
+  1. install-awscli       (the AWS CLI — prerequisite for the S3/SSM steps)
+  2. install-toolchain    (arduino-cli, ESP32 core — slow, ~5GB)
+  3. deploy-app           (GUI app + assets from S3, config.json)
+  4. configure-service    (udev, systemd; the GUI auto-starts)
 
 When it finishes, the GUI is running at http://<pi-ip>:8080
 
