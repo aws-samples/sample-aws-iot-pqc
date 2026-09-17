@@ -235,7 +235,17 @@ echo ""
 
 # ─── 9. v2 Dashboard Hosting (S3 + CloudFront) ───────────────────────────────
 echo "─── 9. Dashboard Hosting (v2 Firmware Manager) ──────────────"
-DASH_BUCKET="pqc-workshop-firmware-dashboard-${ACCOUNT_ID}"
+# The dashboard site bucket is CloudFormation auto-named (the old fixed name
+# pqc-workshop-firmware-dashboard-<acct> tripped a resource-name-conflict check
+# on redeploy), so resolve the real name from the master stack's
+# DashboardBucketName output. Fall back to the legacy literal only if the output
+# is absent (e.g. an older deploy).
+DASH_BUCKET=$(aws cloudformation describe-stacks --stack-name "$MASTER_STACK" \
+    --query "Stacks[0].Outputs[?OutputKey=='DashboardBucketName'].OutputValue | [0]" \
+    --output text 2>/dev/null) || DASH_BUCKET=""
+if [[ -z "$DASH_BUCKET" || "$DASH_BUCKET" == "None" ]]; then
+    DASH_BUCKET="pqc-workshop-firmware-dashboard-${ACCOUNT_ID}"
+fi
 FILE_COUNT=$(aws s3 ls "s3://$DASH_BUCKET/" --recursive 2>/dev/null | grep -c "index.html") || FILE_COUNT=0
 if [[ "$FILE_COUNT" -ge 1 ]]; then
     pass "Dashboard bucket '$DASH_BUCKET' has the built app deployed"
