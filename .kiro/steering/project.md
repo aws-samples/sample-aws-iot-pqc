@@ -208,6 +208,38 @@ Backlog candidates surfaced during rebuilds (not yet fixed):
   LAST and gate on that. Recommend (a)+(b). This is exactly the "assumed
   synchronous but actually eventually-consistent" class of bug seen elsewhere in
   this project; intermittent — will bite workshop attendees randomly.
+- **[BUG — migrationStatus never reconciled to "migrated" after PQC confirmed]
+  Close the migration loop when the device reports it is actually on ML-KEM.**
+  Observed on pqc-b (Sep 18): both devices (esp32-C69E44, esp32-C69DE0)
+  successfully migrated — Step Function SUCCEEDED, PQC firmware built + OTA'd,
+  devices rebooted and reconnected to the broker with the hybrid handshake
+  (telemetry reports `pqc_algorithm: SECP256R1_MLKEM768`, `tls_version:
+  TLSv1.3`). BUT the `pqc-workshop-devices` table `migrationStatus` field stays
+  permanently at `rebooting` — the Step Function's terminal write is
+  `SetStatusRebooting` -> `Succeed` (see
+  `cloudformation/statemachine/pqc-migration.asl.json`), and NOTHING ever moves
+  it forward once the device comes back on PQC. So the stored field is
+  stale/misleading for anything querying the table directly. NOT user-visible
+  today only because the dashboard derives "migrated" from the LIVE telemetry
+  `pqc_algorithm` field (via the telemetry-processor Lambda), not from
+  `migrationStatus` — which is a lucky workaround, not a fix. Desired behaviour:
+  when a device publishes telemetry confirming an ML-KEM group is actually in
+  use (i.e. `pqc_algorithm` contains `MLKEM`), reconcile the device record to a
+  terminal `migrated` state (and record the confirmed algorithm + version). Fix
+  options: (a) have the telemetry-processor Lambda (which already parses
+  `pqc_algorithm` for the dashboard) also do a conditional `updateItem` on
+  `pqc-workshop-devices` setting `migrationStatus=migrated` +
+  `firmwareVersion=1.0.0-pqc` + e.g. `confirmedPqcAlgorithm` the first time it
+  sees an MLKEM group for that thing — cheapest, closes the loop at the exact
+  moment PQC is confirmed; (b) a dedicated IoT rule/Lambda on
+  `dt/+/telemetry` that watches for the MLKEM confirmation and updates the
+  record; (c) an SNS/EventBridge "migration confirmed" event the record update
+  subscribes to. Recommend (a) — the signal (MLKEM in telemetry) and the writer
+  (telemetry-processor) already exist; it just needs the conditional write.
+  Note the design intent: confirmation must come from the device ACTUALLY
+  negotiating ML-KEM (the telemetry), not merely from the OTA being pushed — so
+  "migrated" means verified-on-PQC, which is the correct semantics for a PQC
+  workshop.
 - **[GUI bug] Builder-Pi dashboard "Migrate to PQC" button appears to revert /
   not trigger a fresh migration.** Observed pqc-a Sep 16: pressing the migrate
   button on the device dashboard did NOT start a new pqc-migration Step Functions
