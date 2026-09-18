@@ -375,3 +375,7 @@ Outputs:
   ConfigureServiceDocumentName:
     Description: SSM document — configure the builder-Pi service, auto-start GUI (step 3)
     Value: !GetAtt SSMActivationStack.Outputs.ConfigureServiceDocumentName
+
+  ConfigureWifiApDocumentName:
+    Description: SSM document — (venue only) bring up the 2.4GHz workshop WiFi AP on the Pi
+    Value: !GetAtt SSMActivationStack.Outputs.ConfigureWifiApDocumentName

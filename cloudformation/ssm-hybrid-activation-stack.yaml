@@ -581,6 +581,218 @@ Resources:
         - Key: Workshop
           Value: pqc-reinvent
 
+  # ─── Document 4: configure the workshop WiFi AP on the Alfa/MediaTek radio ──
+  # (re:Invent / venue only — NOT part of the default provisioning chain.)
+  #
+  # The ESP32 devices are 2.4 GHz-only and join the SSID baked into their
+  # firmware (/pqc-workshop/wifi/ssid). At a venue with no usable WiFi the
+  # Builder-Pi becomes that AP: a USB MediaTek adapter (Alfa AWUS036ACM /
+  # AC1300, mt76x2u driver) runs a NetworkManager `shared`-mode 2.4 GHz AP and
+  # NATs the ESP32 subnet up through the Pi's onboard uplink (wlan0).
+  #
+  # This document exists because building the AP by hand from the runbook is
+  # error-prone (mistyped PSK -> 4WAY_HANDSHAKE_TIMEOUT; the AP profile pinned to
+  # the wrong interface; the MediaTek radio's self-managed regulatory domain left
+  # UNSET so a 2.4 GHz AP silently refuses to start with the misleading
+  # "Wi-Fi network could not be found"). It fixes all three by construction:
+  #   • DETECTS the AP radio by DRIVER (mt76*) + AP capability, not by the
+  #     fragile `wlan1` name (USB adapters don't get a stable ifname across
+  #     reboots) — and never picks the onboard uplink radio.
+  #   • SETS the regulatory domain (default GB; override via
+  #     /pqc-workshop/wifi/regDomain) and bounces the radio so the self-managed
+  #     MediaTek driver actually adopts it — the real root cause of the AP
+  #     refusing to come up.
+  #   • PULLS SSID + PSK from SSM (the single source of truth the firmware was
+  #     built against) so the AP PSK always matches the devices — no hand typing.
+  # Idempotent: re-running rebuilds the profile from SSM and brings it up, so a
+  # PSK/SSID change or a failed attempt is fixed by simply re-running.
+  ConfigureWifiApDocument:
+    Type: AWS::SSM::Document
+    Properties:
+      DocumentType: Command
+      DocumentFormat: YAML
+      TargetType: /
+      Content:
+        schemaVersion: '2.2'
+        description: >
+          (Venue only) Bring up the workshop 2.4 GHz WiFi AP on the Builder-Pi's
+          USB MediaTek adapter using NetworkManager shared mode. Auto-detects the
+          AP-capable radio by driver, fixes the regulatory domain, and builds the
+          AP from the SSID/PSK in SSM Parameter Store. Idempotent.
+        parameters:
+          RegDomain:
+            type: String
+            description: >
+              ISO country code for the WiFi regulatory domain (e.g. GB, US).
+              Leave empty to resolve from SSM (/pqc-workshop/wifi/regDomain),
+              falling back to GB. Setting this is what lets the self-managed
+              MediaTek radio start a 2.4 GHz AP.
+            default: ''
+          Channel:
+            type: String
+            description: >
+              2.4 GHz channel for the AP (1/6/11 are the non-overlapping
+              choices). Use 0 to let the driver auto-select. If two AP Pis run in
+              the same room, give them different channels (e.g. 1 and 11).
+            default: '6'
+        mainSteps:
+          - action: aws:runShellScript
+            name: configureWifiAp
+            inputs:
+              timeoutSeconds: '600'
+              runCommand:
+                - |
+                  #!/bin/bash
+                  # No `set -e`: run every step, log it, and fail loudly at the
+                  # end with a clear rc rather than dying silently mid-script.
+                  set -uo pipefail
+                  exec > >(tee -a /var/log/workshop-builder/configure-wifi-ap.log) 2>&1
+                  mkdir -p /var/log/workshop-builder
+                  echo "=== configure-wifi-ap $(date -u +%FT%TZ) ==="
+                  rc=0
+
+                  # Region: from the SSM registration, else configured, else us-east-1.
+                  REGION=$(cat /var/lib/amazon/ssm/registration 2>/dev/null \
+                      | python3 -c "import sys,json;print(json.load(sys.stdin).get('Region',''))" 2>/dev/null)
+                  [ -z "$REGION" ] && REGION="${AWS_DEFAULT_REGION:-us-east-1}"
+                  export AWS_DEFAULT_REGION="$REGION"
+                  ssm_param() { aws ssm get-parameter --name "$1" ${2:+--with-decryption} \
+                      --query 'Parameter.Value' --output text --region "$REGION" 2>/dev/null; }
+
+                  # ── 1. Pull SSID + PSK from SSM (single source of truth) ──────
+                  echo "[1/6] Resolving SSID/PSK from SSM..."
+                  WIFI_SSID=$(ssm_param /pqc-workshop/wifi/ssid)
+                  WIFI_PSK=$(ssm_param /pqc-workshop/wifi/password with-decryption)
+                  if [ -z "$WIFI_SSID" ] || [ "$WIFI_SSID" = "None" ]; then
+                      echo "ERROR: /pqc-workshop/wifi/ssid not found in SSM (region $REGION)."
+                      echo "       Is the workshop deployed in this account/region?"
+                      exit 1
+                  fi
+                  if [ -z "$WIFI_PSK" ] || [ "$WIFI_PSK" = "None" ]; then
+                      echo "ERROR: /pqc-workshop/wifi/password not found/decryptable in SSM."
+                      exit 1
+                  fi
+                  if [ "${#WIFI_PSK}" -lt 8 ] || [ "${#WIFI_PSK}" -gt 63 ]; then
+                      echo "ERROR: WPA2 PSK must be 8-63 chars (got ${#WIFI_PSK}). Refusing to build AP."
+                      exit 1
+                  fi
+                  echo "      AP SSID: $WIFI_SSID   (PSK: ${#WIFI_PSK} chars, hidden)"
+
+                  # ── 2. Regulatory domain (the real fix for MediaTek self-managed radios) ─
+                  REG="{{ RegDomain }}"
+                  [ -z "$REG" ] && REG=$(ssm_param /pqc-workshop/wifi/regDomain)
+                  [ -z "$REG" ] || [ "$REG" = "None" ] && REG="GB"
+                  echo "[2/6] Setting regulatory domain to $REG..."
+                  # Persist it (survives reboot) and apply it now.
+                  if command -v raspi-config >/dev/null 2>&1; then
+                      raspi-config nonint do_wifi_country "$REG" 2>/dev/null || true
+                  fi
+                  if [ -w /etc/default/crda ] || [ ! -e /etc/default/crda ]; then
+                      echo "REGDOMAIN=$REG" > /etc/default/crda 2>/dev/null || true
+                  fi
+                  iw reg set "$REG" 2>/dev/null || true
+                  sleep 1
+                  echo "      $(iw reg get 2>/dev/null | grep -m1 '^country' || echo 'reg domain unknown')"
+
+                  # ── 3. Detect the AP-capable USB radio by DRIVER, not by name ──
+                  # Pick the wlanN whose driver is a MediaTek mt76* (the Alfa /
+                  # AC1300) AND which advertises AP mode. Never the onboard uplink.
+                  echo "[3/6] Detecting the AP-capable MediaTek radio..."
+                  AP_IFACE=""
+                  for dev in /sys/class/net/wlan*; do
+                      [ -e "$dev" ] || continue
+                      IFACE=$(basename "$dev")
+                      DRV=$(basename "$(readlink -f "$dev/device/driver" 2>/dev/null)" 2>/dev/null)
+                      # phy index for this iface, to query supported modes
+                      PHY=$(cat "/sys/class/net/$IFACE/phy80211/name" 2>/dev/null)
+                      MODES=""
+                      [ -n "$PHY" ] && MODES=$(iw phy "$PHY" info 2>/dev/null \
+                          | awk '/Supported interface modes/{f=1;next}/^\t[A-Za-z]/{f=0}f' )
+                      echo "      $IFACE: driver=${DRV:-?} phy=${PHY:-?} ap=$(echo "$MODES" | grep -qw AP && echo yes || echo no)"
+                      # Prefer a MediaTek (mt76*) radio that supports AP mode.
+                      if echo "${DRV:-}" | grep -qi 'mt76' && echo "$MODES" | grep -qw AP; then
+                          AP_IFACE="$IFACE"
+                      fi
+                  done
+                  # Fallback: any AP-capable wlan that is NOT the current uplink
+                  # (the one carrying the default route / an active NM connection).
+                  if [ -z "$AP_IFACE" ]; then
+                      UPLINK=$(ip route show default 2>/dev/null | awk '/dev wlan/{for(i=1;i<=NF;i++)if($i=="dev")print $(i+1)}' | head -1)
+                      for dev in /sys/class/net/wlan*; do
+                          [ -e "$dev" ] || continue
+                          IFACE=$(basename "$dev")
+                          [ "$IFACE" = "$UPLINK" ] && continue
+                          PHY=$(cat "/sys/class/net/$IFACE/phy80211/name" 2>/dev/null)
+                          if [ -n "$PHY" ] && iw phy "$PHY" info 2>/dev/null \
+                                | awk '/Supported interface modes/{f=1;next}/^\t[A-Za-z]/{f=0}f' | grep -qw AP; then
+                              AP_IFACE="$IFACE"; break
+                          fi
+                      done
+                      [ -n "$AP_IFACE" ] && echo "      (no mt76 match; falling back to AP-capable non-uplink: $AP_IFACE)"
+                  fi
+                  if [ -z "$AP_IFACE" ]; then
+                      echo "ERROR: no AP-capable USB WiFi radio found. Is the MediaTek"
+                      echo "       adapter plugged in? (expected an mt76* driver with AP mode)"
+                      echo "       Radios seen:"; ls -1 /sys/class/net/ | grep -E '^wlan' || true
+                      exit 1
+                  fi
+                  echo "      -> using AP interface: $AP_IFACE"
+                  rfkill unblock wifi 2>/dev/null || true
+
+                  # ── 4. (Re)build the NetworkManager AP profile from SSM values ─
+                  echo "[4/6] Building the NetworkManager AP profile 'workshop-ap'..."
+                  CH="{{ Channel }}"; [ -z "$CH" ] && CH="6"
+                  # Remove any prior profile so a changed SSID/PSK/iface takes hold.
+                  nmcli -t -f NAME connection show 2>/dev/null | grep -qx workshop-ap \
+                      && nmcli connection delete workshop-ap >/dev/null 2>&1 || true
+                  nmcli connection add type wifi ifname "$AP_IFACE" con-name workshop-ap \
+                      autoconnect yes ssid "$WIFI_SSID" 2>&1 | tail -1 || rc=1
+                  nmcli connection modify workshop-ap \
+                      802-11-wireless.mode ap \
+                      802-11-wireless.band bg \
+                      802-11-wireless.channel "$CH" \
+                      ipv4.method shared \
+                      wifi-sec.key-mgmt wpa-psk \
+                      wifi-sec.psk "$WIFI_PSK" 2>&1 | tail -1 || rc=1
+
+                  # ── 5. Density + power-save drop-ins (a room full of ESP32s) ──
+                  echo "[5/6] Applying density + power-save tuning..."
+                  mkdir -p /etc/NetworkManager/dnsmasq-shared.d /etc/NetworkManager/conf.d
+                  cat > /etc/NetworkManager/dnsmasq-shared.d/iot-density.conf <<'EOF'
+                  dhcp-lease-max=150
+                  dhcp-range=10.42.0.10,10.42.0.250,2h
+                  EOF
+                  cat > /etc/NetworkManager/conf.d/default-wifi-powersave-on.conf <<'EOF'
+                  [connection]
+                  wifi.powersave = 2
+                  EOF
+
+                  # ── 6. Bring it up and verify ─────────────────────────────────
+                  echo "[6/6] Restarting NetworkManager and bringing the AP up..."
+                  systemctl restart NetworkManager 2>&1 | tail -1 || rc=1
+                  sleep 3
+                  nmcli connection up workshop-ap 2>&1 | tail -2 || rc=1
+                  sleep 2
+                  STATE=$(nmcli -g GENERAL.STATE device show "$AP_IFACE" 2>/dev/null)
+                  echo "      $AP_IFACE state: ${STATE:-unknown}"
+                  if echo "$STATE" | grep -qi connected; then
+                      echo "      ✅ AP '$WIFI_SSID' is up on $AP_IFACE (ch $CH, subnet 10.42.0.0/24)."
+                      echo "      Watch for devices: sudo iw dev $AP_IFACE station dump | grep -c Station"
+                  else
+                      echo "      [ERROR] AP did not reach 'connected'. Recent NM log:"
+                      journalctl -u NetworkManager --no-pager -n 25 2>/dev/null | tail -25 || true
+                      rc=1
+                  fi
+
+                  if [ "$rc" -ne 0 ]; then
+                      echo "ERROR: configure-wifi-ap had failures (rc=$rc); see log above."
+                      exit 1
+                  fi
+                  echo "=== configure-wifi-ap OK ==="
+      Tags:
+        - Key: Workshop
+          Value: pqc-reinvent
+
   # ─── SSM Hybrid Activation ─────────────────────────────────────────────────
   # Custom resource that creates the activation and stores credentials in
   # Secrets Manager (since CloudFormation doesn't natively support
@@ -766,6 +978,12 @@ Outputs:
   ConfigureServiceDocumentName:
     Description: SSM document — configure udev/systemd/CloudWatch, auto-start GUI (step 3)
     Value: !Ref ConfigureServiceDocument
+
+  ConfigureWifiApDocumentName:
+    Description: >
+      SSM document — (venue only) bring up the 2.4GHz workshop WiFi AP on the
+      Pi's MediaTek USB radio. Run on demand, not part of the default chain.
+    Value: !Ref ConfigureWifiApDocument
 
   SSMRoleArn:
     Description: IAM role ARN for SSM managed instances

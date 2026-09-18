@@ -25,8 +25,14 @@
 #   --instance-id  Target managed instance. Omit to auto-discover the single
 #                  Online pqc-workshop-builder-pi instance.
 #   --only         Run just ONE document (for isolated retry): awscli,
-#                  install-toolchain, deploy-app, or configure-service.
+#                  install-toolchain, deploy-app, configure-service, or
+#                  configure-wifi-ap.
 #   --profile      AWS CLI profile (optional; else ambient credentials)
+#
+# NOTE: configure-wifi-ap (bring up the venue 2.4GHz WiFi AP on the Pi's
+# MediaTek USB radio) is VENUE-ONLY and is NOT part of the default provisioning
+# chain — run it explicitly with `--only configure-wifi-ap` when you need the Pi
+# to host the workshop WiFi.
 #
 # Copyright 2024-2026 Amazon.com, Inc. or its affiliates. All Rights Reserved.
 # SPDX-License-Identifier: MIT-0
@@ -78,6 +84,8 @@ DOC_AWSCLI=$(get_out InstallAwscliDocumentName)
 DOC_TOOLCHAIN=$(get_out InstallToolchainDocumentName)
 DOC_DEPLOYAPP=$(get_out DeployAppDocumentName)
 DOC_CONFIGURE=$(get_out ConfigureServiceDocumentName)
+# Venue-only; resolved lazily so its absence never blocks normal provisioning.
+DOC_WIFIAP=$(get_out ConfigureWifiApDocumentName)
 for pair in "InstallAwscliDocumentName:$DOC_AWSCLI" "InstallToolchainDocumentName:$DOC_TOOLCHAIN" \
             "DeployAppDocumentName:$DOC_DEPLOYAPP" "ConfigureServiceDocumentName:$DOC_CONFIGURE"; do
     if [[ -z "${pair#*:}" || "${pair#*:}" == "None" ]]; then
@@ -185,7 +193,15 @@ case "$ONLY" in
     install-toolchain)  run_doc "$DOC_TOOLCHAIN" "install-toolchain" install-toolchain ;;
     deploy-app)         run_doc "$DOC_DEPLOYAPP" "deploy-app"        deploy-app ;;
     configure-service)  run_doc "$DOC_CONFIGURE" "configure-service" configure-service ;;
-    *) echo "[ERROR] --only must be one of: awscli, install-toolchain, deploy-app, configure-service"; exit 1 ;;
+    configure-wifi-ap)
+        if [[ -z "$DOC_WIFIAP" || "$DOC_WIFIAP" == "None" ]]; then
+            echo "[ERROR] Could not resolve 'ConfigureWifiApDocumentName' from the"
+            echo "        'pqc-workshop' stack outputs. Redeploy the workshop stack to"
+            echo "        pick up the WiFi-AP document (profile ${PROFILE:-<ambient>}, region $REGION)."
+            exit 1
+        fi
+        run_doc "$DOC_WIFIAP" "configure-wifi-ap" configure-wifi-ap ;;
+    *) echo "[ERROR] --only must be one of: awscli, install-toolchain, deploy-app, configure-service, configure-wifi-ap"; exit 1 ;;
 esac
 
 # ─── Success: prune stale managed instances + print the GUI URL ──────────────
