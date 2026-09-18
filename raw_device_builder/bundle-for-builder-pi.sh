@@ -49,14 +49,19 @@ REGION="${AWS_DEFAULT_REGION:-us-east-1}"
 SSM_ROLE_NAME="pqc-workshop-builder-pi-ssm"
 
 # ─── Parse Arguments ─────────────────────────────────────────────────────────
+# --profile is accepted for parity with setup-builder-pi-remote.sh and
+# deploy-workshop.sh; when given it is exported as AWS_PROFILE so every aws call
+# (and the identity guard below) targets that account.
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --region) REGION="$2"; shift 2 ;;
+        --profile) export AWS_PROFILE="$2"; shift 2 ;;
         --help|-h)
-            echo "Usage: $0 [--region REGION]"
+            echo "Usage: $0 [--region REGION] [--profile NAME]"
             echo ""
             echo "Options:"
             echo "  --region   AWS region (default: \$AWS_DEFAULT_REGION or us-east-1)"
+            echo "  --profile  AWS CLI profile (optional; else ambient/AWS_PROFILE)"
             echo ""
             echo "Creates builder-pi-bundle.zip containing only the SSM agent"
             echo "bootstrap. After registering the Pi, run setup-builder-pi-remote.sh"
