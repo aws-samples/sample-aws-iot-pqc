@@ -240,21 +240,39 @@ across one or two Pis; the deploy default is 100).
 > briefly disconnect — Session Manager reconnects on its own once connectivity
 > returns.
 
-**Hardware:** a Raspberry Pi 5 running Raspberry Pi OS (Bookworm) — the
-Builder-Pi, or a dedicated second Pi (see the SPOF note) — plus an **Alfa
-AWUS036ACM** USB WiFi adapter (MediaTek MT7612U).
+**Hardware specification.** This is the exact Builder-Pi hardware/OS the workshop
+is validated on (a dedicated second Pi may be used instead — see the SPOF note).
+The dual-band USB WiFi adapter is required: the ESP32s are 2.4 GHz-only, and the
+Pi's onboard radio is a weak AP, so a capable USB radio hosts the workshop AP
+(see the radio-role split below).
+
+| Component | Specification | Notes | Where to buy (The Pi Hut) |
+|---|---|---|---|
+| Single-board computer | Raspberry Pi 5 Model B (Rev 1.1), 16 GB RAM | 64-bit quad-core Arm Cortex-A76 @ 2.4 GHz; 16 GB gives ample headroom for the ESP32 toolchain + concurrent flashing | [Raspberry Pi 5 (16GB variant)](https://thepihut.com/products/raspberry-pi-5) |
+| Operating system | Raspberry Pi OS (Debian 13 "Trixie", 64-bit), kernel `6.18.50+rpt-rpi-2712` | NetworkManager-based network stack (used for the AP); check yours with `cat /etc/os-release` | (ships on Raspberry Pi OS media) |
+| USB WiFi adapter | AC1300 Dual-Band USB WiFi Adapter — MediaTek **MT7612U** (`0e8d:7612`), 802.11a/b/g/n/ac, USB 3.0 | 2.4 GHz + 5 GHz; the `mt76x2u` driver ships with Raspberry Pi OS and has strong AP-mode support. Hosts the workshop 2.4 GHz AP. | [AC1300 Dual-Band USB WiFi Adapter (MT7612U)](https://thepihut.com/collections/raspberry-pi-store/products/dual-band-usb-wifi-adapter-for-raspberry-pi-5ghz-2-4ghz-mt7612u) |
+
+> The AC1300 adapter enumerates as a MediaTek `MT7612U` — the `configure-wifi-ap`
+> SSM document detects the AP radio by its `mt76*` driver (not by interface name),
+> so any MT7612U-based dual-band adapter works, not only this specific model.
 
 **Radio role assignment (this split is deliberate — do not swap it):**
 
 | Role | Interface | Radio | Band | Mode | Why |
 |---|---|---|---|---|---|
-| Workshop IoT AP (`reinvent-pqc-iot-wifi`) | `wlan1` | **Alfa MT7612U** | 2.4 GHz | NetworkManager AP (shared) | ESP32s are 2.4 GHz-only; the MT7612U `mt76x2u` driver has strong AP-mode support and an external antenna for a table of devices. |
+| Workshop IoT AP (`reinvent-pqc-iot-wifi`) | `wlan1` | **AC1300 USB adapter (MT7612U)** | 2.4 GHz | NetworkManager AP (shared) | ESP32s are 2.4 GHz-only; the MT7612U `mt76x2u` driver has strong AP-mode support for a table of devices. |
 | Uplink to venue backbone | `wlan0` | Pi onboard (brcmfmac) | 5 GHz (preferred) | station (client) | The onboard radio is a solid *client* but a weak AP; putting the uplink on 5 GHz dodges the brutal 2.4 GHz congestion at re:Invent. |
 
-Putting the demanding AP job on the capable Alfa radio and the easy station job
-on the onboard radio — **two physical radios, one job each** — is what makes the
-dual-band bridge robust. A single radio doing AP+station tends to force both onto
-the same channel/band, which would defeat the 2.4↔5 split.
+Putting the demanding AP job on the capable USB MT7612U radio and the easy
+station job on the onboard radio — **two physical radios, one job each** — is
+what makes the dual-band bridge robust. A single radio doing AP+station tends to
+force both onto the same channel/band, which would defeat the 2.4↔5 split.
+
+> **Interface naming.** The table above assumes the USB adapter is `wlan1` and
+> the onboard radio is `wlan0`, but USB adapters don't get a stable name across
+> reboots. The `configure-wifi-ap` SSM document sidesteps this by picking the AP
+> radio by its `mt76*` driver rather than by name — so you don't need to hardcode
+> `wlan1`.
 
 > **NetworkManager approach.** These steps use **NetworkManager (`nmcli`)**, which
 > is the default network stack on current Raspberry Pi OS (Bookworm+). NM manages
