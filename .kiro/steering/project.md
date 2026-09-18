@@ -96,6 +96,70 @@ the teardown/rebuild. Handle these to keep a from-scratch deploy clean:
   is reused across rebuilds (fine, just don't expect the stack to own it).
 
 Backlog candidates surfaced during rebuilds (not yet fixed):
+- **[FEATURE — Step 2 of the migration path: migrate the CERTIFICATES to PQC
+  signatures (ML-DSA-44)] Build the certificate-migration flow.** The workshop
+  today performs Step 1 only — migrating the key EXCHANGE to hybrid ML-KEM
+  (closing "harvest now, decrypt later"). The device's certificate stays
+  CLASSICAL (ECDSA P-256), so its signature is still forgeable by a future
+  quantum computer. Step 2 closes that certificate-signature-forgery risk by
+  moving the certificate to a post-quantum signature (ML-DSA, FIPS 204; use
+  ML-DSA-44 / Level 2 for the workshop). This is surfaced to attendees as a
+  CHALLENGE section (attendee/6-migrate-certificates) whose click-by-click steps
+  are NOT yet written — this backlog item is the implementation behind it.
+
+  High-level spec (four parts; the design intent is that the classical and the
+  ML-DSA-44 worlds run in PARALLEL so devices migrate over the existing OTA
+  process without a flag-day cutover):
+
+  1. **Two Private CAs, running side by side.** Create a SECOND Private CA for
+     the ML-DSA-44 certificates, alongside the existing classical CA (keep the
+     original for the classical ECDSA certs). BOTH CAs coexist permanently.
+     - **Device registration** is modified so that when a device is registered it
+       generates device certificates in BOTH CAs — one classical cert and one
+       ML-DSA-44 cert per device.
+     - **Broker creation** does the same: TWO broker certificates are generated,
+       one from each CA.
+     NOTE feasibility risk: AWS Private CA does not issue ML-DSA certs today (the
+     current broker CA is a ROOT ACM PCA issuing ECDSA P-256 — see
+     broker-container-stack.yaml), so the second (ML-DSA-44) CA likely needs a
+     self-managed/local CA (e.g. OpenSSL 3.5 + oqs-provider, which the broker
+     image ALREADY builds) rather than ACM PCA. Confirm before design.
+
+  2. **Two broker listeners, in parallel.** Change the broker configuration so it
+     has TWO listeners for the IoT->Mosquitto connections\: one presenting the
+     classical TLS cert, and another presenting the ML-DSA-44-signed cert. They
+     run in parallel on DIFFERENT PORTS but under the SAME broker name and
+     endpoint (same NLB DNS / hostname; a second listener port + NLB listener/
+     target group). A classical device keeps using the classical port; a migrated
+     device uses the ML-DSA-44 port. No disruption to devices on either side.
+
+  3. **A third firmware .ino that supports ML-KEM + the ML-DSA cert.** Create a
+     new firmware sketch that does BOTH hybrid ML-KEM key exchange AND presents/
+     trusts the ML-DSA-44-signed certificate (the Step-1 firmware only does
+     ML-KEM with a classical cert). The per-device firmware build process for OTA
+     delivery must handle being invoked with this NEW third firmware variant,
+     built with the new ML-DSA-44-signed ESP32 device certificate (extend
+     FIRMWARE_VARIANT beyond classical/pqc, and have buildspec select the third
+     sketch + inject the ML-DSA device cert). Deployment is over the EXISTING OTA
+     process — same migration Step Function / publish-ota path. wolfSSL must have
+     ML-DSA verify/sign enabled in user_settings.h (it already has ML-KEM;
+     confirm ML-DSA support + memory budget on the ESP32-S3).
+
+  4. **Verify the S3 presigned-URL path still works for repeated OTAs.** Confirm
+     the presigned S3 GET URL used by publish-ota still works for ADDITIONAL
+     firmware changes at future dates from the SAME firmware S3 bucket (i.e. a
+     device that already did Step 1 can be OTA'd again for Step 2, and again
+     later) — check presign expiry, per-version keys (`<serial>/<version>/`), and
+     that nothing about the bucket/versioning blocks a second/third OTA to the
+     same device.
+
+  End state: a device whose key exchange AND certificate are both post-quantum —
+  the terminal state of the Classical TLS -> PQC algorithms -> PQC certificates
+  path (per NIST IR 8547). Both CAs, both broker listeners, and all three
+  firmware variants coexist so a fleet migrates gradually over OTA rather than in
+  a flag-day cutover. Lower urgency than Step 1 (cert forgery needs a quantum
+  computer that does not yet exist), and gated on the CA feasibility question in
+  part 1.
 - **[GUI — double-click causes a duplicate registration/build] Disable the
   "Register & Flash" button once clicked.** Observed on pqc-b (Sep 18): during a
   parallel-flash test a double-click on one device's button fired TWO
