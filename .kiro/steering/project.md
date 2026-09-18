@@ -96,6 +96,99 @@ the teardown/rebuild. Handle these to keep a from-scratch deploy clean:
   is reused across rebuilds (fine, just don't expect the stack to own it).
 
 Backlog candidates surfaced during rebuilds (not yet fixed):
+- **[GUI — double-click causes a duplicate registration/build] Disable the
+  "Register & Flash" button once clicked.** Observed on pqc-b (Sep 18): during a
+  parallel-flash test a double-click on one device's button fired TWO
+  `POST /api/register` calls, producing TWO concurrent CodeBuild firmware builds
+  for the same serial (C69E44) — harmless (both write the same
+  `<serial>/0.1.0/` S3 path, last-writer-wins) but wasteful and confusing.
+  Root cause: the frontend `registerDevice()` in
+  `raw_device_builder/builder-pi/templates/index.html` (~line 124) does not
+  disable the button on click, and the server-side guard in
+  `raw_device_builder/builder-pi/app.py` `register_device()` (~line 144) admits
+  a second call because the device status is still `ready` when the rapid second
+  click lands (status only flips to `registered` inside the background pipeline).
+  Fix: (a) frontend — grey/disable the button immediately on click (set
+  `disabled` + a "registering..." label) so it cannot be clicked twice; and/or
+  (b) server — flip the slot status to a transient `registering` synchronously
+  in the `/api/register` handler BEFORE spawning the thread, and reject re-entry
+  while in that state. Recommend both (defence in depth). Same pattern applies to
+  the Reflash/Deregister buttons. NOTE: parallel flashing across DIFFERENT devices
+  works fine (3 concurrent builds ran cleanly in the same test) — this is purely
+  the same-device double-submit.
+- **[Builder-Pi — harden concurrent multi-device flashing] Make parallel
+  register+flash robust for the "attendees plug in and flash at the same time"
+  moment.** Observed on pqc-b (Sep 18): flashing two DIFFERENT devices in quick
+  succession worked (3 concurrent CodeBuild builds ran cleanly, both devices
+  registered), so the cloud path is already parallel-safe. The RISK is on the Pi
+  side, where five clash areas could bite with more devices or faster clicks:
+  1. **Serial I/O is not serialized per port.** `device_manager.py`'s `_lock`
+     guards only the in-memory `devices` dict, NOT the actual esptool/serial
+     operations. Two flashes targeting the SAME `/dev/tty*` (e.g. a device that
+     re-enumerates mid-flash, or a port reused after a reset) would collide.
+     Fix: hold a per-PORT lock for the whole flash (open→erase→write→verify),
+     not just around dict mutation.
+  2. **Background `port_scanner` races the flasher.** The scanner continuously
+     enumerates ports and can observe a device mid-flash (bootloader mode /
+     re-enumerating), churning device state. Fix: gate the scanner on a
+     per-port "busy/flashing" status and skip (or pause) scanning ports that an
+     active flash owns; resume when it completes.
+  3. **Registration re-entry while `ready`.** `register_device()` (~line 144)
+     admits a new pipeline while the device is already `ready`, so a second
+     submit re-runs the whole register→build→flash. Fix: reject/queue new
+     submissions for a serial that has an in-flight pipeline (complements the
+     GUI double-click disable item above — do both).
+  4. **Flask dev server + daemon threads.** `app.py` uses `app.run` (Werkzeug
+     dev server) and spawns a daemon thread per registration; under many
+     simultaneous clicks this is unbounded and fragile. Fix: cap concurrency
+     with a small worker pool / bounded queue and surface a "queued" state in
+     the GUI, rather than spawning unbounded threads.
+  5. **Physical/identity ambiguity.** `FIRMWARE_DIR` and device identity key off
+     `<serial>`, but the flasher targets by `--port`; with many boards on one
+     hub, port↔serial mapping can drift (unpowered hub brownouts, re-enumeration
+     under load). Fix: use a powered USB hub, cap concurrent flashes to the
+     hub's safe count, and confirm the chip's own serial (esptool chip id) after
+     connect so a build for serial X can never be flashed onto board Y.
+  Net recommendation: per-port lock (1) + scanner status-gate (2) + registration
+  in-flight guard (3) are the core correctness fixes; bounded worker pool (4) and
+  powered-hub + chip-id verification (5) are the robustness/hardware fixes for a
+  full room. Low urgency today (DIFFERENT-device parallel flash already works),
+  but this is the path to a reliable "everyone flashes at once" attendee moment.
+- **[Architecture — stable broker DNS via a permanent hosted zone + broker cert
+  SANs] Decouple the ESP32 firmware from the NLB's ephemeral DNS name.** Today
+  the broker endpoint is the raw NLB DNS name (`pqc-broker-nlb-*.elb.us-east-1.
+  amazonaws.com`), which changes on every broker-stack rebuild and forces a
+  firmware rebuild + re-flash. This is a core pain in the rebuild loop and the
+  single biggest simplification available to the ESP32 build. Desired design
+  (user-approved):
+  - A SEPARATE permanent AWS account owns a Route 53 hosted zone. For each
+    workshop account, create a **CNAME** in that zone pointing at that account's
+    NLB DNS name — e.g. `broker-a.<zone>` -> pqc-a NLB, `broker-b.<zone>` ->
+    pqc-b NLB, `broker-ws.<zone>` -> the Workshop Studio account NLB.
+  - The ESP32 firmware bakes in the STABLE alias (one of the three above) as
+    `MQTT_BROKER_ENDPOINT` instead of the raw NLB name. It already flows into
+    SNI automatically (wolfSSL_UseSNI uses the endpoint host).
+  - The broker server certificate MUST carry these alias names as **Subject
+    Alternative Names (SANs)** — at least 3: pqc-a, pqc-b, pqc-ws aliases (issue
+    all three on every broker cert so one build works in any account). CURRENT
+    STATE: the broker cert has NO SANs — the CSR is just
+    `/CN=pqc-mqtt-broker/O=AWS PQC Workshop/C=US` and `acm_pca.issue_certificate`
+    passes no ApiPassthrough extensions (see the BrokerCert custom-resource Lambda
+    in `broker-container/cloudformation/broker-container-stack.yaml`, ~line 705-730).
+    Fix: add the alias FQDNs as SANs, either by putting a SAN extension in the
+    openssl CSR (`-addext "subjectAltName=DNS:broker-a...,DNS:broker-b...,DNS:broker-ws..."`)
+    AND/OR passing `ApiPassthrough.Extensions.SubjectAlternativeNames` to
+    `issue_certificate` (ACM PCA honors passthrough SANs when the CA template
+    allows it — use an `EndEntityCertificate/V1` template with CSRPassthrough).
+  - The DNS CNAME re-point after each stack rebuild is a MANUAL step in the
+    permanent account — user is happy with that trade (it removes the per-rebuild
+    firmware re-bake entirely). Document it in the deploy runbook.
+  - Bonus hardening: once SANs exist, tighten the firmware to actually ENFORCE
+    hostname/SAN matching (wolfSSL domain-name check / `DOMAIN_NAME_CHECK`) — today
+    verification is chain-only (`WOLFSSL_VERIFY_PEER` in aws_iot_pqc_esp32.ino
+    ~line 595, no explicit domain-name check), so a hostname mismatch is NOT
+    currently caught. For a PQC security workshop, enforcing SAN match is the
+    correct end state.
 - **[BUG — real, reproducible] PQC migration race: publish-ota checks S3 before
   the build artifact lands.** Observed on pqc-a device esp32-FC22E0 (Sep 16): the
   "Migrate to PQC" migration FAILED with
