@@ -1,0 +1,9 @@
+# Files kept in the repo but EXCLUDED from `git archive` output (and therefore
+# from the Workshop Studio source zip built by cloudformation/package-workshop-src.sh).
+#
+# .kiro/ holds internal development context — steering/backlog notes, specs, and
+# session history — that workshop attendees never need and should not receive
+# (it references internal account names, tooling paths, and engineering notes).
+# export-ignore keeps these files tracked/committed here but omits them from the
+# archive.
+.kiro/ export-ignore
