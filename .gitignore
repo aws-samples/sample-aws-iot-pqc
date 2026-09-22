@@ -45,3 +45,9 @@ __pycache__/
 .pytest_cache/
 .coverage
 *.egg-info/
+
+# Local Kiro MCP config — machine-specific (contains an absolute toolbox PATH)
+# and internal-only servers. Kept out of the repo so it is never shipped in the
+# Workshop Studio source zip, where it would error for attendees. Use the
+# user-level config at ~/.kiro/settings/mcp.json instead.
+.kiro/settings/mcp.json
