@@ -292,6 +292,10 @@ Outputs:
     Description: Private CA ARN issuing device certificates
     Value: !GetAtt BrokerStack.Outputs.PrivateCAArn
 
+  MlDsaPrivateCAArn:
+    Description: ML-DSA-44 Private CA ARN issuing post-quantum device certificates
+    Value: !GetAtt BrokerStack.Outputs.MlDsaPrivateCAArn
+
   BuilderApiEndpoint:
     Description: Builder-Pi REST API endpoint (register/deregister/firmware)
     Value: !GetAtt DeviceBuilderStack.Outputs.ApiEndpoint

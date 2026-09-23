@@ -46,6 +46,54 @@
    is **8884**; bridge to IoT Core stays classical. NLB gains a second listener +
    target group for 8884.
 
+## Workstream 1 spike findings (task 1.1 — pinned)
+
+Verified against authoritative sources (boto3 `create_certificate_authority`
+reference, AWS Private CA userguide, the AWS Security blog "Post-quantum (ML-DSA)
+code signing with AWS Private CA and AWS KMS", OpenSSL 3.5 `EVP_PKEY-ML-DSA`
+docs, and wolfSSL PQC posts). Content rephrased for compliance with licensing
+restrictions.
+
+- **ACM PCA enums (exact, do not guess):**
+  - `KeyAlgorithm: ML_DSA_44` (full enum set now:
+    `RSA_2048|RSA_3072|RSA_4096|EC_prime256v1|EC_secp384r1|EC_secp521r1|ML_DSA_44|ML_DSA_65|ML_DSA_87|SM2`).
+  - `SigningAlgorithm: ML_DSA_44` — used both on the CA config and on
+    `issue_certificate`. (ML-DSA has no separate hash-suffix like
+    `SHA256WITHECDSA`; the algorithm name is the signing algorithm.)
+  - **ROOT CA with ML-DSA is supported** (the blog builds a full ROOT→SUBORDINATE
+    ML-DSA chain; we only need a ROOT, matching the classical `PrivateCA`). The
+    `arn:aws:acm-pca:::template/RootCACertificate/V1` template + the
+    Certificate + Activation flow are unchanged — only KeyAlgorithm /
+    SigningAlgorithm differ from the classical CA.
+  - Launched Nov 2025; use **us-east-1** (our workshop region) — confirm the CA
+    reaches `ACTIVE` there on first deploy.
+
+- **Feasibility gate 1 — CA-side keygen + CSR (RESOLVED, positive).** Device and
+  broker keypairs are generated **server-side in Lambda via the `openssl` CLI**
+  (see `raw_device_builder/lambda/device-registrar/index.py`,
+  `.../prepare-build/index.py`, `.../pqc-upgrader/index.py`, and the broker
+  `CertProvisionerFunction`) — the ESP32 never generates its own keypair; the
+  private key is baked into the firmware at build time. OpenSSL **3.5+** can
+  generate an ML-DSA-44 key and CSR (`openssl req -newkey mldsa44 ...` /
+  `EVP_PKEY-ML-DSA`). **Constraint:** the Lambda's bundled OpenSSL is older than
+  3.5, so ML-DSA keygen needs an **OpenSSL 3.5+ Lambda layer or a container-image
+  Lambda**. Build-side detail, not a design blocker.
+
+- **Feasibility gate 2 — device-side TLS auth (RESOLVED, positive).** wolfSSL
+  supports **ML-DSA/Dilithium for TLS 1.3 authentication** (signing the
+  CertificateVerify and verifying an ML-DSA peer cert). The ESP32 only needs to
+  *use* a pre-issued ML-DSA private key, not generate one. Enable
+  `HAVE_DILITHIUM` / `WOLFSSL_DILITHIUM` (ML-DSA) in
+  `wolfssl_user_settings_arduino.h`. Task 3.2 still must verify the ESP32-S3
+  flash/RAM budget with ML-KEM **and** ML-DSA enabled together (stay under the
+  0x380000 per-slot ceiling).
+
+- **Interop note (call out in attendee docs):** ML-DSA in TLS 1.3 is still an
+  IETF draft (`draft-ietf-tls-mldsa`); certificate/CertificateVerify codepoints
+  are not yet in a final RFC. This is fine here because **both ends use wolfSSL**
+  (self-built ESP32 ↔ self-managed Mosquitto+wolfSSL broker), exactly like the
+  Step 1 ML-KEM situation — no cross-implementation interop is required.
+
 ## Guiding principles
 
 - **Parallel, not flag-day.** Classical (ECDSA) and ML-DSA-44 worlds coexist:

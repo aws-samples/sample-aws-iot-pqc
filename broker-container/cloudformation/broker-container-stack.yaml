@@ -328,6 +328,46 @@ Resources:
       Certificate: !GetAtt PrivateCACertificate.Certificate
       Status: ACTIVE
 
+  # ═══════════════════════════════════════════════════════════════════════════
+  # AWS Private CA — Post-Quantum ML-DSA-44 Certificate Authority (Step 2)
+  # ═══════════════════════════════════════════════════════════════════════════
+  # Runs in PARALLEL with the classical CA above. ML-DSA-44 (FIPS 204, NIST
+  # Level 2) is a post-quantum signature algorithm. ACM PCA added ML-DSA support
+  # in Nov 2025. Same ROOT type + RootCACertificate/V1 template as the classical
+  # CA — only KeyAlgorithm / SigningAlgorithm change (ML-DSA has no hash suffix).
+
+  MlDsaPrivateCA:
+    Type: AWS::ACMPCA::CertificateAuthority
+    Properties:
+      Type: ROOT
+      KeyAlgorithm: ML_DSA_44
+      SigningAlgorithm: ML_DSA_44
+      Subject:
+        CommonName: PQC Workshop ML-DSA-44 Private CA
+        Organization: AWS PQC Workshop
+        Country: US
+      RevocationConfiguration:
+        CrlConfiguration:
+          Enabled: false
+
+  MlDsaPrivateCACertificate:
+    Type: AWS::ACMPCA::Certificate
+    Properties:
+      CertificateAuthorityArn: !Ref MlDsaPrivateCA
+      CertificateSigningRequest: !GetAtt MlDsaPrivateCA.CertificateSigningRequest
+      SigningAlgorithm: ML_DSA_44
+      TemplateArn: arn:aws:acm-pca:::template/RootCACertificate/V1
+      Validity:
+        Type: YEARS
+        Value: 10
+
+  MlDsaPrivateCAActivation:
+    Type: AWS::ACMPCA::CertificateAuthorityActivation
+    Properties:
+      CertificateAuthorityArn: !Ref MlDsaPrivateCA
+      Certificate: !GetAtt MlDsaPrivateCACertificate.Certificate
+      Status: ACTIVE
+
   # ─── Broker Certificate (issued by Private CA via Lambda custom resource) ──
   # The CertProvisionerFunction generates a key, CSR, issues the cert from
   # Private CA, and stores everything in Secrets Manager automatically.
@@ -1029,6 +1069,10 @@ Outputs:
   PrivateCAArn:
     Description: Private CA ARN (for issuing device certificates)
     Value: !Ref PrivateCA
+
+  MlDsaPrivateCAArn:
+    Description: ML-DSA-44 Private CA ARN (for issuing post-quantum device certificates)
+    Value: !Ref MlDsaPrivateCA
 
   ECRRepositoryUri:
     Description: ECR repository for broker image

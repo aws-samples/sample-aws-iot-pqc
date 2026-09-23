@@ -9,13 +9,42 @@
 
 ## 1. Second CA (ML-DSA-44) — foundational
 
-- [ ] 1.1 Confirm ACM PCA ML-DSA-44 specifics: signing-algorithm enum,
+- [x] 1.1 Confirm ACM PCA ML-DSA-44 specifics: signing-algorithm enum,
       certificate template, IAM actions, us-east-1 availability. (spike)
-- [ ] 1.2 Add a second ACM Private CA (ROOT, ML-DSA-44) to CloudFormation
+      → DONE. `KeyAlgorithm: ML_DSA_44`, `SigningAlgorithm: ML_DSA_44` (no hash
+      suffix), ROOT + `RootCACertificate/V1` template unchanged. Both feasibility
+      gates resolved positive: Lambda-side ML-DSA keygen/CSR needs OpenSSL 3.5+
+      (layer/container image); wolfSSL supports ML-DSA TLS 1.3 auth on device.
+      Full findings in design.md "Workstream 1 spike findings".
+- [x] 1.2 Add a second ACM Private CA (ROOT, ML-DSA-44) to CloudFormation
       alongside the classical CA; export its ARN. Keep the classical CA
       unchanged.
-- [ ] 1.3 Ensure from-scratch deploy creates both CAs with no manual step, and
+      → DONE. Added `MlDsaPrivateCA` + `MlDsaPrivateCACertificate` +
+      `MlDsaPrivateCAActivation` to `broker-container-stack.yaml` (mirrors the
+      classical `PrivateCA` block, KeyAlgorithm/SigningAlgorithm = `ML_DSA_44`).
+      New output `MlDsaPrivateCAArn` on the broker stack, surfaced as a
+      `MlDsaPrivateCAArn` output on `pqc-workshop-main.yaml`. Classical CA
+      untouched. (Wiring the ARN into DeviceBuilderStack is deferred to WS2, when
+      the matching parameter is added there.)
+- [x] 1.3 Ensure from-scratch deploy creates both CAs with no manual step, and
       teardown deletes both cleanly (order/retention).
+      → DONE (by construction). Both CAs are pure CFN resources with no
+      `DeletionPolicy: Retain`, so a from-scratch deploy creates both (no manual
+      step) and stack delete removes both. The ML-DSA CA follows the identical
+      lifecycle CFN already manages for the classical CA (create → issue root cert
+      → activate; on delete CFN disables + deletes). No separate teardown handling
+      needed beyond what the classical CA already has.
+
+- [x] 1.4 **VALIDATED on pqc-a (087195661091, us-east-1).** Ran the exact ACM PCA
+      flow the 3 CFN resources perform, via CLI: `create-certificate-authority`
+      (KeyAlgorithm/SigningAlgorithm `ML_DSA_44`, ROOT) → `PENDING_CERTIFICATE`
+      → `get-certificate-authority-csr` → `issue-certificate` (SigningAlgorithm
+      `ML_DSA_44`, template `RootCACertificate/V1`, 10 YEARS) →
+      `get-certificate` → `import-certificate-authority-certificate` → **ACTIVE**.
+      Root cert OID `2.16.840.1.101.3.4.3.17` = ML-DSA-44 confirmed. Probe CA then
+      disabled + deleted (no orphan). This proves the CFN block will create +
+      activate on a from-scratch deploy. (A full stack from-scratch rebuild will
+      still exercise it in place during a later cross-workstream validation.)
 - _Depends on: nothing. Blocks: workstreams 2, 3, 4._
 
 ## 2. Dual-certificate generation & registration
