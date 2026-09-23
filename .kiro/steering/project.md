@@ -549,15 +549,19 @@ Backlog candidates surfaced during rebuilds (not yet fixed):
   `setup-all.sh` VIA SSM (never interactively), make it log to a file + not abort
   silently (surface which step failed), so we get the reliability + observability
   win without the full re-architecture.
-- **Fold the NetworkManager AP into `setup-all.sh` (medium priority).** The Pi's
-  hostapd/NM AP is currently a MANUAL setup (DEPLOYMENT.md §5a). During the Fri
-  device test the classical device failed WiFi with `4WAY_HANDSHAKE_TIMEOUT`
-  because the operator-typed AP PSK didn't match `@reinvent2026`; fixed by hand
-  with `nmcli ... wifi-sec.psk`. Scripting the `nmcli` AP creation in
-  `setup-all.sh` — pulling SSID/PSK from SSM (`/pqc-workshop/wifi/{ssid,password}`,
-  the same source firmware uses) — eliminates this class of typo entirely and
-  makes the AP consistent with the firmware by construction. The Pi SSM role
-  already has `ssm:GetParameter` on `/pqc-workshop/*` + `kms:Decrypt`.
+- **[DONE] Automate the NetworkManager AP as part of Pi provisioning.** The Pi's
+  2.4GHz workshop AP used to be a MANUAL `nmcli` setup (DEPLOYMENT.md §5a), which
+  caused a `4WAY_HANDSHAKE_TIMEOUT` during a device test when the operator-typed
+  AP PSK didn't match `@reinvent2026`. Resolved: the `configure-wifi-ap` SSM
+  document builds the AP from the SSM WiFi params (`/pqc-workshop/wifi/{ssid,
+  password}` — the same source the firmware is built from, so PSK typos are
+  impossible by construction) and detects the AP radio by its `mt76*` driver
+  rather than hardcoding `wlan1`. It is now step 5/5 of the DEFAULT provisioning
+  chain in `setup-builder-pi-remote.sh` (commit 82fcab7), so a workshop Pi comes
+  up fully networked with no manual AP step. Confirmed by a successful Workshop
+  Studio run. (Note: the AP lives in an SSM document run by the remote
+  orchestrator, not in an on-Pi `setup-all.sh` — the on-Pi provisioning was moved
+  to SSM documents; the outcome is the same: no manual `nmcli`.)
 - **Dashboard LED button not working (low priority, later fix).** On the device
   dashboard, the LED (command) button does not actuate the device. Likely the
   cmd/<thing>/+ command path (dashboard -> AppSync/API -> IoT -> broker bridge
