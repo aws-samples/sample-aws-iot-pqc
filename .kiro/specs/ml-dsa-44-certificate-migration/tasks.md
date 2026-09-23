@@ -1,9 +1,11 @@
 # Tasks — ML-DSA-44 Certificate Migration (Step 2)
 
-> Status: **high-level breakdown**, seeded from the four workstreams. These are
-> epics/task groups, NOT yet implementation-ready sub-tasks — to be detailed
-> (acceptance criteria, file-level edits, tests) before coding. Sequencing
-> follows the design's proposed order; dependencies noted per group.
+> Status: **key decisions locked** (Option A OTA slot reuse; all variants carry
+> the download `otaTask`; dashboard picker + Flash button; managed ACM PCA
+> ML-DSA-44 CA; ports 8883/8884). Epics below still get detailed into
+> implementation-ready sub-tasks (acceptance criteria, file edits, tests) as each
+> workstream is picked up. Sequencing follows the design's proposed order;
+> dependencies noted per group. Validation account: **pqc-a** (rebuild/redeploy).
 
 ## 1. Second CA (ML-DSA-44) — foundational
 
@@ -28,17 +30,26 @@
 
 ## 3. Firmware pipeline & third variant
 
-- [ ] 3.1 Create the third firmware sketch (ML-KEM key exchange + ML-DSA-44 cert,
-      targets broker 8884). New `.ino`.
+- [ ] 3.1 Create the NET-NEW third firmware sketch
+      (`aws_iot_pqc_esp32_v3_mldsa/…`): ML-KEM key exchange + ML-DSA-44 device
+      cert + trust the ML-DSA-44 CA, `MQTT_BROKER_PORT` = 8884.
 - [ ] 3.2 Enable ML-DSA sign/verify in `wolfssl_user_settings_arduino.h`; verify
-      ESP32-S3 memory budget (ML-KEM + ML-DSA together). (spike + config)
-- [ ] 3.3 Extend `buildspec.yml` / `FIRMWARE_VARIANT` to select the third variant
-      and inject the device's ML-DSA-44 cert into `secrets.h`.
-- [ ] 3.4 Extend the migration Step Function / entry point to trigger the ML-DSA
-      variant (variant field on the migration input).
-- [ ] 3.5 Verify the S3 presigned-URL OTA works for a SECOND/THIRD OTA to the
-      same device (Step 1 → Step 2 → later): presign expiry, per-version keys,
-      bucket versioning.
+      ESP32-S3 memory budget (ML-KEM + ML-DSA together, under 0x380000). (spike + config)
+- [ ] 3.3 **Port the full download `otaTask` into ALL THREE sketches** (classical
+      already has it; add to pqc and pqc-mldsa) so any variant can receive an
+      `ota-update` and write the inactive slot.
+- [ ] 3.4 **Generalize the `migrate-*` swap handlers to be slot-content-aware**
+      (inspect each slot via `esp_ota_get_partition_description`, target by what's
+      resident) instead of assuming ota_0=classical / ota_1=PQC — preserves the
+      one-version rollback under Option A.
+- [ ] 3.5 Extend `buildspec.yml` / `FIRMWARE_VARIANT` to select the third variant
+      and inject the device's ML-DSA-44 cert into `secrets.h` (prefer a
+      variant→sketch→cert-source mapping so future variants are data, not code).
+- [ ] 3.6 Extend the migration Step Function / entry point to take a **variant**
+      selector (from the dashboard picker) and build+push any chosen variant.
+- [ ] 3.7 Verify the S3 presigned-URL OTA works for a SECOND/THIRD OTA to the
+      same device (classical → pqc → pqc-mldsa, + one-step rollback): presign
+      expiry, per-version keys, bucket versioning.
 - _Depends on: 1, 2 (device ML-DSA cert), 4 (8884 endpoint to connect to)._
 
 ## 4. Broker: second listener + NLB + bridge
@@ -54,8 +65,12 @@
 
 ## 5. Cross-cutting (last)
 
-- [ ] 5.1 Dashboard: represent certificate state (Step 1 classical vs Step 2
-      ML-DSA-44), mirroring the `pqc_algorithm`-telemetry approach.
+- [ ] 5.1 Dashboard: replace the single migrate action with a **firmware picker
+      field** (classical / pqc / pqc-mldsa) + a **Flash button** that builds the
+      variant if not already built, then issues the OTA job; wire the AppSync
+      mutation / migration entry point to take a `variant` argument. Show the
+      device's current cert/algorithm state (from `pqc_algorithm` telemetry) so
+      the operator sees running-vs-target.
 - [ ] 5.2 Extend `check_setup_status.sh` to validate the second CA + 8884
       listener/target group.
 - [ ] 5.3 From-scratch deploy + teardown validation on both accounts (merge

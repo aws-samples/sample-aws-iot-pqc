@@ -1,7 +1,50 @@
 # Design — ML-DSA-44 Certificate Migration (Step 2)
 
-> Status: **high-level draft**, seeded from the four workstreams. To be detailed
-> further before implementation. Grounded in the existing (Step 1) components.
+> Status: **design decisions locked** for the OTA/partition strategy, firmware
+> layout, and dashboard flow (see "Key design decisions" below). Per-workstream
+> detail still to be fleshed out as each is implemented. Grounded in the existing
+> (Step 1) components.
+
+## Key design decisions (locked)
+
+1. **OTA partition strategy: Option A — reuse the two existing OTA slots.** The
+   partition table is unchanged (`ota_0` + `ota_1`, 3.5 MB each, `otadata`, no
+   factory). A new firmware image is downloaded into whichever slot is currently
+   inactive (`esp_ota_get_next_update_partition`), boot is pointed there via
+   `otadata` (`esp_ota_set_boot_partition`), and the device reboots. This
+   inherently keeps the **previous firmware in the other slot → a one-version
+   rollback path** for free. No partition redesign (which would shrink slots
+   below the ~2.5 MB firmware + fail the 3.5 MB / 0x380000 size guard).
+   - Consequence: the fixed "ota_0 = classical, ota_1 = PQC" assumption baked
+     into the `migrate-pqc` / `migrate-classical` swap handlers must become
+     **slot-content-aware** (inspect which app is in each slot via
+     `esp_ota_get_partition_description` and target by *what's there*, not by a
+     hardcoded subtype↔variant convention), OR the swap shortcuts are dropped in
+     favour of always doing a download-OTA. Decision: keep a generalized
+     "boot the other slot" revert, but do not assume which variant lives where.
+
+2. **All firmware variants carry the full download `otaTask`.** Today only the
+   classical sketch has the download-and-write OTA path; the PQC sketch can only
+   swap to an already-resident slot. We will give **all three `.ino` files**
+   (classical, pqc, pqc-mldsa) the complete `otaTask` (download over TLS →
+   `esp_ota_begin/write/end` → `set_boot_partition` → reboot), so **any running
+   variant can receive an OTA command and flash the next slot**. This makes OTA
+   uniform and variant-agnostic across the fleet.
+
+3. **Dashboard: firmware picker + Flash button.** Replace the single hardcoded
+   "Migrate to PQC" action with (a) a **picker field** to select the target
+   firmware variant (classical / pqc / pqc-mldsa), and (b) a **Flash button**
+   that: if that variant is not already built for the device, triggers the build
+   first, then issues the OTA job. This generalizes the migration flow to
+   "select firmware → flash OTA" for any variant, in either direction.
+
+4. **ML-DSA-44 CA is a managed ACM Private CA** (ACM PCA supports ML-DSA-44 for
+   the root), not a self-managed OpenSSL/oqs CA. Supersedes the earlier
+   feasibility caveat.
+
+5. **Ports:** classical device listener stays **8883**; ML-DSA-44 device listener
+   is **8884**; bridge to IoT Core stays classical. NLB gains a second listener +
+   target group for 8884.
 
 ## Guiding principles
 
@@ -61,20 +104,31 @@
 
 ## Workstream 3 — Firmware pipeline & third variant
 
-- **New sketch variant:** a third `.ino` (e.g. `aws_iot_pqc_esp32_v2_mldsa`) that
-  does hybrid ML-KEM key exchange AND presents the ML-DSA-44 device cert +
-  trusts the ML-DSA-44 CA, and targets the broker's **8884** endpoint.
+- **New sketch variant:** a NET-NEW third `.ino` (e.g.
+  `aws_iot_pqc_esp32_v3_mldsa/aws_iot_pqc_esp32_v3_mldsa.ino`) that does hybrid
+  ML-KEM key exchange AND presents the ML-DSA-44 device cert + trusts the
+  ML-DSA-44 CA, and targets the broker's **8884** endpoint (`MQTT_BROKER_PORT`
+  injected as 8884 for this variant).
+- **Uniform OTA (`otaTask`) in ALL three sketches (decision 2):** port the full
+  download-and-write `otaTask` from the classical sketch into the PQC sketch and
+  the new ML-DSA sketch, so every variant can receive an `ota-update` command and
+  write the inactive slot. The download path is variant-agnostic
+  (`esp_ota_get_next_update_partition`). Generalize the `migrate-*` swap handlers
+  to be slot-content-aware (decision 1) rather than assuming ota_0=classical /
+  ota_1=PQC.
 - **buildspec / FIRMWARE_VARIANT:** extend selection beyond `classical`/`pqc` to
   a third value (e.g. `pqc-mldsa`), mapping to the new sketch and injecting the
-  device's ML-DSA-44 cert/key into `secrets.h`.
+  device's ML-DSA-44 cert/key into `secrets.h`. (Consider a small mapping table
+  variant→sketch→cert-source so adding future variants is data, not code.)
 - **wolfSSL:** enable ML-DSA sign/verify in `wolfssl_user_settings_arduino.h`;
-  validate the ESP32-S3 memory budget with ML-KEM + ML-DSA together.
+  validate the ESP32-S3 memory budget with ML-KEM + ML-DSA together (must stay
+  under the 3.5 MB / 0x380000 per-slot ceiling; wolfSSL+ML-KEM already ~2.5 MB).
 - **OTA path:** reuse the migration Step Function / publish-ota. Verify the S3
   presigned-URL GET works for a SECOND/THIRD OTA to the same device (presign
-  expiry, per-version keys `<serial>/<version>/`, bucket versioning) so Step 1 →
-  Step 2 → future updates all work.
-- Likely a new migration entry point / state-machine parameter to select the
-  ML-DSA variant (or a variant field on the migration input).
+  expiry, per-version keys `<serial>/<version>/`, bucket versioning) so a device
+  can go classical → pqc → pqc-mldsa (and roll back one step) over the air.
+- The migration input carries a **variant/version selector** (from the dashboard
+  picker) so the same Step Function builds+pushes any chosen variant.
 
 ## Workstream 4 — Broker second listener + NLB + bridge
 
@@ -90,9 +144,20 @@
 
 ## Cross-cutting
 
-- **Dashboard:** represent a device's certificate state (Step 1 classical cert vs
-  Step 2 ML-DSA-44 cert), likely from telemetry/registry — mirror how Step 1's
-  `pqc_algorithm` telemetry drives "migrated".
+- **Dashboard — firmware picker + Flash button (decision 3):** replace the single
+  "Migrate to PQC" action on the device card with:
+  - a **picker field** listing the selectable firmware variants (classical / pqc
+    / pqc-mldsa), and
+  - a **Flash button** that triggers the flow for the selected variant: if that
+    variant is not already built for the device (no artifacts at
+    `s3://<fw-bucket>/<serial>/<version-for-variant>/`), start the build first,
+    then issue the OTA job (publish-ota → `cmd/<thing>/ota`).
+  This means the AppSync mutation / migration entry point takes a **variant**
+  argument (not a hardcoded target), and the Step Function's build step passes
+  the corresponding `FIRMWARE_VARIANT`. The card also shows the device's current
+  certificate/algorithm state (from telemetry, mirroring how Step 1's
+  `pqc_algorithm` field drives "migrated") so the operator sees what's running vs
+  what they're flashing.
 - **Deploy/teardown/validation:** both CAs + both listeners must come up on a
   from-scratch deploy with no manual step; `check_setup_status.sh` extended to
   check the second CA / 8884 listener; teardown cleans up the new CA, NLB
