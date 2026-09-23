@@ -47,7 +47,8 @@ assets for **Workshop Studio** (see "Workshop Studio" below).
 
 > ⚠️ **The workshop WiFi credentials are supplied at deploy time** — the device
 > firmware (both the initial flash and the classical→PQC migration) is built
-> with them, and the builder-Pi hostapd AP broadcasts the same SSID. They are
+> with them, and the builder-Pi WiFi AP (brought up automatically by the
+> `configure-wifi-ap` SSM document) broadcasts the same SSID. They are
 > **never committed** to the repo (the template defaults are the harmless
 > placeholder `changeme`). Provide them by **one of three methods**, resolved in
 > this precedence (per value, first match wins):
@@ -181,15 +182,17 @@ After ~30s the Pi appears Online in `aws ssm describe-instance-information`.
 **Step 5.2 — provision the Pi from the deploy host.** Back on the machine with
 AWS credentials, run the orchestrator. It waits for the Pi to be Online, then
 runs the SSM documents in order (install-awscli → install-toolchain →
-deploy-app → configure-service):
+deploy-app → configure-service → configure-wifi-ap):
 
 ```bash
 ./raw_device_builder/setup-builder-pi-remote.sh            # add --region / --profile if needed
 ```
 
 The GUI **auto-starts** at the end (systemd `enable`d + started), reachable at
-`http://<pi-ip>:8080`. The toolchain step is slow (~10-15 min: the ~5 GB ESP32
-core). Every step's output is captured by SSM and shipped to the
+`http://<pi-ip>:8080`, **and the workshop 2.4 GHz WiFi AP is brought up on the
+Pi's USB radio** by the final `configure-wifi-ap` document — so the Pi ends fully
+networked with no manual step (see §5a). The toolchain step is slow (~10-15 min:
+the ~5 GB ESP32 core). Every step's output is captured by SSM and shipped to the
 `/pqc-workshop/builder-pi` CloudWatch log group.
 
 **If a step fails**, the orchestrator prints the failing document's output and a
@@ -216,29 +219,30 @@ re-stage `builder-pi/app.tgz`), then `setup-builder-pi-remote.sh --only deploy-a
 > WiFi or broker later, update the SSM parameter — the next build picks it up,
 > no redeploy.
 
-### 5a. (re:Invent only) Turn the Builder-Pi into the workshop WiFi AP + 2.4↔5 bridge
+### 5a. The Builder-Pi as the workshop WiFi AP (automated)
 
-The ESP32 devices are **2.4 GHz only** and must join `reinvent-pqc-iot-wifi` —
-the SSID baked into their firmware. At the venue you control that network by
-running it *on the Builder-Pi itself*: the Pi becomes a high-density WiFi access
-point for the devices and bridges their traffic up to the venue backbone. This is
-optional and only needed when you can't (or don't want to) rely on venue-provided
-WiFi. The steps below are sized for a full workshop room (up to ~150 devices
+The ESP32 devices are **2.4 GHz only** and must join the workshop SSID (e.g.
+`reinvent-pqc-iot-wifi`) — the SSID baked into their firmware. The Builder-Pi
+itself hosts that network: it becomes a high-density WiFi access point for the
+devices on its USB radio and bridges their traffic up to the venue backbone via
+its onboard uplink. It is sized for a full workshop room (up to ~150 devices
 across one or two Pis; the deploy default is 100).
 
-> **No keyboard/monitor needed — run these over SSM Session Manager.** The Pi is
-> already registered as an SSM managed instance (Step 5.1), so you can open a root
-> shell on it from the deploy host without physical access:
+> **This is now AUTOMATED — no manual steps.** The AP is brought up by the
+> `configure-wifi-ap` SSM document, which runs as the final step (5/5) of the Pi
+> provisioning chain in `setup-builder-pi-remote.sh` (Step 5.2). It pulls the
+> SSID/PSK from SSM (`/pqc-workshop/wifi/{ssid,password}` — the same source the
+> firmware is built from, so the AP PSK always matches the devices), sets the
+> WiFi regulatory domain, detects the AP-capable USB radio by its `mt76*` driver
+> (not by interface name), and builds the NetworkManager `shared`-mode AP. So on
+> a normally-provisioned Pi there is **nothing to do here** — this section is
+> reference material (hardware, radio roles, monitoring, troubleshooting) plus a
+> manual fallback.
+>
+> Re-run just the AP step at any time with:
 > ```bash
-> aws ssm start-session --target <mi-id>   # add --region / --profile if needed
+> ./raw_device_builder/setup-builder-pi-remote.sh --only configure-wifi-ap
 > ```
-> (find `<mi-id>` with `aws ssm describe-instance-information`; it's the Online
-> `pqc-workshop-builder-pi` instance). Every `sudo`/`nmcli` command in this
-> section can be run in that session. One caveat: reconfiguring `wlan1` won't drop
-> a Session Manager session (it rides the SSM channel over the `wlan0` uplink, not
-> the AP), but if you later change the **uplink** (`wlan0`) the session may
-> briefly disconnect — Session Manager reconnects on its own once connectivity
-> returns.
 
 **Hardware specification.** This is the exact Builder-Pi hardware/OS the workshop
 is validated on (a dedicated second Pi may be used instead — see the SPOF note).
@@ -274,134 +278,41 @@ force both onto the same channel/band, which would defeat the 2.4↔5 split.
 > radio by its `mt76*` driver rather than by name — so you don't need to hardcode
 > `wlan1`.
 
-> **NetworkManager approach.** These steps use **NetworkManager (`nmcli`)**, which
-> is the default network stack on current Raspberry Pi OS (Bookworm+). NM manages
-> the AP mode, the DHCP server (its own dnsmasq instance), the interface IP, and
-> the NAT/masquerade to the uplink — all in a single connection profile
-> (`ipv4.method shared`). Do **not** also run standalone `hostapd`/`dnsmasq`/
-> `dhcpcd` for this interface; exactly one system must own `wlan1`. (A legacy
-> `hostapd`+`dnsmasq` recipe for older, non-NM images is in git history if needed.)
+#### What the automated `configure-wifi-ap` document does
 
-> **Interface naming:** confirm which interface is which with `nmcli device` (or
-> `iw dev`). The Alfa usually enumerates as `wlan1` when the onboard is `wlan0`,
-> but verify — the steps below assume Alfa=`wlan1`, onboard=`wlan0`. If they
-> differ, substitute throughout.
+The document (run automatically as step 5/5 of Pi provisioning) performs exactly
+what used to be a manual `nmcli` runbook, using **NetworkManager** (`nmcli`) —
+the default network stack on current Raspberry Pi OS — in a single
+`ipv4.method shared` connection profile (`workshop-ap`) that owns the AP mode,
+DHCP (NM's own `dnsmasq`), the interface IP, and NAT/masquerade to the uplink. In
+order it:
 
-**1. Install the DHCP helper package.** NetworkManager's `shared` mode runs its
-own `dnsmasq` instance for DHCP/NAT, but on a minimal image it needs the base
-files present:
+1. **Resolves SSID/PSK from SSM** (`/pqc-workshop/wifi/{ssid,password}`) — the
+   single source of truth the firmware is built against, so the AP PSK always
+   matches the devices. (This eliminates the hand-typed-PSK mistake that once
+   caused a `4WAY_HANDSHAKE_TIMEOUT`.)
+2. **Sets the WiFi regulatory domain** so the self-managed MediaTek radio will
+   actually start a 2.4 GHz AP.
+3. **Detects the AP radio by its `mt76*` driver** (not by the `wlan1` name, which
+   is not stable for USB adapters across reboots) and never picks the onboard
+   uplink radio.
+4. **Builds the `workshop-ap` profile** (`802-11-wireless.mode ap`, `band bg`,
+   `channel 6`, `wpa-psk`) with `autoconnect yes` so it returns after a reboot,
+   and applies the density (`dhcp-lease-max=150`, `10.42.0.10-250` lease pool) and
+   power-save (`wifi.powersave=2`) drop-ins for a full room.
+5. **Brings the AP up** and verifies `wlan1` reaches the `connected` (AP) state.
 
-```bash
-sudo apt update
-sudo apt install dnsmasq-base -y
-```
+An ESP32 flashed for the workshop then associates to the SSID, picks up a
+`10.42.0.x` lease, and reaches AWS IoT / the broker through the Pi's `wlan0`
+uplink (NM masquerades the AP subnet onto whichever interface has the default
+route).
 
-**2. Pull the workshop WiFi credentials from SSM** (the single source of truth
-published by the deploy — `/pqc-workshop/wifi/ssid` + `/pqc-workshop/wifi/password`).
-
-> **Give the `aws` CLI credentials first.** The Pi's managed-instance role
-> (`pqc-workshop-builder-pi-ssm`, which grants `ssm:GetParameter` on
-> `/pqc-workshop/*` plus SSM-scoped `kms:Decrypt`) is used by the **SSM Agent**,
-> which stores its rotating credentials in **root's** shared credentials file
-> (`/root/.aws/credentials`). An interactive `aws` command therefore only sees
-> them when it runs **as root** — a plain `aws ...` as the `pi`/`admin` user
-> fails with a "credentials not configured" error. Run the fetch with `sudo`:
-
-```bash
-REGION=<region>
-WIFI_SSID=$(sudo aws ssm get-parameter --name /pqc-workshop/wifi/ssid \
-  --region "$REGION" --query 'Parameter.Value' --output text)
-WIFI_PSK=$(sudo aws ssm get-parameter --name /pqc-workshop/wifi/password --with-decryption \
-  --region "$REGION" --query 'Parameter.Value' --output text)
-echo "AP SSID: $WIFI_SSID"   # sanity check; do NOT echo the PSK in shared logs
-```
-
-> **If `sudo aws` still reports no credentials** (e.g. the agent hasn't written
-> root's credentials file yet), fetch the two values on the **deploy host**
-> instead — where your AWS credentials already work — and paste them into the Pi
-> session as plain variables:
-> ```bash
-> # On the deploy host (add --profile if you use one):
-> aws ssm get-parameter --name /pqc-workshop/wifi/ssid \
->   --region <region> --query 'Parameter.Value' --output text
-> aws ssm get-parameter --name /pqc-workshop/wifi/password --with-decryption \
->   --region <region> --query 'Parameter.Value' --output text
-> # Then, in the Pi session:
-> WIFI_SSID='<ssid-from-above>'
-> WIFI_PSK='<psk-from-above>'
-> ```
-
-> **Always pull from SSM — do not hand-type the SSID/PSK.** A mistyped PSK is
-> exactly what caused a `4WAY_HANDSHAKE_TIMEOUT` device failure during testing.
-> SSM is the single source of truth the firmware is built against, so pulling
-> from it guarantees the AP PSK matches what the devices expect.
-
-**3. Create the AP connection profile on the Alfa (`wlan1`).** `ipv4.method
-shared` is what makes NM run a DHCP server on the AP subnet AND set up NAT to the
-active uplink automatically — no separate dnsmasq/iptables needed. `band bg` +
-`channel 6` pin it to 2.4 GHz for the ESP32s. `autoconnect yes` means the AP
-comes back on its own after a reboot:
-
-```bash
-sudo nmcli connection add type wifi ifname wlan1 con-name workshop-ap \
-    autoconnect yes ssid "$WIFI_SSID"
-sudo nmcli connection modify workshop-ap \
-    802-11-wireless.mode ap \
-    802-11-wireless.band bg \
-    802-11-wireless.channel 6 \
-    ipv4.method shared \
-    wifi-sec.key-mgmt wpa-psk \
-    wifi-sec.psk "$WIFI_PSK"
-```
-
-> `channel 6` is a safe default (1/6/11 are the non-overlapping 2.4 GHz choices).
-> At the venue, scan for the quietest with `sudo nmcli device wifi list ifname
-> wlan1` and set `802-11-wireless.channel` accordingly. **If you run two AP Pis,
-> put them on different non-overlapping channels** (e.g. Pi #1 on `channel 1`,
-> Pi #2 on `channel 11`) so they don't step on each other. NM's `shared` mode
-> uses the `10.42.0.0/24` subnet by default (Pi = `10.42.0.1`); that's fine — the
-> ESP32s get a lease automatically.
-
-**4. Raise the client cap past NetworkManager's default 50.** NM's built-in
-`dnsmasq` caps concurrent DHCP clients at 50 by default — well short of a full
-workshop room. Add a drop-in to expand the pool and shorten the lease so inactive
-IPs recycle quickly:
-
-```bash
-sudo mkdir -p /etc/NetworkManager/dnsmasq-shared.d
-sudo tee /etc/NetworkManager/dnsmasq-shared.d/iot-density.conf >/dev/null <<'EOF'
-# Raise maximum concurrent clients to 150
-dhcp-lease-max=150
-# Set a 2-hour DHCP lease window to recycle IPs quickly
-dhcp-range=10.42.0.10,10.42.0.250,2h
-EOF
-```
-
-**5. Disable WiFi power saving on the AP radio.** Stop the MT7612U from dropping
-into a low-power sleep state under intermittent load, which wrecks MQTT latency.
-Set the value from `3` (enabled) to `2` (disabled):
-
-```bash
-sudo tee /etc/NetworkManager/conf.d/default-wifi-powersave-on.conf >/dev/null <<'EOF'
-[connection]
-wifi.powersave = 2
-EOF
-```
-
-**6. Push changes live.** Restart NetworkManager to pick up the density and
-power-save drop-ins, then bring the AP up:
-
-```bash
-sudo systemctl restart NetworkManager
-sudo nmcli connection up workshop-ap
-nmcli connection show --active            # expect workshop-ap (wifi) + your uplink
-nmcli -f GENERAL.STATE device show wlan1  # expect connected (as AP)
-```
-
-An ESP32 flashed for the workshop should now associate to `reinvent-pqc-iot-wifi`,
-pick up a `10.42.0.x` lease, and reach AWS IoT / the broker through the Pi's
-`wlan0` uplink (NM masquerades the AP subnet onto whichever interface has the
-default route).
+> **Manual fallback.** If you ever need to build the AP by hand (e.g. debugging
+> off the SSM path), the equivalent `nmcli` recipe — `dnsmasq-base` install,
+> `nmcli connection add/modify ... ipv4.method shared`, the density + power-save
+> drop-ins, and `nmcli connection up workshop-ap` — is preserved in git history
+> (see the pre-automation revision of this section). Prefer
+> `setup-builder-pi-remote.sh --only configure-wifi-ap` over doing it by hand.
 
 **Pre-event checklist (all flagged during design):**
 
@@ -420,7 +331,7 @@ default route).
 Handy commands for watching the AP during the workshop:
 
 ```bash
-# Live count of stations authenticated to the Alfa AP
+# Live count of stations authenticated to the workshop AP
 sudo iw dev wlan1 station dump | grep -c Station
 
 # DHCP leases: match MAC ↔ IP ↔ hostname
