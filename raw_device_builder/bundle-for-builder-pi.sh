@@ -168,10 +168,21 @@ cat > "$BUNDLE_DIR/setup-ssm.sh" << 'SSMEOF'
 #!/bin/bash
 # ─── SSM Agent Setup for Builder-Pi ─────────────────────────────────────────
 # Installs and registers the SSM agent so the Pi becomes a managed instance.
-# Run once with sudo. After this, provision the Pi from the deploy host with
-# setup-builder-pi-remote.sh (which runs the SSM documents remotely).
+# MUST be run with sudo (as root). After this, provision the Pi from the deploy
+# host with setup-builder-pi-remote.sh (which runs the SSM documents remotely).
 
 set -euo pipefail
+
+# ─── Require root ────────────────────────────────────────────────────────────
+# Installing the SSM agent, writing /var/lib/amazon/ssm/registration, and
+# managing the systemd service all need root. If this is run as a normal user it
+# would fail part-way and leave the Pi in a broken, half-registered state — so
+# refuse to run at all unless invoked with sudo/root, with a clear message.
+if [[ "$(id -u)" -ne 0 ]]; then
+    echo "ERROR: setup-ssm.sh must be run as root. Re-run it with sudo:" >&2
+    echo "         sudo $0${1:+ $1}" >&2
+    exit 1
+fi
 
 ACTIVATION_ID="__ACTIVATION_ID__"
 ACTIVATION_CODE="__ACTIVATION_CODE__"
