@@ -52,7 +52,13 @@ Parameters:
 
   PrivateCAArn:
     Type: String
-    Description: ARN of the Private CA (from broker-container stack) used to issue device certs
+    Description: ARN of the Private CA (from broker-container stack) used to issue classical device certs
+
+  MlDsaPrivateCAArn:
+    Type: String
+    Description: >-
+      ARN of the ML-DSA-44 Private CA (from broker-container stack) used to issue
+      post-quantum device certs for the pqc-mldsa firmware variant.
 
   BuilderPiInstanceId:
     Type: String
@@ -216,12 +222,9 @@ Resources:
                   - iot:AttachPolicy
                   - iot:CreatePolicy
                 Resource: '*'
-              - Effect: Allow
-                Action:
-                  - acm-pca:IssueCertificate
-                  - acm-pca:GetCertificate
-                  - acm-pca:GetCertificateAuthorityCertificate
-                Resource: !Ref PrivateCAArn
+              # NOTE: acm-pca permissions moved to the CodeBuild role
+              # (pqc-workshop-codebuild-firmware) — the firmware build now issues
+              # the device cert itself (buildspec.yml), not these Lambdas.
               - Effect: Allow
                 Action:
                   - dynamodb:PutItem
@@ -287,7 +290,6 @@ Resources:
           WIFI_SSM_PREFIX: /pqc-workshop/wifi
           BROKER_SSM_PARAM: /pqc-workshop/broker/endpoint
           DEFAULT_BROKER_ENDPOINT: !Ref DefaultBrokerEndpoint
-          PRIVATE_CA_ARN: !Ref PrivateCAArn
       Code: ../lambda/device-registrar
 
   # ═══════════════════════════════════════════════════════════════════════════
@@ -318,7 +320,6 @@ Resources:
           FIRMWARE_BUCKET: !Sub '${FirmwareBucketName}-${AWS::AccountId}'
           BUILD_PROJECT: !Ref FirmwareBuildProject
           IOT_ENDPOINT: !Ref IoTEndpoint
-          PRIVATE_CA_ARN: !Ref PrivateCAArn
           DEFAULT_WIFI_SSID: !Ref DefaultWifiSsid
           DEFAULT_WIFI_PASSWORD: !Ref DefaultWifiPassword
           # SSM is the authoritative live source; the DEFAULT_* envs are fallbacks.
@@ -831,6 +832,17 @@ Resources:
                   - ecr:GetDownloadUrlForLayer
                   - ecr:BatchGetImage
                 Resource: !GetAtt BuildImageRepository.Arn
+              # The firmware build now issues the device certificate itself
+              # (buildspec.yml), from the classical CA (classical/pqc variants)
+              # or the ML-DSA-44 CA (pqc-mldsa variant). Scoped to both CA ARNs.
+              - Effect: Allow
+                Action:
+                  - acm-pca:IssueCertificate
+                  - acm-pca:GetCertificate
+                  - acm-pca:GetCertificateAuthorityCertificate
+                Resource:
+                  - !Ref PrivateCAArn
+                  - !Ref MlDsaPrivateCAArn
 
   FirmwareBuildProject:
     Type: AWS::CodeBuild::Project
@@ -866,13 +878,15 @@ Resources:
             Value: !Ref DefaultBrokerPort
           - Name: IOT_ENDPOINT
             Value: !Ref IoTEndpoint
-          - Name: CA_CERT
-            Value: placeholder
-          - Name: DEVICE_CERT
-            Value: placeholder
-          - Name: DEVICE_KEY
-            Value: placeholder
-      TimeoutInMinutes: 10
+          # The build issues the device cert itself (see buildspec.yml), so it
+          # needs both CA ARNs rather than pre-minted cert/key material. The
+          # classical CA signs classical/pqc device certs; the ML-DSA-44 CA
+          # signs pqc-mldsa device certs. Selected per FIRMWARE_VARIANT.
+          - Name: CA_ARN
+            Value: !Ref PrivateCAArn
+          - Name: MLDSA_CA_ARN
+            Value: !Ref MlDsaPrivateCAArn
+      TimeoutInMinutes: 15
 
   # ═══════════════════════════════════════════════════════════════════════════
   # SSM — Builder-Pi Access Role

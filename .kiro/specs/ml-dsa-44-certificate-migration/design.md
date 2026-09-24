@@ -143,11 +143,34 @@ restrictions.
 
 ## Workstream 2 — Dual-cert generation & registration
 
-- **Device registration:** extend the registrar so each device gets TWO certs —
-  classical (existing path) + ML-DSA-44 (issue from the new CA). Registry schema
-  gains fields for the second cert (and its key material handling).
+> **Device-cert approach: Option B — issue-on-demand per variant** (chosen over
+> the earlier "issue both certs at registration" wording). Rationale: the
+> codebase already issues device certs **fresh at build time** (the key is baked
+> into that build's firmware), so issuing/storing an ML-DSA cert at registration
+> would only help if the build reused it. Option B matches the existing pattern,
+> avoids storing an ML-DSA **private key at rest**, confines the OpenSSL-3.5
+> requirement to the migration Lambda(s), and never issues a PQC cert for a
+> device that never migrates. The broker's dual server certs (one per CA at
+> deploy) are unchanged by this choice.
+
+- **Device registration (unchanged):** the registrar Lambda stays classical-only.
+  Firmware 0 is classical; no ML-DSA cert is minted until a device is migrated to
+  the ML-DSA variant. Registry schema unchanged.
+- **Migration path becomes variant-aware:** `prepare-build` (the state machine's
+  first work step) selects, by requested **variant**:
+  - `classical` / `pqc` → classical CA (`PRIVATE_CA_ARN`), `SHA256WITHECDSA`,
+    port 8883, existing sketches (existing behavior, untouched).
+  - `pqc-mldsa` → **ML-DSA CA (`MLDSA_CA_ARN`)**, `ML_DSA_44` signing, port
+    **8884**, the new `pqc-mldsa` sketch. Issues the ML-DSA device cert fresh at
+    build time (same lifecycle as the classical issue-at-build), bakes it into
+    that build's `secrets.h`.
+- **OpenSSL 3.5+ only where needed:** only the migration Lambda(s) that mint an
+  ML-DSA cert need OpenSSL 3.5+ (ML-DSA keygen/CSR). The registrar keeps the
+  stock runtime openssl (ECDSA only).
 - **Broker certs:** the broker-cert Lambda custom resource issues TWO server
-  certs (one per CA) into Secrets Manager; `entrypoint.sh` fetches both.
+  certs (classical from the classical CA + ML-DSA-44 from the ML-DSA CA) into
+  Secrets Manager; `entrypoint.sh` fetches both (WS4 wires the 8884 listener to
+  the ML-DSA one). The broker-cert Lambda needs OpenSSL 3.5+ for its ML-DSA cert.
 - Keep the classical path untouched for un-migrated devices.
 
 ## Workstream 3 — Firmware pipeline & third variant

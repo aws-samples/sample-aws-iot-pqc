@@ -8,7 +8,39 @@ phases:
   pre_build:
     commands:
       - echo "Preparing firmware source for device esp32-$DEVICE_SERIAL (variant ${FIRMWARE_VARIANT})..."
-      - if [ "${FIRMWARE_VARIANT}" = "pqc" ]; then SKETCH_NAME="aws_iot_pqc_esp32"; else SKETCH_NAME="aws_iot_pqc_esp32_v1_classical"; fi
+      # ─── Variant → {sketch, CA, key mode, default port} ──
+      # Single source of truth for what each firmware variant means. Adding a
+      # future variant is a data change here, not new code paths. The device
+      # certificate is issued HERE in the build (not in the Lambda) via the
+      # shared cert-issuer script, so the ML-DSA key never leaves this container
+      # and both cert types share one code path. The signing algorithm is derived
+      # from the key mode by the issuer (ec-p256→SHA256WITHECDSA, mldsa44→ML_DSA_44).
+      #   classical / pqc  → classical ACM PCA (ECDSA P-256), port 8883
+      #   pqc-mldsa        → ML-DSA-44 ACM PCA (ML-DSA-44 key + signature), port 8884
+      - |
+        case "${FIRMWARE_VARIANT}" in
+          pqc-mldsa)
+            SKETCH_NAME="aws_iot_pqc_esp32_v3_mldsa"
+            CERT_CA_ARN="${MLDSA_CA_ARN}"
+            CERT_KEY_MODE="mldsa44"
+            DEFAULT_BROKER_PORT="8884"
+            ;;
+          pqc)
+            SKETCH_NAME="aws_iot_pqc_esp32"
+            CERT_CA_ARN="${CA_ARN}"
+            CERT_KEY_MODE="ec-p256"
+            DEFAULT_BROKER_PORT="8883"
+            ;;
+          *)
+            FIRMWARE_VARIANT="classical"
+            SKETCH_NAME="aws_iot_pqc_esp32_v1_classical"
+            CERT_CA_ARN="${CA_ARN}"
+            CERT_KEY_MODE="ec-p256"
+            DEFAULT_BROKER_PORT="8883"
+            ;;
+        esac
+      - echo "variant=${FIRMWARE_VARIANT} sketch=${SKETCH_NAME} ca=${CERT_CA_ARN} key=${CERT_KEY_MODE} defaultPort=${DEFAULT_BROKER_PORT}"
+      - '[ -n "${CERT_CA_ARN}" ] || { echo "ERROR: no CA ARN for variant ${FIRMWARE_VARIANT} (CA_ARN/MLDSA_CA_ARN unset)"; exit 1; }'
       - SKETCH_DIR="/tmp/firmware_build/$SKETCH_NAME"
       - mkdir -p "$SKETCH_DIR"
       - echo "Downloading firmware source from S3..." && aws s3 cp "s3://$FIRMWARE_BUCKET/source/$SKETCH_NAME.ino" "$SKETCH_DIR/$SKETCH_NAME.ino"
@@ -28,8 +60,38 @@ phases:
             fi
             ;;
         esac
-      - '[ -z "${BROKER_PORT:-}" ] && BROKER_PORT=8883 || true'
+      # Port precedence: an explicit caller BROKER_PORT (or one parsed from the
+      # endpoint ':port' suffix above) wins; otherwise fall back to the variant's
+      # DEFAULT_BROKER_PORT (8883 for classical/pqc, 8884 for pqc-mldsa).
+      - '[ -z "${BROKER_PORT:-}" ] && BROKER_PORT="${DEFAULT_BROKER_PORT}" || true'
       - echo "Broker endpoint (host)= $BROKER_ENDPOINT  port= $BROKER_PORT"
+      # ─── Issue the device certificate from AWS Private CA (in-build) ─────────
+      # All device-cert issuance happens HERE (not in the Lambda), so classical
+      # and ML-DSA-44 share one path and the private key never leaves this build.
+      #   ec-p256  → stock `openssl` (system 3.0.2 is fine for EC)
+      #   mldsa44  → `/opt/openssl-3.5/bin/openssl` (ML-DSA is native in 3.5)
+      - CERT_WORK="$(mktemp -d)"
+      - THING_NAME="esp32-$DEVICE_SERIAL"
+      # Mint the device cert via the SHARED cert-issuer script (baked into the
+      # firmware-builder image at /opt/cert-issuer). Same code path as the broker
+      # cert-issuer container: it generates the key + CSR (ML-DSA via OpenSSL 3.5
+      # for mldsa44, EC via stock openssl for ec-p256), calls ACM PCA on the
+      # variant's CA, and writes ca.crt / cert.crt / key.pem into CERT_WORK.
+      - |
+        if [ "$CERT_KEY_MODE" = "mldsa44" ]; then CERT_OU="IoT Device PQC ML-DSA"; else CERT_OU="IoT Device"; fi
+      - echo "Issuing ${CERT_KEY_MODE} device cert from CA ${CERT_CA_ARN} via shared issuer..."
+      - |
+        python3 /opt/cert-issuer/issue_cert.py \
+          --common-name "$THING_NAME" \
+          --key-mode "$CERT_KEY_MODE" \
+          --ca-arn "$CERT_CA_ARN" \
+          --ou "$CERT_OU" \
+          --idempotency-token "dev-$DEVICE_SERIAL" \
+          --out-dir "$CERT_WORK"
+      - DEVICE_CERT="$(cat "$CERT_WORK/cert.crt")"
+      - DEVICE_KEY="$(cat "$CERT_WORK/key.pem")"
+      - CA_CERT="$(cat "$CERT_WORK/ca.crt")"
+      - '[ -n "$DEVICE_CERT" ] && [ -n "$DEVICE_KEY" ] && [ -n "$CA_CERT" ] || { echo "ERROR: empty cert material"; exit 1; }'
       - |
         cat > "$SKETCH_DIR/secrets.h" << 'SECRETS_HEADER'
         #ifndef SECRETS_H
@@ -68,6 +130,8 @@ phases:
         echo "" >> "$SKETCH_DIR/secrets.h"
         echo "#endif" >> "$SKETCH_DIR/secrets.h"
       - echo "secrets.h generated for esp32-$DEVICE_SERIAL"
+      # Scrub the on-disk private key + CSR now that it is baked into secrets.h.
+      - rm -rf "$CERT_WORK"
       - ls -la "$SKETCH_DIR/"
 
   build:

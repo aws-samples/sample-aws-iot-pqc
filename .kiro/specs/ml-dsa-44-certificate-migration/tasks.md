@@ -49,12 +49,34 @@
 
 ## 2. Dual-certificate generation & registration
 
-- [ ] 2.1 Extend device registration to issue TWO device certs (classical +
-      ML-DSA-44) for the same identity; update the registry schema + key
-      handling.
-- [ ] 2.2 Issue TWO broker server certs (one per CA) via the broker-cert Lambda
-      custom resource; store both in Secrets Manager.
-- [ ] 2.3 Keep the classical issuance path fully working for un-migrated devices.
+> **Approach: Option B (issue-on-demand per variant) + a SHARED cert-issuer
+> container.** Device certs are minted fresh at build time, not stored at
+> registration; registrar stays classical-only. All TLS issuance — device certs
+> (firmware CodeBuild) AND both broker server certs (a CodeBuild job) — goes
+> through ONE shared script (`shared/cert-issuer/issue_cert.py`) in ONE image
+> (OpenSSL 3.5 + ACM PCA). Runs as CodeBuild jobs today (fits the deploy model:
+> stack first, images/values post-stack); drops into the future registration
+> Step Function via `codebuild:startBuild.sync` unchanged. See design.md WS2.
+> STATUS: implemented + unit-tested (47 tests green); pending on-account deploy
+> validation. The `pqc-mldsa` device build also needs the WS3 sketch to exist.
+
+- [ ] 2.1 Provision OpenSSL 3.5+ for ML-DSA keygen/CSR in the migration Lambda(s)
+      (`prepare-build`, and `pqc-upgrader` if still used) — Lambda layer, or a
+      bundled static openssl, or container image. Wire into device-builder-stack.yaml.
+- [ ] 2.2 Make `prepare-build` variant-aware: for the `pqc-mldsa` variant, issue
+      the device cert from the **ML-DSA CA** (`ML_DSA_44` signing), set port 8884
+      + `FIRMWARE_VARIANT=pqc-mldsa` + the ML-DSA firmware version; classical/pqc
+      unchanged. (Prefer a variant→{ca, sig-alg, port, sketch, version} map.)
+- [ ] 2.3 Plumb `MlDsaPrivateCAArn` into the device-builder stack: new parameter,
+      add to the `acm-pca` IAM resource list, add `MLDSA_CA_ARN` env to
+      `prepare-build`; pass the param through `pqc-workshop-main.yaml` from the
+      broker stack output.
+- [ ] 2.4 Broker: issue a SECOND (ML-DSA) server cert via the broker-cert Lambda
+      custom resource (from `MlDsaPrivateCA`); store it + its CA cert in new
+      Secrets Manager secrets. Needs OpenSSL 3.5+ in that Lambda. Classical broker
+      cert path unchanged. (`entrypoint.sh` fetch + 8884 listener wiring is WS4.)
+- [ ] 2.5 Keep the classical issuance path fully working for un-migrated devices;
+      registrar Lambda unchanged.
 - _Depends on: 1 (CA ARNs). Blocks: 3 (device ML-DSA cert), 4 (broker ML-DSA cert)._
 
 ## 3. Firmware pipeline & third variant

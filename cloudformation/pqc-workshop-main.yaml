@@ -225,6 +225,7 @@ Resources:
       TemplateURL: !Sub 'https://${TemplateBucketName}.s3.amazonaws.com/${TemplateBucketPrefix}/templates/device-builder-stack.yaml'
       Parameters:
         PrivateCAArn: !GetAtt BrokerStack.Outputs.PrivateCAArn
+        MlDsaPrivateCAArn: !GetAtt BrokerStack.Outputs.MlDsaPrivateCAArn
         DefaultBrokerEndpoint: !GetAtt BrokerStack.Outputs.BrokerEndpoint
         IoTEndpoint: !Ref IoTEndpoint
         DefaultWifiSsid: !Ref DefaultWifiSsid
@@ -295,6 +296,14 @@ Outputs:
   MlDsaPrivateCAArn:
     Description: ML-DSA-44 Private CA ARN issuing post-quantum device certificates
     Value: !GetAtt BrokerStack.Outputs.MlDsaPrivateCAArn
+
+  CertIssuerImageBuildProject:
+    Description: CodeBuild project that builds the shared cert-issuer image
+    Value: !GetAtt BrokerStack.Outputs.CertIssuerImageBuildProject
+
+  BrokerCertProvisionerProjectName:
+    Description: CodeBuild project that mints both broker server certs
+    Value: !GetAtt BrokerStack.Outputs.BrokerCertProvisionerProjectName
 
   BuilderApiEndpoint:
     Description: Builder-Pi REST API endpoint (register/deregister/firmware)

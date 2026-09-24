@@ -1,0 +1,13 @@
+version: 0.2
+
+# Runs inside the shared cert-issuer image (OpenSSL 3.5 + boto3 + issue_cert.py).
+# Mints BOTH broker server certs (classical + ML-DSA-44) and stores them in
+# Secrets Manager. Triggered by the deploy script AFTER the cert-issuer image is
+# built. All inputs come from the CodeBuild project's environment variables
+# (CA ARNs + the six secret ids), set in broker-container-stack.yaml.
+phases:
+  build:
+    commands:
+      - echo "Provisioning broker certificates (classical + ML-DSA-44)..."
+      - python3 /var/task/issue_broker_certs.py
+      - echo "Broker certificate provisioning complete."
