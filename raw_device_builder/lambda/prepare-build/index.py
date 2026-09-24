@@ -4,9 +4,14 @@ Prepare Build Lambda — first work step of the PQC migration state machine.
 Given a thingName (and optional variant), this:
   1. Looks up the device in the DynamoDB registry (keyed by serialNumber).
   2. Checks whether the target firmware for that variant already exists in S3.
-  3. If it does not, starts a CodeBuild to compile that firmware variant.
+  3. If it does not, resolves the per-device build env (WiFi/broker/IoT) so the
+     state machine's WaitForBuild step can start the single CodeBuild.
   4. Returns routing data for the state machine:
-       { thingName, serialNumber, variant, version, s3Key, buildNeeded, buildId }
+       { thingName, serialNumber, variant, version, s3Key, buildNeeded, buildEnv }
+
+This Lambda does NOT start a build itself — the state machine's WaitForBuild
+(codebuild:startBuild.sync) is the single authoritative build. Starting one here
+too previously caused a redundant second build for the same S3 key.
 
 Certificate issuance moved INTO the CodeBuild firmware build (see
 raw_device_builder/codebuild/buildspec.yml): the build generates the device
@@ -34,7 +39,6 @@ import os
 import boto3
 
 dynamodb = boto3.resource("dynamodb")
-codebuild = boto3.client("codebuild")
 ssm = boto3.client("ssm")
 
 # Firmware variant → (FIRMWARE_VARIANT build value, firmware version / S3 key
@@ -131,14 +135,17 @@ def handler(event, context):
             "version": version,
             "s3Key": s3_key,
             "buildNeeded": False,
-            "buildId": None,
+            # buildEnv is unused when buildNeeded is False, but always present so
+            # the state machine's ResultSelector never references a missing path.
+            "buildEnv": {"wifiSsid": "", "wifiPassword": "", "brokerEndpoint": "", "iotEndpoint": ""},
         }
 
-    # 3. Build needed: start CodeBuild (the build issues the cert itself).
-    build_id = trigger_build(serial_number, device, cfg)
-    if not build_id:
-        raise RuntimeError(f"Failed to start {variant} firmware build")
-
+    # 3. Build needed. The state machine's WaitForBuild step starts + waits for
+    #    the single CodeBuild (codebuild:startBuild.sync); this Lambda does NOT
+    #    start a build itself (that previously caused a redundant second build).
+    #    We resolve the per-device build env (WiFi/broker/IoT) here and return it
+    #    so WaitForBuild builds with the CORRECT per-device WiFi.
+    build_env = resolve_build_env(device)
     return {
         "thingName": thing_name,
         "serialNumber": serial_number,
@@ -146,7 +153,7 @@ def handler(event, context):
         "version": version,
         "s3Key": s3_key,
         "buildNeeded": True,
-        "buildId": build_id,
+        "buildEnv": build_env,
     }
 
 
@@ -159,14 +166,15 @@ def _firmware_exists(s3_key):
         return False
 
 
-def trigger_build(serial_number, device, cfg):
-    """Start a CodeBuild for the requested firmware variant.
+def resolve_build_env(device):
+    """Resolve the per-device build environment for the requested firmware variant.
 
-    The build selects the sketch, CA, signing algorithm, and broker port from
-    FIRMWARE_VARIANT (see buildspec.yml) and issues the device cert in-build, so
-    no cert/key material is passed here. BROKER_PORT is intentionally left unset
-    so the build applies the variant's default (8883 classical/pqc, 8884
-    pqc-mldsa); an explicit endpoint ':port' suffix still overrides it there.
+    Returns the fully-resolved build environment (WiFi, broker endpoint) so the
+    state machine's WaitForBuild step can start the single authoritative build
+    with the CORRECT per-device WiFi. Resolving here (SSM -> registry -> env) and
+    passing it through the state machine avoids both (a) a redundant second build
+    and (b) the build silently using the deploy-default WiFi, which would strand
+    a device whose WiFi differs from the default.
     """
     # Broker resolution: SSM (live source of truth) -> registry value -> env.
     broker_endpoint = (
@@ -181,17 +189,9 @@ def trigger_build(serial_number, device, cfg):
     wifi_password = (
         ssm_password or device.get("wifiPassword") or os.environ.get("DEFAULT_WIFI_PASSWORD", "")
     )
-
-    build_resp = codebuild.start_build(
-        projectName=os.environ["BUILD_PROJECT"],
-        environmentVariablesOverride=[
-            {"name": "DEVICE_SERIAL", "value": serial_number, "type": "PLAINTEXT"},
-            {"name": "FIRMWARE_VERSION", "value": cfg["version"], "type": "PLAINTEXT"},
-            {"name": "FIRMWARE_VARIANT", "value": cfg["build_variant"], "type": "PLAINTEXT"},
-            {"name": "WIFI_SSID", "value": wifi_ssid, "type": "PLAINTEXT"},
-            {"name": "WIFI_PASSWORD", "value": wifi_password, "type": "PLAINTEXT"},
-            {"name": "BROKER_ENDPOINT", "value": broker_endpoint, "type": "PLAINTEXT"},
-            {"name": "IOT_ENDPOINT", "value": os.environ["IOT_ENDPOINT"], "type": "PLAINTEXT"},
-        ],
-    )
-    return build_resp["build"]["id"]
+    return {
+        "wifiSsid": wifi_ssid,
+        "wifiPassword": wifi_password,
+        "brokerEndpoint": broker_endpoint,
+        "iotEndpoint": os.environ.get("IOT_ENDPOINT", ""),
+    }

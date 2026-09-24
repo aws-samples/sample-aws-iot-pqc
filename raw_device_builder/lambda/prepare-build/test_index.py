@@ -6,13 +6,14 @@ thingName (and optional variant) it:
   - looks up the device in the registry (keyed by serialNumber),
   - resolves the firmware variant → version (classical / pqc / pqc-mldsa),
   - checks whether that variant's firmware already exists in S3,
-  - if not, starts a CodeBuild (the build issues the device cert itself now),
-  - returns routing info for the state machine: buildNeeded, buildId, s3Key,
+  - resolves the per-device build env (WiFi/broker/IoT) for WaitForBuild,
+  - returns routing info for the state machine: buildNeeded, buildEnv, s3Key,
     thingName, serialNumber, variant, version.
+  It does NOT start a build itself (the state machine's WaitForBuild does), so
+  there is no CodeBuild to mock — this Lambda is pure orchestration.
 
 Certificate issuance moved INTO the firmware CodeBuild (shared cert-issuer), so
-this Lambda is pure orchestration — there is nothing crypto to mock here. Only
-the CodeBuild trigger is patched (or run against moto) to stay fast/offline.
+this Lambda touches no crypto. Runs against moto to stay fast/offline.
 """
 import os
 import sys
@@ -69,73 +70,51 @@ def _load():
 
 
 @mock_aws
-def test_default_variant_is_pqc_and_triggers_build(monkeypatch):
+def test_default_variant_is_pqc(monkeypatch):
     """No variant in event → defaults to pqc (backward compatible with the
-    original migrate-to-PQC flow), and starts a build with FIRMWARE_VARIANT=pqc."""
+    original migrate-to-PQC flow). prepare-build does NOT start a build itself
+    (the state machine's WaitForBuild does); it resolves the build env + variant."""
     _seed_registry()
     mod = _load()
-
-    captured = {}
-
-    def fake_start_build(**kwargs):
-        captured["projectName"] = kwargs["projectName"]
-        captured["env"] = {e["name"]: e["value"] for e in kwargs["environmentVariablesOverride"]}
-        return {"build": {"id": "build-123"}}
-
-    monkeypatch.setattr(mod.codebuild, "start_build", fake_start_build, raising=True)
 
     result = mod.handler({"thingName": "esp32-FC22E0"}, None)
 
     assert result["variant"] == "pqc"
     assert result["version"] == PQC_VERSION
     assert result["buildNeeded"] is True
-    assert result["buildId"] == "build-123"
     assert result["s3Key"] == f"FC22E0/{PQC_VERSION}/firmware.bin"
-    # The build is told which variant to build, and NO cert material is passed.
-    assert captured["env"]["FIRMWARE_VARIANT"] == "pqc"
-    assert captured["projectName"] == BUILD_PROJECT
-    for cert_key in ("CA_CERT", "DEVICE_CERT", "DEVICE_KEY"):
-        assert cert_key not in captured["env"], f"{cert_key} must not be passed from the Lambda"
-    # BROKER_PORT is intentionally left to the build's variant default.
-    assert "BROKER_PORT" not in captured["env"]
+    # Resolved per-device build env is returned for WaitForBuild to use.
+    assert "buildEnv" in result
+    assert result["buildEnv"]["brokerEndpoint"] == "broker.example.com"
+    # No cert material and no buildId (no build is started here).
+    assert "buildId" not in result
+    for cert_key in ("caCert", "cert", "key"):
+        assert cert_key not in result["buildEnv"]
 
 
 @mock_aws
 def test_mldsa_variant_uses_mldsa_version(monkeypatch):
-    """variant=pqc-mldsa → distinct version/S3 key + FIRMWARE_VARIANT=pqc-mldsa."""
+    """variant=pqc-mldsa → distinct version/S3 key returned for the build."""
     _seed_registry()
     mod = _load()
-
-    captured = {}
-    monkeypatch.setattr(
-        mod.codebuild, "start_build",
-        lambda **kw: (captured.update({e["name"]: e["value"] for e in kw["environmentVariablesOverride"]}) or {"build": {"id": "build-mldsa"}}),
-        raising=True,
-    )
 
     result = mod.handler({"thingName": "esp32-FC22E0", "variant": "pqc-mldsa"}, None)
 
     assert result["variant"] == "pqc-mldsa"
     assert result["version"] == MLDSA_VERSION
     assert result["s3Key"] == f"FC22E0/{MLDSA_VERSION}/firmware.bin"
-    assert result["buildId"] == "build-mldsa"
-    assert captured["FIRMWARE_VARIANT"] == "pqc-mldsa"
+    assert result["buildNeeded"] is True
+    assert "buildEnv" in result
 
 
 @mock_aws
 def test_classical_variant(monkeypatch):
     _seed_registry()
     mod = _load()
-    captured = {}
-    monkeypatch.setattr(
-        mod.codebuild, "start_build",
-        lambda **kw: (captured.update({e["name"]: e["value"] for e in kw["environmentVariablesOverride"]}) or {"build": {"id": "b"}}),
-        raising=True,
-    )
     result = mod.handler({"thingName": "esp32-FC22E0", "variant": "classical"}, None)
     assert result["variant"] == "classical"
     assert result["version"] == CLASSICAL_VERSION
-    assert captured["FIRMWARE_VARIANT"] == "classical"
+    assert result["buildNeeded"] is True
 
 
 @mock_aws
@@ -149,23 +128,19 @@ def test_unknown_variant_raises(monkeypatch):
 
 @mock_aws
 def test_build_skipped_when_firmware_exists(monkeypatch):
-    """If the variant's firmware already exists in S3, no build is started."""
+    """If the variant's firmware already exists in S3, buildNeeded is False."""
     _seed_registry()
     s3 = boto3.client("s3", region_name="us-east-1")
     s3.create_bucket(Bucket=FIRMWARE_BUCKET)
     s3.put_object(Bucket=FIRMWARE_BUCKET, Key=f"FC22E0/{MLDSA_VERSION}/firmware.bin", Body=b"x")
 
     mod = _load()
-    monkeypatch.setattr(
-        mod.codebuild, "start_build",
-        lambda **k: pytest.fail("should not build when firmware exists"),
-        raising=True,
-    )
-
     result = mod.handler({"thingName": "esp32-FC22E0", "variant": "pqc-mldsa"}, None)
     assert result["buildNeeded"] is False
-    assert result["buildId"] is None
     assert result["version"] == MLDSA_VERSION
+    # buildEnv is always present (empty) so the state machine ResultSelector
+    # never references a missing path.
+    assert "buildEnv" in result
 
 
 @mock_aws

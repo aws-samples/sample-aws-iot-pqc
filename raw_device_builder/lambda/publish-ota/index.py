@@ -65,6 +65,14 @@ def handler(event, context):
     )
     s3_key = event.get("s3Key") or f"{serial_number}/{PQC_VERSION}/firmware.bin"
     bucket = os.environ["FIRMWARE_BUCKET"]
+    # The firmware version being pushed. The state machine passes the resolved
+    # per-variant version (e.g. 1.0.0-pqc, 2.0.0-mldsa); fall back to parsing it
+    # from the S3 key (<serial>/<version>/firmware.bin), then to PQC_VERSION for
+    # the original migrate-to-PQC callers that pre-date variant support.
+    version = event.get("version")
+    if not version:
+        parts = s3_key.split("/")
+        version = parts[1] if len(parts) >= 3 else PQC_VERSION
 
     # 1. Size + sha256 (waits out the POST_BUILD upload lag; see constants).
     meta = _firmware_metadata(bucket, s3_key)
@@ -85,7 +93,7 @@ def handler(event, context):
     ota_payload = {
         "action": "ota-update",
         "url": presigned_url,
-        "version": PQC_VERSION,
+        "version": version,
         "size": meta["size"],
         "sha256": meta["sha256"],
         "expiresIn": PRESIGNED_URL_EXPIRY,
@@ -99,12 +107,12 @@ def handler(event, context):
         Key={"serialNumber": serial_number},
         UpdateExpression="SET targetFirmwareVersion = :v, #s = :status",
         ExpressionAttributeNames={"#s": "status"},
-        ExpressionAttributeValues={":v": PQC_VERSION, ":status": "ota-pending"},
+        ExpressionAttributeValues={":v": version, ":status": "ota-pending"},
     )
 
     return {
         "success": True,
-        "message": f"PQC firmware v{PQC_VERSION} pushed to {thing_name}.",
+        "message": f"Firmware v{version} pushed to {thing_name}.",
         "thingName": thing_name,
     }
 

@@ -71,6 +71,20 @@
 #define WOLFSSL_WC_MLKEM            // Use wolfSSL's native ML-KEM implementation (5.8.x)
 #define WOLFSSL_SHA3                // Required by ML-KEM
 
+// ─── Post-Quantum Authentication (ML-DSA / FIPS 204) — Step 2 ──────────────
+// ML-DSA (Dilithium) is the post-quantum SIGNATURE scheme. It is used for TLS
+// 1.3 AUTHENTICATION: the ML-DSA firmware variant presents an ML-DSA-44 client
+// certificate and verifies the broker's ML-DSA-44 server certificate (both ends
+// are wolfSSL, so interop is guaranteed). This is separate from ML-KEM (key
+// exchange) above — Step 2 migrates the CERTIFICATE signature to post-quantum.
+// Enabled for ALL firmware variants (the classical/pqc sketches simply do not
+// present an ML-DSA cert); keeping one wolfSSL config keeps the build uniform.
+#define HAVE_DILITHIUM              // Enable ML-DSA (FIPS 204) signatures
+#define WOLFSSL_WC_DILITHIUM        // wolfSSL native ML-DSA implementation
+#define WOLFSSL_DILITHIUM_VERIFY    // Verify an ML-DSA peer certificate (broker cert)
+#define WOLFSSL_DILITHIUM_SIGN      // Sign the CertificateVerify with the ML-DSA key
+// ML-DSA uses SHAKE128/256 (already enabled below for ML-KEM) and SHA3.
+
 // ─── ECC (for hybrid PQC key exchange) ──────────────────────────────────────
 #define HAVE_ECC
 #define ECC_TIMING_RESISTANT

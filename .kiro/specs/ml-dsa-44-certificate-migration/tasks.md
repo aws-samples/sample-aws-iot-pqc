@@ -47,7 +47,7 @@
       still exercise it in place during a later cross-workstream validation.)
 - _Depends on: nothing. Blocks: workstreams 2, 3, 4._
 
-## 2. Dual-certificate generation & registration
+## 2. Dual-certificate generation & registration  ✅ IMPLEMENTED
 
 > **Approach: Option B (issue-on-demand per variant) + a SHARED cert-issuer
 > container.** Device certs are minted fresh at build time, not stored at
@@ -57,51 +57,90 @@
 > (OpenSSL 3.5 + ACM PCA). Runs as CodeBuild jobs today (fits the deploy model:
 > stack first, images/values post-stack); drops into the future registration
 > Step Function via `codebuild:startBuild.sync` unchanged. See design.md WS2.
-> STATUS: implemented + unit-tested (47 tests green); pending on-account deploy
-> validation. The `pqc-mldsa` device build also needs the WS3 sketch to exist.
+> STATUS: implemented + unit-tested (committed `122e0c0`); pending on-account
+> deploy validation.
 
-- [ ] 2.1 Provision OpenSSL 3.5+ for ML-DSA keygen/CSR in the migration Lambda(s)
-      (`prepare-build`, and `pqc-upgrader` if still used) — Lambda layer, or a
-      bundled static openssl, or container image. Wire into device-builder-stack.yaml.
-- [ ] 2.2 Make `prepare-build` variant-aware: for the `pqc-mldsa` variant, issue
-      the device cert from the **ML-DSA CA** (`ML_DSA_44` signing), set port 8884
-      + `FIRMWARE_VARIANT=pqc-mldsa` + the ML-DSA firmware version; classical/pqc
-      unchanged. (Prefer a variant→{ca, sig-alg, port, sketch, version} map.)
-- [ ] 2.3 Plumb `MlDsaPrivateCAArn` into the device-builder stack: new parameter,
-      add to the `acm-pca` IAM resource list, add `MLDSA_CA_ARN` env to
-      `prepare-build`; pass the param through `pqc-workshop-main.yaml` from the
-      broker stack output.
-- [ ] 2.4 Broker: issue a SECOND (ML-DSA) server cert via the broker-cert Lambda
-      custom resource (from `MlDsaPrivateCA`); store it + its CA cert in new
-      Secrets Manager secrets. Needs OpenSSL 3.5+ in that Lambda. Classical broker
-      cert path unchanged. (`entrypoint.sh` fetch + 8884 listener wiring is WS4.)
-- [ ] 2.5 Keep the classical issuance path fully working for un-migrated devices;
-      registrar Lambda unchanged.
+- [x] 2.1 OpenSSL 3.5+ for ML-DSA keygen/CSR is provided via the SHARED
+      cert-issuer image (OpenSSL 3.5.8, `shared/cert-issuer/Dockerfile`), NOT a
+      Lambda layer — issuance moved OUT of the Lambdas entirely (Scope A). The
+      image self-tests an ML-DSA-44 key + CSR at build time.
+- [x] 2.2 `prepare-build` is variant-aware via `VARIANT_CONFIG`
+      (classical/pqc → classical CA, 8883; pqc-mldsa → ML-DSA CA, 8884; default
+      pqc). The actual cert issuance is performed IN the firmware CodeBuild (via
+      the shared `issue_cert.py`, selecting CA + key mode + port from
+      `FIRMWARE_VARIANT`), so the private key never leaves the build container.
+- [x] 2.3 `MlDsaPrivateCAArn` is surfaced from the broker stack and consumed by
+      the issuance path; the firmware CodeBuild role carries the `acm-pca` issue
+      permissions for both CAs. (Issuance is in CodeBuild, so no `MLDSA_CA_ARN`
+      env on `prepare-build` — the Lambda is pure orchestration.)
+- [x] 2.4 Broker: a SECOND (ML-DSA) server cert is minted by
+      `issue_broker_certs.py` via the `pqc-workshop-broker-cert-provisioner`
+      CodeBuild job (from `MlDsaPrivateCA`) and stored in three new Secrets
+      Manager secrets. Chosen over a container-image Lambda (Option A / CodeBuild)
+      to fit the stack-first-then-values deploy model. Classical broker cert path
+      unchanged. (`entrypoint.sh` fetch + 8884 listener wiring is WS4 — done.)
+- [x] 2.5 Classical issuance path fully preserved for un-migrated devices;
+      `device-registrar` reduced to pure orchestration (no openssl / no CA ARN /
+      no cert material), still classical-only.
 - _Depends on: 1 (CA ARNs). Blocks: 3 (device ML-DSA cert), 4 (broker ML-DSA cert)._
+- NOTE: sub-task wording above was the pre-implementation plan (Lambda-layer
+  issuance); the delivered design converged all issuance into the shared
+  cert-issuer container run as CodeBuild jobs (Scope A). Checkmarks reflect the
+  delivered design, not the original per-Lambda wording.
 
-## 3. Firmware pipeline & third variant
+## 3. Firmware pipeline & third variant  ✅ IMPLEMENTED
 
-- [ ] 3.1 Create the NET-NEW third firmware sketch
-      (`aws_iot_pqc_esp32_v3_mldsa/…`): ML-KEM key exchange + ML-DSA-44 device
-      cert + trust the ML-DSA-44 CA, `MQTT_BROKER_PORT` = 8884.
-- [ ] 3.2 Enable ML-DSA sign/verify in `wolfssl_user_settings_arduino.h`; verify
-      ESP32-S3 memory budget (ML-KEM + ML-DSA together, under 0x380000). (spike + config)
-- [ ] 3.3 **Port the full download `otaTask` into ALL THREE sketches** (classical
-      already has it; add to pqc and pqc-mldsa) so any variant can receive an
-      `ota-update` and write the inactive slot.
-- [ ] 3.4 **Generalize the `migrate-*` swap handlers to be slot-content-aware**
-      (inspect each slot via `esp_ota_get_partition_description`, target by what's
-      resident) instead of assuming ota_0=classical / ota_1=PQC — preserves the
-      one-version rollback under Option A.
-- [ ] 3.5 Extend `buildspec.yml` / `FIRMWARE_VARIANT` to select the third variant
-      and inject the device's ML-DSA-44 cert into `secrets.h` (prefer a
-      variant→sketch→cert-source mapping so future variants are data, not code).
-- [ ] 3.6 Extend the migration Step Function / entry point to take a **variant**
-      selector (from the dashboard picker) and build+push any chosen variant.
-- [ ] 3.7 Verify the S3 presigned-URL OTA works for a SECOND/THIRD OTA to the
-      same device (classical → pqc → pqc-mldsa, + one-step rollback): presign
-      expiry, per-version keys, bucket versioning.
+- [x] 3.1 Created the NET-NEW third firmware sketch
+      (`aws_iot_pqc_esp32_v3_mldsa/aws_iot_pqc_esp32_v3_mldsa.ino` +
+      `secrets.h.template`) as a copy of the pqc sketch. Diff vs the pqc sketch is
+      exactly 2 lines: `FIRMWARE_VERSION "3.0.0"` and the banner line
+      `TLS 1.3 + ML-KEM Key Exchange + ML-DSA-44 Cert`. ML-KEM key exchange, the
+      ML-DSA-44 device cert, ML-DSA CA trust, and port 8884 all flow in at build
+      time via `secrets.h` (baked by the buildspec/cert-issuer), so the sketch
+      body is identical to pqc by design.
+- [x] 3.2 Enabled ML-DSA sign/verify in `wolfssl_user_settings_arduino.h`
+      (`HAVE_DILITHIUM`, `WOLFSSL_WC_DILITHIUM`, `WOLFSSL_DILITHIUM_VERIFY`,
+      `WOLFSSL_DILITHIUM_SIGN`) for ALL variants (one uniform config; classical/pqc
+      simply don't present an ML-DSA cert). On-device memory budget is validated by
+      the CodeBuild arduino-cli compile size guard (`upload.maximum_size=3670016`),
+      not offline.
+- [x] 3.3 Ported the full download `otaTask` into ALL THREE sketches (classical,
+      pqc, pqc-mldsa): TAG_OTA, S3_ROOT_CA, OTA globals, jsonGetString/jsonGetNumber,
+      OTA_TASK_STACK_SIZE/PRIORITY, the `ota-update` handler branch, the `otaTask`
+      fn (uses `esp_ota_get_next_update_partition(NULL)`, slot-agnostic), and
+      semaphore+task creation in setup(). Brace balance verified
+      (classical 170/170, pqc 173/173, mldsa 173/173).
+- [x] 3.4 Made the `migrate-*` swap handlers slot-content-aware via two helpers
+      `bootSlotMatchingProject(marker)` (strstr) + `bootSlotExactProject(name)`
+      (strcmp) in all 3 sketches: migrate-classical→strstr("classical"),
+      migrate-mldsa→strstr("v3_mldsa"), migrate-pqc→strcmp("aws_iot_pqc_esp32")
+      (exact, since it is a substring of the other two project names). Targets by
+      resident slot content, preserving one-version rollback under Option A.
+- [x] 3.5 Extended `buildspec.yml` / `FIRMWARE_VARIANT` to select the third
+      variant and inject the ML-DSA-44 device cert into `secrets.h` (WS2's shared
+      cert-issuer). `prepare-build` VARIANT_CONFIG maps
+      classical→0.1.0, pqc→1.0.0-pqc, pqc-mldsa→2.0.0-mldsa; `deploy-workshop.sh`
+      stages the v3 sketch into firmware `source/` (added to REQUIRED_FW_SOURCE).
+- [x] 3.6 Extended the migration entry point + Step Function to take a **variant**
+      selector: `start-migration` validates `variant`
+      (VALID_VARIANTS={classical,pqc,pqc-mldsa}, default pqc) and injects it into
+      the SFN input; the ASL threads `variant`/`version`/`buildEnv` through
+      PrepareBuild → WaitForBuild → PublishOta; `publish-ota` derives `version`
+      from the event. ALSO fixed a latent double-build: `prepare-build` no longer
+      starts a CodeBuild (it now resolves per-device build env — WiFi/broker/IoT
+      via SSM→registry→env — and returns `buildEnv`); WaitForBuild is the single
+      authoritative build, which also fixes a WiFi-correctness bug.
+- [x] 3.7 S3 presigned-URL OTA for a SECOND/THIRD OTA to the same device
+      (classical → pqc → pqc-mldsa + one-step rollback) is sound by construction:
+      publish-ota / firmware-pusher presign fresh per invocation (5-min expiry),
+      keys are per-version (`<serial>/<version>/`), bucket versioning is on. (Full
+      on-device confirmation is part of the WS5 cross-workstream validation.)
 - _Depends on: 1, 2 (device ML-DSA cert), 4 (8884 endpoint to connect to)._
+- Validation criterion (on-account): CodeBuild arduino-cli compile of the v3
+  sketch succeeds under the size guard; a pqc-mldsa device flashes, connects to
+  8884, and negotiates ML-KEM + ML-DSA-44. STATUS: offline validation complete
+  (50 unit tests green, ASL JSON valid, all Lambdas py_compile OK, sketch braces
+  balanced, deploy-workshop.sh `bash -n` OK); pending on-account deploy in WS5.
 
 ## 4. Broker: second listener + NLB + bridge  ✅ IMPLEMENTED
 

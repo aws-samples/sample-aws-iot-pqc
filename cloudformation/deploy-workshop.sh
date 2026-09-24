@@ -317,6 +317,9 @@ aws s3 cp "$PROJECT_ROOT/aws_iot_pqc_esp32_v1_classical/aws_iot_pqc_esp32_v1_cla
     "s3://${FIRMWARE_BUCKET}/source/aws_iot_pqc_esp32_v1_classical.ino" >/dev/null
 aws s3 cp "$PROJECT_ROOT/aws_iot_pqc_esp32/aws_iot_pqc_esp32.ino" \
     "s3://${FIRMWARE_BUCKET}/source/aws_iot_pqc_esp32.ino" >/dev/null
+# pqc-mldsa variant (Step 2): ML-KEM key exchange + ML-DSA-44 device cert, 8884.
+aws s3 cp "$PROJECT_ROOT/aws_iot_pqc_esp32_v3_mldsa/aws_iot_pqc_esp32_v3_mldsa.ino" \
+    "s3://${FIRMWARE_BUCKET}/source/aws_iot_pqc_esp32_v3_mldsa.ino" >/dev/null
 # The two extra firmware-image context files live in known repo locations. Use a
 # plain function (no associative array, whose dotted keys break under zsh) with
 # a fallback repo search that only skips the arduino-cli/data/ board cache.
@@ -351,6 +354,7 @@ REQUIRED_FW_SOURCE=(
     Dockerfile                             # builder image
     aws_iot_pqc_esp32_v1_classical.ino     # classical sketch variant
     aws_iot_pqc_esp32.ino                  # pqc sketch variant
+    aws_iot_pqc_esp32_v3_mldsa.ino         # pqc-mldsa sketch variant (Step 2)
     wolfssl_user_settings_arduino.h        # wolfSSL PQC config
     partitions_pqc_workshop.csv            # partition table
     issue_cert.py                          # shared cert-issuer (baked into image)

@@ -752,6 +752,74 @@ static long jsonGetNumber(const String &json, const char *key) {
     return json.substring(i).toInt();
 }
 
+// ─── Slot-content-aware partition swap ──────────────────────────────────────
+// The two OTA slots (ota_0/ota_1) can hold ANY two of the firmware variants
+// (classical / pqc / pqc-mldsa) depending on migration history, so we must NOT
+// assume "classical=ota_0, pqc=ota_1". Instead, inspect what firmware actually
+// lives in each OTA slot (esp_ota_get_partition_description -> project_name) and
+// boot the slot whose project_name contains the requested marker. This makes a
+// revert/swap work for any 2-of-3 combination resident on the device.
+//   marker examples: "classical" (v1 sketch), "v3_mldsa" (ML-DSA sketch),
+//   or the plain pqc sketch project name "aws_iot_pqc_esp32".
+// Returns true if a matching slot was found and set as the boot partition.
+static bool bootSlotMatchingProject(const char* marker) {
+    const esp_partition_subtype_t subtypes[2] = {
+        ESP_PARTITION_SUBTYPE_APP_OTA_0, ESP_PARTITION_SUBTYPE_APP_OTA_1
+    };
+    for (int i = 0; i < 2; i++) {
+        const esp_partition_t* part = esp_partition_find_first(
+            ESP_PARTITION_TYPE_APP, subtypes[i], NULL);
+        if (!part) continue;
+        esp_app_desc_t appDesc;
+        if (esp_ota_get_partition_description(part, &appDesc) != ESP_OK) continue;
+        ESP_LOGI(TAG_MQTT, "Slot '%s' holds project '%s' v%s",
+                 part->label, appDesc.project_name, appDesc.version);
+        if (strstr(appDesc.project_name, marker) != NULL) {
+            ESP_LOGI(TAG_MQTT, "Match for marker '%s' in slot '%s' — setting boot partition",
+                     marker, part->label);
+            esp_err_t err = esp_ota_set_boot_partition(part);
+            if (err != ESP_OK) {
+                ESP_LOGE(TAG_MQTT, "Failed to set boot partition: %s", esp_err_to_name(err));
+                return false;
+            }
+            return true;
+        }
+    }
+    ESP_LOGE(TAG_MQTT, "No OTA slot holds a firmware matching marker '%s'", marker);
+    return false;
+}
+
+// Exact-match variant of bootSlotMatchingProject. Needed for the plain pqc
+// sketch, whose project_name "aws_iot_pqc_esp32" is a SUBSTRING of both
+// "aws_iot_pqc_esp32_v1_classical" and "aws_iot_pqc_esp32_v3_mldsa", so a naive
+// strstr would mis-match. Boots the slot whose project_name is EXACTLY name.
+static bool bootSlotExactProject(const char* name) {
+    const esp_partition_subtype_t subtypes[2] = {
+        ESP_PARTITION_SUBTYPE_APP_OTA_0, ESP_PARTITION_SUBTYPE_APP_OTA_1
+    };
+    for (int i = 0; i < 2; i++) {
+        const esp_partition_t* part = esp_partition_find_first(
+            ESP_PARTITION_TYPE_APP, subtypes[i], NULL);
+        if (!part) continue;
+        esp_app_desc_t appDesc;
+        if (esp_ota_get_partition_description(part, &appDesc) != ESP_OK) continue;
+        ESP_LOGI(TAG_MQTT, "Slot '%s' holds project '%s' v%s",
+                 part->label, appDesc.project_name, appDesc.version);
+        if (strcmp(appDesc.project_name, name) == 0) {
+            ESP_LOGI(TAG_MQTT, "Exact match for '%s' in slot '%s' — setting boot partition",
+                     name, part->label);
+            esp_err_t err = esp_ota_set_boot_partition(part);
+            if (err != ESP_OK) {
+                ESP_LOGE(TAG_MQTT, "Failed to set boot partition: %s", esp_err_to_name(err));
+                return false;
+            }
+            return true;
+        }
+    }
+    ESP_LOGE(TAG_MQTT, "No OTA slot holds a firmware exactly named '%s'", name);
+    return false;
+}
+
 // MQTTClient message handler (wraps mqttCallback)
 void mqttMessageHandler(String &topic, String &payload) {
     ESP_LOGI(TAG_MQTT, "Message received on topic '%s' (%d bytes)", topic.c_str(), payload.length());
@@ -799,31 +867,30 @@ void mqttMessageHandler(String &topic, String &payload) {
         return;
     }
 
-    // OTA migration (partition-swap fallback): {"action":"migrate-pqc"} on
-    // cmd/<thing>/ota. Only works if PQC firmware is already present in ota_1.
-    if (topic.indexOf("/ota") >= 0 && payload.indexOf("migrate-pqc") >= 0) {
-        ESP_LOGI(TAG_MQTT, "PQC migration command received!");
-        // Classical firmware runs on app0 — find app1 (PQC) explicitly
-        const esp_partition_t* pqcPartition = esp_partition_find_first(
-            ESP_PARTITION_TYPE_APP, ESP_PARTITION_SUBTYPE_APP_OTA_1, NULL);
-        if (!pqcPartition) {
-            ESP_LOGE(TAG_MQTT, "No OTA_1 (PQC) partition found");
+    // OTA migration (partition-swap): boot whichever variant is already
+    // resident in the other OTA slot. Slot-content-aware, so it works for any
+    // 2-of-3 combination of {classical, pqc, mldsa} on the device.
+    if (topic.indexOf("/ota") >= 0) {
+        bool swapped = false;
+        if (payload.indexOf("migrate-classical") >= 0) {
+            ESP_LOGI(TAG_MQTT, "Classical migration command received!");
+            swapped = bootSlotMatchingProject("classical");
+        } else if (payload.indexOf("migrate-mldsa") >= 0) {
+            ESP_LOGI(TAG_MQTT, "ML-DSA migration command received!");
+            swapped = bootSlotMatchingProject("v3_mldsa");
+        } else if (payload.indexOf("migrate-pqc") >= 0) {
+            ESP_LOGI(TAG_MQTT, "PQC migration command received!");
+            swapped = bootSlotExactProject("aws_iot_pqc_esp32");
+        } else {
             return;
         }
-        esp_app_desc_t appDesc;
-        if (esp_ota_get_partition_description(pqcPartition, &appDesc) != ESP_OK) {
-            ESP_LOGE(TAG_MQTT, "No firmware in '%s'", pqcPartition->label);
-            return;
+
+        if (swapped) {
+            ESP_LOGI(TAG_MQTT, "Boot partition updated, restarting...");
+            vTaskDelay(pdMS_TO_TICKS(2000));
+            esp_restart();
         }
-        ESP_LOGI(TAG_MQTT, "Switching to %s v%s (PQC)", appDesc.project_name, appDesc.version);
-        esp_err_t err = esp_ota_set_boot_partition(pqcPartition);
-        if (err != ESP_OK) {
-            ESP_LOGE(TAG_MQTT, "Failed to set boot partition: %s", esp_err_to_name(err));
-            return;
-        }
-        ESP_LOGI(TAG_MQTT, "Boot partition set to '%s', restarting...", pqcPartition->label);
-        vTaskDelay(pdMS_TO_TICKS(2000));
-        esp_restart();
+        return;
     }
 }
 

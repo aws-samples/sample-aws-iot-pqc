@@ -95,6 +95,23 @@ def test_build_wait_uses_codebuild_sync(asl):
     assert wait["Resource"] == "arn:aws:states:::codebuild:startBuild.sync"
 
 
+def test_variant_threaded_through(asl):
+    """The firmware variant is data-driven, not hardcoded: PrepareBuild receives
+    $.variant, and WaitForBuild's FIRMWARE_VARIANT comes from the prepared
+    variant (so the same state machine builds classical / pqc / pqc-mldsa)."""
+    prepare = asl["States"]["PrepareBuild"]
+    assert prepare["Parameters"]["Payload"]["variant.$"] == "$.variant"
+
+    wait_env = asl["States"]["WaitForBuild"]["Parameters"]["EnvironmentVariablesOverride"]
+    by_name = {e["Name"]: e for e in wait_env}
+    # FIRMWARE_VARIANT must be sourced from the prepared variant, never a literal.
+    assert by_name["FIRMWARE_VARIANT"].get("Value.$") == "$.prepare.variant"
+    assert "Value" not in by_name["FIRMWARE_VARIANT"], "FIRMWARE_VARIANT must not be hardcoded"
+    # The per-device WiFi/broker env resolved by prepare-build flows to the build.
+    assert by_name["WIFI_SSID"].get("Value.$") == "$.prepare.buildEnv.wifiSsid"
+    assert by_name["BROKER_ENDPOINT"].get("Value.$") == "$.prepare.buildEnv.brokerEndpoint"
+
+
 def test_substitution_placeholders_present(asl):
     raw = json.dumps(asl)
     for placeholder in ("${DeviceTableName}", "${PrepareBuildFunctionArn}",
