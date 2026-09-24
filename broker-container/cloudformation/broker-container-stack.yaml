@@ -967,6 +967,18 @@ Resources:
                   - !Ref MlDsaBrokerCACertSecret
                   - !Ref MlDsaBrokerCertSecret
                   - !Ref MlDsaBrokerKeySecret
+              # CodeBuild reads its build source from S3, so it needs both
+              # GetObject (on the objects) and ListBucket (on the bucket) — the
+              # same grant CertIssuerBuildRole has. Without ListBucket the
+              # provisioner fails DOWNLOAD_SOURCE with AccessDenied.
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:GetBucketLocation
+                  - s3:ListBucket
+                Resource:
+                  - !GetAtt BrokerSourceBucket.Arn
+                  - !Sub '${BrokerSourceBucket.Arn}/*'
 
   BrokerCertProvisionerProject:
     Type: AWS::CodeBuild::Project
