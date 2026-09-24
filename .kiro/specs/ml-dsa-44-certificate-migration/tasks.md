@@ -103,16 +103,30 @@
       expiry, per-version keys, bucket versioning.
 - _Depends on: 1, 2 (device ML-DSA cert), 4 (8884 endpoint to connect to)._
 
-## 4. Broker: second listener + NLB + bridge
+## 4. Broker: second listener + NLB + bridge  ✅ IMPLEMENTED
 
-- [ ] 4.1 Add `listener 8884` (ML-DSA-44 server cert) to `mosquitto.conf`,
-      keeping 8883; configure per-listener CA trust for client certs.
-- [ ] 4.2 Update `entrypoint.sh` to fetch BOTH broker certs and wire the second
-      listener.
-- [ ] 4.3 Add an NLB listener + target group on 8884 (TCP passthrough); open the
-      broker security group to inbound 8884.
-- [ ] 4.4 Confirm the bridge to IoT Core is UNCHANGED (classical cert).
-- _Depends on: 1, 2 (broker ML-DSA cert). Blocks: 3.5 end-to-end._
+- [x] 4.1 Added `listener 8884` (ML-DSA-44 server cert) to `mosquitto.conf`,
+      keeping 8883. `per_listener_settings true` (already set) makes 8884's
+      cafile/certfile/keyfile + `require_certificate` mTLS apply to that listener
+      only; 8884 trusts the ML-DSA-44 CA. Cert files at /mosquitto/certs/mldsa/.
+- [x] 4.2 `entrypoint.sh` fetches the 3 ML-DSA secrets
+      (MLDSA_CA_CERT_SECRET / MLDSA_BROKER_CERT_SECRET / MLDSA_BROKER_KEY_SECRET)
+      into /mosquitto/certs/mldsa/{ca.crt,broker.crt,broker.key}. 8883 fetch
+      unchanged.
+- [x] 4.3 Added `MlDsaBrokerTargetGroup` + `MlDsaBrokerListener` on 8884 (TCP
+      passthrough, same NLB); container PortMapping 8884; ECS service
+      LoadBalancers entry 8884; security group ingress 8884 (0.0.0.0/0). Task
+      role reads the 3 ML-DSA secrets; task env passes their ARNs. BrokerService
+      DependsOn both listeners. New output BrokerMlDsaPort=8884.
+- [x] 4.4 Bridge to IoT Core UNCHANGED (still classical IoT-issued cert; only the
+      device-facing side gained the 8884 ML-DSA listener).
+- Note: BPA — 8884 inbound (IGW ingress) is covered by the same VPC-wide
+  VpcBpaExclusion as 8883; no extra BPA work.
+- Validation criterion (on-account): `openssl s_client -connect <nlb>:8884`
+  negotiates the ML-DSA-44 broker cert; a pqc-mldsa device (WS3) connects + does
+  ML-KEM + ML-DSA. STATUS: CFN/entrypoint/mosquitto validated offline (parse,
+  bash -n, listener present); pending on-account deploy.
+- _Depends on: 1, 2 (broker ML-DSA cert). Blocks: 3 end-to-end._
 
 ## 5. Cross-cutting (last)
 

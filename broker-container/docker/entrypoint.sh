@@ -12,15 +12,19 @@
 #   BRIDGE_CERT_SECRET    — Secrets Manager ARN for IoT Core bridge cert
 #   BRIDGE_KEY_SECRET     — Secrets Manager ARN for IoT Core bridge key
 #   BRIDGE_ROOT_CA_SECRET — Secrets Manager ARN for Amazon Root CA
+#   MLDSA_CA_CERT_SECRET     — Secrets Manager ARN for ML-DSA-44 CA cert (8884)
+#   MLDSA_BROKER_CERT_SECRET — Secrets Manager ARN for ML-DSA-44 broker cert (8884)
+#   MLDSA_BROKER_KEY_SECRET  — Secrets Manager ARN for ML-DSA-44 broker key (8884)
 # ─────────────────────────────────────────────────────────────────────────────
 
 set -euo pipefail
 
 CERT_DIR="/mosquitto/certs"
 BRIDGE_CERT_DIR="/mosquitto/certs/bridge"
+MLDSA_CERT_DIR="/mosquitto/certs/mldsa"
 REGION="${AWS_REGION:-us-east-1}"
 
-mkdir -p "$BRIDGE_CERT_DIR"
+mkdir -p "$BRIDGE_CERT_DIR" "$MLDSA_CERT_DIR"
 
 # ─── Identify this broker instance in the logs ──────────────────────────────
 # Make the CloudWatch log content self-identifying so it is unambiguous WHICH
@@ -70,6 +74,35 @@ if [[ -n "${BROKER_KEY_SECRET:-}" ]]; then
         --query 'SecretString' --output text \
         --region "$REGION" > "$CERT_DIR/broker.key"
     echo "       Broker key fetched"
+fi
+
+# ─── Fetch ML-DSA-44 broker certificates (Step 2, for the 8884 listener) ─────
+# These back the parallel 8884 listener defined in mosquitto.conf. If the
+# secrets are unset (e.g. an older deploy), the files are simply absent — but
+# mosquitto.conf declares the 8884 listener unconditionally, so a deploy that
+# ships the 8884 listener MUST also provision these secrets (WS2 does).
+if [[ -n "${MLDSA_CA_CERT_SECRET:-}" ]]; then
+    aws secretsmanager get-secret-value \
+        --secret-id "$MLDSA_CA_CERT_SECRET" \
+        --query 'SecretString' --output text \
+        --region "$REGION" > "$MLDSA_CERT_DIR/ca.crt"
+    echo "       ML-DSA CA cert fetched"
+fi
+
+if [[ -n "${MLDSA_BROKER_CERT_SECRET:-}" ]]; then
+    aws secretsmanager get-secret-value \
+        --secret-id "$MLDSA_BROKER_CERT_SECRET" \
+        --query 'SecretString' --output text \
+        --region "$REGION" > "$MLDSA_CERT_DIR/broker.crt"
+    echo "       ML-DSA broker cert fetched"
+fi
+
+if [[ -n "${MLDSA_BROKER_KEY_SECRET:-}" ]]; then
+    aws secretsmanager get-secret-value \
+        --secret-id "$MLDSA_BROKER_KEY_SECRET" \
+        --query 'SecretString' --output text \
+        --region "$REGION" > "$MLDSA_CERT_DIR/broker.key"
+    echo "       ML-DSA broker key fetched"
 fi
 
 # ─── Fetch IoT Core bridge credentials ──────────────────────────────────────

@@ -13,7 +13,7 @@ Parameters:
     Type: List<AWS::EC2::Subnet::Id>
     Description: >
       Public subnets (>=2 AZs) for the internet-facing NLB. Devices connect to
-      the NLB here on 8883.
+      the NLB here on 8883 (classical) and 8884 (ML-DSA-44).
 
   TaskSubnetIds:
     Type: List<AWS::EC2::Subnet::Id>
@@ -451,6 +451,10 @@ Resources:
                   - !Ref BridgeCertSecret
                   - !Ref BridgeKeySecret
                   - !Ref BridgeRootCASecret
+                  # ML-DSA-44 broker cert secrets for the 8884 listener (Step 2)
+                  - !Ref MlDsaBrokerCACertSecret
+                  - !Ref MlDsaBrokerCertSecret
+                  - !Ref MlDsaBrokerKeySecret
               - Effect: Allow
                 Action:
                   - logs:CreateLogStream
@@ -510,6 +514,9 @@ Resources:
           PortMappings:
             - ContainerPort: 8883
               Protocol: tcp
+            # ML-DSA-44 device listener (Step 2)
+            - ContainerPort: 8884
+              Protocol: tcp
           Environment:
             - Name: AWS_REGION
               Value: !Ref AWS::Region
@@ -519,6 +526,13 @@ Resources:
               Value: !Ref BrokerCertSecret
             - Name: BROKER_KEY_SECRET
               Value: !Ref BrokerKeySecret
+            # ML-DSA-44 broker cert secrets for the 8884 listener (Step 2)
+            - Name: MLDSA_CA_CERT_SECRET
+              Value: !Ref MlDsaBrokerCACertSecret
+            - Name: MLDSA_BROKER_CERT_SECRET
+              Value: !Ref MlDsaBrokerCertSecret
+            - Name: MLDSA_BROKER_KEY_SECRET
+              Value: !Ref MlDsaBrokerKeySecret
             - Name: IOT_ENDPOINT
               Value: !Ref IoTEndpoint
             - Name: BROKER_NAME
@@ -543,12 +557,17 @@ Resources:
   BrokerSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
-      GroupDescription: PQC MQTT Broker - allow port 8883
+      GroupDescription: PQC MQTT Broker - allow ports 8883 (classical) and 8884 (ML-DSA-44)
       VpcId: !Ref VpcId
       SecurityGroupIngress:
         - IpProtocol: tcp
           FromPort: 8883
           ToPort: 8883
+          CidrIp: 0.0.0.0/0
+        # ML-DSA-44 device listener (Step 2). Same public reachability as 8883.
+        - IpProtocol: tcp
+          FromPort: 8884
+          ToPort: 8884
           CidrIp: 0.0.0.0/0
 
   # ═══════════════════════════════════════════════════════════════════════════
@@ -657,11 +676,39 @@ Resources:
         - Type: forward
           TargetGroupArn: !Ref BrokerTargetGroup
 
+  # ─── ML-DSA-44 target group + listener on 8884 (Step 2) ─────────────────────
+  # Same NLB, TCP passthrough (preserves the PQC TLS handshake end to end to the
+  # broker). Health-checks the 8884 listener directly.
+  MlDsaBrokerTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: pqc-broker-mldsa-tg
+      Port: 8884
+      Protocol: TCP
+      TargetType: ip
+      VpcId: !Ref VpcId
+      HealthCheckProtocol: TCP
+      HealthCheckPort: '8884'
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 2
+
+  MlDsaBrokerListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref BrokerNLB
+      Port: 8884
+      Protocol: TCP
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref MlDsaBrokerTargetGroup
+
   # ─── ECS Service ───────────────────────────────────────────────────────────
 
   BrokerService:
     Type: AWS::ECS::Service
-    DependsOn: BrokerListener
+    DependsOn:
+      - BrokerListener
+      - MlDsaBrokerListener
     Properties:
       ServiceName: pqc-workshop-broker
       Cluster: !Ref BrokerCluster
@@ -681,6 +728,10 @@ Resources:
         - ContainerName: mosquitto-pqc
           ContainerPort: 8883
           TargetGroupArn: !Ref BrokerTargetGroup
+        # ML-DSA-44 device listener (Step 2)
+        - ContainerName: mosquitto-pqc
+          ContainerPort: 8884
+          TargetGroupArn: !Ref MlDsaBrokerTargetGroup
 
   # ═══════════════════════════════════════════════════════════════════════════
   # Lambda — Certificate Provisioner (generates broker CSR + stores certs)
@@ -1213,8 +1264,12 @@ Outputs:
     Value: !GetAtt BrokerNLB.DNSName
 
   BrokerPort:
-    Description: MQTT TLS port
+    Description: MQTT TLS port (classical / ECDSA)
     Value: '8883'
+
+  BrokerMlDsaPort:
+    Description: MQTT TLS port for the ML-DSA-44 listener (Step 2)
+    Value: '8884'
 
   PrivateCAArn:
     Description: Private CA ARN (for issuing device certificates)
