@@ -192,7 +192,7 @@ Resources:
 
         type Mutation {
           updateDevice(input: UpdateDeviceInput!): Device
-          migrateFirmware(thingName: String!): CommandResult
+          migrateFirmware(thingName: String!, variant: String): CommandResult
           deleteDevice(thingName: String!): DeleteResult
           sendCommand(thingName: String!, action: String!, topicSuffix: String): CommandResult
         }
@@ -413,9 +413,12 @@ Resources:
         RuntimeVersion: 1.0.0
       Code: |
         export function request(ctx) {
+          // Forward the optional firmware variant from the dashboard picker
+          // (classical / pqc / pqc-mldsa). StartMigration defaults it to "pqc"
+          // when absent, preserving the original migrate-to-PQC behaviour.
           return {
             operation: 'Invoke',
-            payload: { thingName: ctx.args.thingName }
+            payload: { thingName: ctx.args.thingName, variant: ctx.args.variant }
           };
         }
         export function response(ctx) {

@@ -103,17 +103,33 @@ one is rejected. The script confirms the target account before any writes (set
    templates bucket;
 2. deploy the master stack (with `BrokerTriggerBuild=false`, so the broker's
    in-stack image build is skipped and its ECS service stays at `DesiredCount:
-   0`);
+   0`). The stack creates **both** ACM Private CAs here: the classical EC CA
+   (8883 path) and the **ML-DSA-44 CA** (8884 path, Step 2);
 3. stage the broker + firmware Docker build contexts to S3, build the broker
-   container image in CodeBuild, then scale the broker ECS service to 1 task;
+   container image in CodeBuild, then build the **shared cert-issuer image**
+   (`pqc-workshop-cert-issuer-image-build`, OpenSSL 3.5) and run the **broker
+   cert provisioner** (`pqc-workshop-broker-cert-provisioner`) in it — this mints
+   **both** broker server certs (classical + ML-DSA-44) into Secrets Manager
+   **before** scaling the broker ECS service to 1 task (the broker's entrypoint
+   fetches those secrets on start, so the order matters);
 4. build + sync the v2 dashboard and invalidate CloudFront;
 5. print the outputs (dashboard URL, broker endpoint) and the remaining steps.
 
-Approximate duration: ~10–11 minutes (CloudFormation create ~6 min + broker
-image build ~3–4 min).
+Approximate duration: ~13–15 minutes (CloudFormation create ~6 min + broker
+image build ~3–4 min + cert-issuer image build + broker cert provisioning
+~3–4 min).
 
-When it finishes, the cloud side is fully up: broker running behind the NLB and
-the dashboard served from CloudFront.
+When it finishes, the cloud side is fully up: broker running behind the NLB with
+**both** the classical (8883) and ML-DSA-44 (8884) listeners, and the dashboard
+served from CloudFront.
+
+> **Step 2 (ML-DSA-44 certificate migration) is deployed by the same one-shot
+> flow above** — no extra self-hosted steps. The second CA is created with the
+> stack; the cert-issuer image build + broker cert provisioner (which the script
+> runs automatically) produce the ML-DSA-44 broker cert for the 8884 listener;
+> and the `pqc-mldsa` device variant is built on demand by the migration Step
+> Function when an operator picks it in the dashboard (see §7). Verify both CAs
+> and the 8884 listener with `check_setup_status.sh` (§6).
 
 ### 4. Build the firmware builder image (ONE-TIME, MANDATORY BEFORE ANY FLASH)
 
@@ -364,6 +380,62 @@ Before steps 4 and 5 are complete, expect warnings for the firmware image and th
 Builder-Pi — that is normal. Once both are done and at least one device has
 connected, the check should pass clean.
 
+The check also validates the **Step 2** resources: it confirms **two** ACTIVE
+Private CAs (an `EC_prime256v1` classical CA and an `ML_DSA_44` CA) and the
+broker NLB's **8884** listener + `pqc-broker-mldsa-tg` target group, alongside
+the classical 8883 path.
+
+---
+
+## 7. Migrating a device's certificate to ML-DSA-44 (Step 2)
+
+Step 2 lets a device move its **certificate** from classical ECDSA to a
+post-quantum **ML-DSA-44** signature (FIPS 204), on top of the Step 1 ML-KEM key
+exchange. The classical and PQC paths run in parallel — nothing is a flag-day
+cutover — so a device migrates over the existing OTA process.
+
+There are three firmware variants, each built on demand and delivered over OTA:
+
+| Variant | Key exchange | Device cert | Broker port | Reported firmware |
+|---|---|---|---|---|
+| `classical` | ECDHE | ECDSA P-256 (classical CA) | 8883 | `1.0.0` |
+| `pqc` | hybrid ML-KEM | ECDSA P-256 (classical CA) | 8883 | `2.0.0` |
+| `pqc-mldsa` | hybrid ML-KEM | **ML-DSA-44 (ML-DSA CA)** | **8884** | `3.0.0` |
+
+**Operator flow (from the dashboard):**
+
+1. Open the dashboard (the CloudFront URL printed by the deploy / the
+   `DashboardURL` output). Each connected device shows a card with its current
+   key exchange, TLS version, and firmware — and a **"Running: …"** line derived
+   from live telemetry.
+2. In the device card's **firmware picker**, choose the target variant
+   (`Classical (ECDSA)` / `PQC key exchange (ML-KEM)` / `PQC + ML-DSA-44 cert`).
+   The picker pre-selects the next logical step for the device.
+3. Click **🚀 Flash**. This calls the `migrateFirmware` AppSync mutation with the
+   chosen `variant`, which starts the `pqc-workshop-pqc-migration` Step Function:
+   it builds the selected variant (if not already built), issues the device's
+   ML-DSA-44 cert (for `pqc-mldsa`) via the shared cert-issuer, pushes the image
+   over OTA, and the device reboots into it. Live progress appears on the card
+   (Building… → Pushing OTA… → Rebooting…).
+4. When the device reconnects, its telemetry reports the new state. For
+   `pqc-mldsa` it connects on **8884**, still negotiates hybrid ML-KEM, and now
+   presents an ML-DSA-44 certificate. The card flips to reflect it.
+
+Rollback is the same flow in reverse — pick an earlier variant and Flash. The
+OTA writes the inactive slot and the device's slot-content-aware migrate handler
+targets the resident firmware, so a one-version rollback is preserved.
+
+**Verifying the broker's ML-DSA-44 listener** (independent of any device):
+
+```bash
+# The broker NLB DNS is the BrokerEndpoint output; 8884 is the ML-DSA-44 port.
+openssl s_client -connect <broker-nlb-dns>:8884 -showcerts </dev/null 2>/dev/null \
+  | openssl x509 -noout -text | grep -A1 'Signature Algorithm'
+```
+
+The broker server certificate on 8884 should show an ML-DSA-44 signature
+(OID `2.16.840.1.101.3.4.3.17`), whereas 8883 shows a classical ECDSA cert.
+
 ---
 
 ## VPC: create one, or bring your own
@@ -425,18 +497,33 @@ steps by hand.
    - `DefaultWifiPassword` = the workshop WiFi password (WPA2 PSK, 8–63 chars) —
      `NoEcho`; likewise set here, do not leave as `changeme`.
 3. **After the stack completes**, do the steps `deploy-workshop.sh` would have
-   done, in this order:
+   done, in this order (the cert steps 3.ii–3.iii are **Step 2** — they must run
+   **before** you scale the broker up, because the broker entrypoint fetches the
+   broker cert secrets on start):
    1. stage the broker Docker build context to the broker source bucket and start
       the broker image build (CodeBuild `pqc-workshop-broker-image-build`); wait
       for `SUCCEEDED`;
-   2. scale the broker service up:
+   2. stage the shared cert-issuer build context
+      (`shared/cert-issuer/` → `s3://<broker-source-bucket>/cert-issuer/`) and
+      start the cert-issuer image build; wait for `SUCCEEDED`:
+      ```bash
+      aws codebuild start-build --project-name pqc-workshop-cert-issuer-image-build
+      ```
+   3. run the broker cert provisioner (runs *inside* the cert-issuer image; mints
+      **both** broker server certs — classical + ML-DSA-44 — into Secrets
+      Manager); wait for `SUCCEEDED`:
+      ```bash
+      aws codebuild start-build --project-name pqc-workshop-broker-cert-provisioner
+      ```
+   4. scale the broker service up (now that an image exists AND the broker certs
+      are in Secrets Manager):
       ```bash
       aws ecs update-service --cluster pqc-workshop-broker \
         --service pqc-workshop-broker --desired-count 1
       ```
-   3. build the v2 dashboard, sync it to the dashboard S3 bucket, and invalidate
+   5. build the v2 dashboard, sync it to the dashboard S3 bucket, and invalidate
       CloudFront.
-   4. publish the workshop WiFi to SSM as the single source of truth for the
+   6. publish the workshop WiFi to SSM as the single source of truth for the
       builder-Pi AP setup (the script does this; WS must do it by hand). Use the
       SAME values as the `DefaultWifiSsid`/`DefaultWifiPassword` params above:
       ```bash

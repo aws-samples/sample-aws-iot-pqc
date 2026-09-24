@@ -5,7 +5,10 @@
 # Validates the PQC workshop AWS environment is fully deployed and ready.
 # Reflects the CURRENT architecture:
 #   - ECS Fargate PQC broker (broker-container stack) behind an NLB, bridging to
-#     IoT Core; single CloudWatch log group /pqc-workshop/broker-container
+#     IoT Core; single CloudWatch log group /pqc-workshop/broker-container.
+#     Step 2 adds a second ACM Private CA (ML-DSA-44) and a second NLB
+#     listener/target group on 8884 for the post-quantum-cert device path,
+#     alongside the classical EC CA + 8883 listener.
 #   - Device-builder stack: registry table, builder API, CodeBuild, and the PQC
 #     migration Step Functions workflow (prepare-build + publish-ota +
 #     start-migration Lambdas)
@@ -287,13 +290,73 @@ if [[ -n "$CLUSTER_ARN" && "$CLUSTER_ARN" != "None" ]]; then
 else
     warn "Broker ECS cluster not found"
 fi
-# Private CA (issues device certs) — from the broker stack.
-CA_COUNT=$(aws acm-pca list-certificate-authorities \
-    --query "length(CertificateAuthorities[?Status=='ACTIVE'])" --output text 2>/dev/null) || CA_COUNT=0
-if [[ "$CA_COUNT" -ge 1 ]]; then
-    pass "Active Private CA(s): $CA_COUNT"
+# Private CAs (issue device + broker server certs) — from the broker stack.
+# Step 2 adds a SECOND CA: a classical EC (EC_prime256v1) CA for the 8883 path
+# and an ML-DSA-44 CA for the 8884 path. Read each ACTIVE CA's KeyAlgorithm so
+# we can confirm BOTH are present, not just count them.
+CA_KEY_ALGS=$(aws acm-pca list-certificate-authorities \
+    --query "CertificateAuthorities[?Status=='ACTIVE'].CertificateAuthorityConfiguration.KeyAlgorithm" \
+    --output text 2>/dev/null) || CA_KEY_ALGS=""
+ACTIVE_CA_COUNT=$(echo "$CA_KEY_ALGS" | wc -w | tr -d ' ')
+if [[ "$ACTIVE_CA_COUNT" -ge 1 ]]; then
+    pass "Active Private CA(s): $ACTIVE_CA_COUNT [$CA_KEY_ALGS]"
 else
-    warn "No ACTIVE Private CA found (device cert issuance depends on it)"
+    fail "No ACTIVE Private CA found (device/broker cert issuance depends on it)"
+fi
+# Classical CA (EC_prime256v1) — 8883 path.
+if echo "$CA_KEY_ALGS" | grep -qw "EC_prime256v1"; then
+    pass "Classical EC Private CA (EC_prime256v1) is ACTIVE"
+else
+    warn "No ACTIVE EC_prime256v1 Private CA found (classical 8883 cert path)"
+fi
+# ML-DSA-44 CA (Step 2) — 8884 path. This is the second CA WS1 adds.
+if echo "$CA_KEY_ALGS" | grep -qw "ML_DSA_44"; then
+    pass "ML-DSA-44 Private CA (ML_DSA_44) is ACTIVE (Step 2 second CA)"
+else
+    fail "No ACTIVE ML_DSA_44 Private CA found (Step 2 ML-DSA-44 cert path)"
+fi
+echo ""
+
+# ─── 10b. ML-DSA-44 device listener (NLB port 8884) ─────────────────────────
+echo "─── 10b. ML-DSA-44 Listener (NLB 8884) ──────────────────────"
+# The broker NLB gains a second listener + target group on 8884 for the
+# ML-DSA-44 device path (Step 2). Resolve the broker NLB, then confirm both the
+# 8884 listener and the pqc-broker-mldsa-tg target group exist.
+BROKER_NLB_ARN=$(aws elbv2 describe-load-balancers \
+    --query "LoadBalancers[?contains(LoadBalancerName, 'pqc-broker')].LoadBalancerArn | [0]" \
+    --output text 2>/dev/null) || BROKER_NLB_ARN=""
+if [[ -z "$BROKER_NLB_ARN" || "$BROKER_NLB_ARN" == "None" ]]; then
+    warn "Broker NLB not found (cannot check the 8884 listener)"
+else
+    LISTENER_PORTS=$(aws elbv2 describe-listeners --load-balancer-arn "$BROKER_NLB_ARN" \
+        --query "Listeners[].Port" --output text 2>/dev/null) || LISTENER_PORTS=""
+    if echo "$LISTENER_PORTS" | grep -qw "8883"; then
+        pass "Broker NLB has the classical listener on 8883"
+    else
+        warn "Broker NLB missing the 8883 listener (ports: ${LISTENER_PORTS:-none})"
+    fi
+    if echo "$LISTENER_PORTS" | grep -qw "8884"; then
+        pass "Broker NLB has the ML-DSA-44 listener on 8884 (Step 2)"
+    else
+        fail "Broker NLB missing the 8884 listener (ports: ${LISTENER_PORTS:-none})"
+    fi
+fi
+# ML-DSA target group (pqc-broker-mldsa-tg), and whether it has a healthy target.
+MLDSA_TG_ARN=$(aws elbv2 describe-target-groups \
+    --query "TargetGroups[?TargetGroupName=='pqc-broker-mldsa-tg'].TargetGroupArn | [0]" \
+    --output text 2>/dev/null) || MLDSA_TG_ARN=""
+if [[ -n "$MLDSA_TG_ARN" && "$MLDSA_TG_ARN" != "None" ]]; then
+    pass "ML-DSA-44 target group 'pqc-broker-mldsa-tg' (8884) exists"
+    HEALTHY_MLDSA=$(aws elbv2 describe-target-health --target-group-arn "$MLDSA_TG_ARN" \
+        --query "length(TargetHealthDescriptions[?TargetHealth.State=='healthy'])" \
+        --output text 2>/dev/null) || HEALTHY_MLDSA=0
+    if [[ "$HEALTHY_MLDSA" -ge 1 ]]; then
+        pass "ML-DSA-44 target group has $HEALTHY_MLDSA healthy target(s)"
+    else
+        warn "ML-DSA-44 target group has no healthy targets yet (broker task may be starting)"
+    fi
+else
+    fail "ML-DSA-44 target group 'pqc-broker-mldsa-tg' not found (Step 2 8884 path)"
 fi
 echo ""
 

@@ -162,6 +162,59 @@ header p { color: var(--text-secondary); margin-top: 4px; }
 .revert-btn { border-color: var(--accent-classical) !important; }
 .revert-btn:hover { background: rgba(245, 158, 11, 0.1) !important; }
 
+/* ─── Firmware flash (variant picker + Flash button) ─────────────────────── */
+
+.device-flash {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.flash-current {
+  font-size: 0.72rem;
+  color: var(--text-secondary);
+}
+.flash-current strong { color: var(--text-primary); }
+
+.flash-controls {
+  display: flex;
+  gap: 8px;
+  align-items: stretch;
+}
+
+.variant-picker {
+  flex: 1 1 auto;
+  min-width: 0;
+  background: var(--bg-primary);
+  border: 1px solid var(--border);
+  color: var(--text-primary);
+  padding: 6px 10px;
+  border-radius: 6px;
+  font-size: 0.75rem;
+  cursor: pointer;
+}
+.variant-picker:focus { outline: none; border-color: var(--accent-blue); }
+.variant-picker:disabled { opacity: 0.5; cursor: not-allowed; }
+
+/* The Flash button reuses .migrate-btn colours but is no longer inside
+   .device-actions, so it needs the base button styling here. */
+.device-flash .migrate-btn {
+  flex: 0 0 auto;
+  background: var(--bg-primary);
+  border: 1px solid var(--accent-pqc);
+  color: var(--text-primary);
+  padding: 6px 14px;
+  border-radius: 6px;
+  font-size: 0.75rem;
+  cursor: pointer;
+  transition: background 0.2s, border-color 0.2s;
+}
+.device-flash .migrate-btn:hover:not(:disabled) { background: rgba(16, 185, 129, 0.1); }
+.device-flash .migrate-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
 /* ─── Log Panel ───────────────────────────────────────────────────────────── */
 
 .log-overlay {

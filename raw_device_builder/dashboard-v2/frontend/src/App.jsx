@@ -90,7 +90,40 @@ const MIGRATION_LABELS = {
 };
 const MIGRATION_IN_PROGRESS = ['building', 'pushing-ota', 'rebooting'];
 
-function DeviceCard({ device, onCommand, onShowLog, onBuildPqc }) {
+// The three firmware variants the operator can flash, in migration order. The
+// value is what start-migration expects; the label is what the picker shows.
+const VARIANTS = ['classical', 'pqc', 'pqc-mldsa'];
+const VARIANT_LABELS = {
+  classical: 'Classical (ECDSA)',
+  pqc: 'PQC key exchange (ML-KEM)',
+  'pqc-mldsa': 'PQC + ML-DSA-44 cert',
+};
+
+// Best-effort "what is the device running now" from live telemetry. The device
+// reports firmwareVersion via telemetry (sketch #define: 1.0.0 classical /
+// 2.0.0 pqc / 3.0.0 pqc-mldsa); pqcAlgorithm corroborates the key exchange.
+// Used only to pre-select the picker's next logical step — the operator can
+// always override, so an unknown/missing reading just defaults to "pqc".
+function detectVariant(device) {
+  const v = (device.firmwareVersion || '').trim();
+  if (v.startsWith('3.')) return 'pqc-mldsa';
+  if (v.startsWith('2.')) return 'pqc';
+  if (v.startsWith('1.')) return 'classical';
+  // No firmwareVersion reading yet: fall back to the key-exchange signal.
+  const alg = device.pqcAlgorithm || '';
+  if (alg.includes('MLKEM') || alg.includes('Kyber') || alg.includes('PQC')) return 'pqc';
+  return null;
+}
+
+// Pre-select the next step up the migration path from the current variant, so
+// the common "advance this device" action is one click.
+function nextVariant(current) {
+  const idx = VARIANTS.indexOf(current);
+  if (idx === -1) return 'pqc';
+  return VARIANTS[Math.min(idx + 1, VARIANTS.length - 1)];
+}
+
+function DeviceCard({ device, onCommand, onShowLog, onFlash }) {
   const [ledOn, setLedOn] = useState(true);
   const isPqc = device.pqcAlgorithm &&
     (device.pqcAlgorithm.includes('MLKEM') || device.pqcAlgorithm.includes('Kyber') || device.pqcAlgorithm.includes('PQC'));
@@ -98,6 +131,9 @@ function DeviceCard({ device, onCommand, onShowLog, onBuildPqc }) {
   const isStale = lastSeenDate ? (Date.now() - lastSeenDate.getTime() > 90000) : true;
   const isOnline = device.status === 'online' && !isStale;
   const migrating = MIGRATION_IN_PROGRESS.includes(device.migrationStatus);
+
+  const currentVariant = detectVariant(device);
+  const [selectedVariant, setSelectedVariant] = useState(() => nextVariant(currentVariant));
 
   return (
     <div className={`device-card ${isPqc ? 'pqc' : 'classical'} ${isOnline ? 'online' : 'offline'}`}>
@@ -148,20 +184,40 @@ function DeviceCard({ device, onCommand, onShowLog, onBuildPqc }) {
         <button onClick={() => { const cmd = ledOn ? 'led-off' : 'led-on'; onCommand(device.thingName, cmd, 'control'); setLedOn(!ledOn); }} title="Toggle LED">
           💡 {ledOn ? 'LED Off' : 'LED On'}
         </button>
-        {!isPqc && isOnline && migrating && (
+      </div>
+
+      <div className="device-flash">
+        <div className="flash-current">
+          Running: <strong>{currentVariant ? VARIANT_LABELS[currentVariant] : 'unknown'}</strong>
+        </div>
+        {isOnline && migrating ? (
           <button className="migrate-btn migrating" disabled title="Migration in progress">
-            <span className="spinner" aria-hidden="true"></span> {MIGRATION_LABELS[device.migrationStatus]}
+            <span className="spinner" aria-hidden="true"></span> {MIGRATION_LABELS[device.migrationStatus] || 'Working…'}
           </button>
-        )}
-        {!isPqc && isOnline && !migrating && (
-          <button className="migrate-btn" onClick={() => onBuildPqc(device.thingName)} title="Build and push PQC firmware">
-            🚀 Upgrade to PQC
-          </button>
-        )}
-        {isPqc && isOnline && (
-          <button className="revert-btn" onClick={() => onCommand(device.thingName, 'migrate-classical', 'ota')} title="Revert to classical">
-            ↩️ Revert
-          </button>
+        ) : (
+          <div className="flash-controls">
+            <select
+              className="variant-picker"
+              value={selectedVariant}
+              onChange={(e) => setSelectedVariant(e.target.value)}
+              disabled={!isOnline}
+              title="Select firmware variant to flash"
+            >
+              {VARIANTS.map(v => (
+                <option key={v} value={v}>
+                  {VARIANT_LABELS[v]}{v === currentVariant ? ' (current)' : ''}
+                </option>
+              ))}
+            </select>
+            <button
+              className="migrate-btn"
+              onClick={() => onFlash(device.thingName, selectedVariant)}
+              disabled={!isOnline}
+              title="Build (if needed) and push the selected firmware via OTA"
+            >
+              🚀 Flash
+            </button>
+          </div>
         )}
       </div>
       {device.migrationStatus === 'failed' && device.migrationError && (
@@ -255,20 +311,24 @@ function App() {
     }
   };
 
-  const handleBuildPqc = async (thingName) => {
+  const handleFlash = async (thingName, variant) => {
+    const label = VARIANT_LABELS[variant] || variant;
     const confirmed = window.confirm(
-      `Build PQC firmware for ${thingName} and push via OTA?\n\n` +
-      `The device will download the new firmware and reboot with PQC TLS.`
+      `Build "${label}" firmware for ${thingName} and push via OTA?\n\n` +
+      `If it isn't already built it will be built first, then the device ` +
+      `downloads it and reboots into the selected variant.`
     );
     if (!confirmed) return;
 
-    // Starts the async Step Functions migration; returns immediately. Live
-    // progress then appears on the device card (migrationStatus) via the poll.
-    const data = await appSyncQuery(MIGRATE_FIRMWARE, { thingName });
+    // Starts the async Step Functions migration for the chosen variant; returns
+    // immediately. Live progress then appears on the device card
+    // (migrationStatus) via the poll.
+    const data = await appSyncQuery(MIGRATE_FIRMWARE, { thingName, variant });
     if (data && data.migrateFirmware && data.migrateFirmware.success) {
-      showMessage(`PQC migration started for ${thingName}. Watch the card for progress.`);
+      showMessage(`Flash to "${label}" started for ${thingName}. Watch the card for progress.`);
     } else {
-      showMessage(`Failed to start PQC migration for ${thingName}`);
+      const msg = data && data.migrateFirmware && data.migrateFirmware.message;
+      showMessage(msg || `Failed to start flash for ${thingName}`);
     }
   };
 
@@ -327,7 +387,7 @@ function App() {
                 device={device}
                 onCommand={handleCommand}
                 onShowLog={setLogDevice}
-                onBuildPqc={handleBuildPqc}
+                onFlash={handleFlash}
               />
             ))}
           </div>
