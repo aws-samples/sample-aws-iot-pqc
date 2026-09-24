@@ -576,20 +576,42 @@ Backlog candidates surfaced during rebuilds (not yet fixed):
   missing builder image). Add best-effort rollback on failure so a failed
   registration doesn't accumulate orphans. Small change to the existing Lambda,
   no Step Function required.
-- **Initial register+flash as a Step Function (optional, deferred — decide later).**
+- **Initial register+flash as a Step Function (SEPARATE post-ML-DSA branch —
+  decided, do NOT bundle into the cert-migration feature).**
   The classical migration already runs on the `pqc-workshop-pqc-migration` Step
   Function; the INITIAL register+build+flash does NOT (it's a synchronous
   registrar Lambda + the Pi polling CodeBuild). Migrating the cloud half
-  (cert/thing/policy/ddb/start-build) to a Step Function would give consistent
+  (thing/policy/ddb/start-build) to a Step Function would give consistent
   pipeline-style observability + per-step retries + rollback, symmetric with the
-  migration flow. Caveats: the flash/USB/serial half MUST stay on the Pi
-  (hardware), so end-to-end visibility is still split; adds deploy surface; the
-  registrar isn't where current failures are. Interesting idea worth exploring:
-  make the Pi a WORKER that polls the SFN (task token / SFN activity) for "certs
-  + firmware ready, your turn to flash" and reports flash status back — this could
-  actually improve the Pi-side reliability/structure too. User's lean: not clearly
-  worth the effort, but likes the consistent observability + rollback; PARK and
-  revisit. Do NOT implement without an explicit go.
+  migration flow.
+  - **The ML-DSA WS2 refactor (commit 122e0c0) removed the biggest blocker:**
+    cert issuance moved OUT of the registrar Lambda into the shared cert-issuer
+    CodeBuild job, so `device-registrar` is now pure orchestration (create Thing
+    → create policy → write registry → start build). That decomposes into SFN
+    states cleanly, and the shared cert-issuer image already drops into an SFN via
+    `codebuild:startBuild.sync`. So most of the strategic groundwork is already
+    laid by WS2.
+  - **Why it is NOT part of the cert-migration feature branch:** different
+    concern (initial-flash operability, not PQC certs); bundling enlarges the
+    branch + slows the definition-of-done clean rebuild of both accounts. Also the
+    natural forcing function is WS3 — once the migration SFN input + dashboard
+    picker are variant-aware and BOTH entry points (dashboard migrate + Pi
+    register) flow through variant-aware build logic, that is the right moment to
+    look at unifying them. Refactoring registration to SFN before WS3 designs
+    against a moving target.
+  - **Preferred design when it IS done:** the Pi-as-WORKER (SFN task token /
+    activity) shape — the SFN owns cert/thing/policy/build, then hands the Pi a
+    task token ("certs + firmware ready, your turn to flash") and the Pi reports
+    flash status back. This gains real resumability/observability (not just a
+    state machine wrapping the same synchronous flow) and improves Pi-side
+    structure. Caveat: the flash/USB/serial half MUST stay on the Pi (hardware),
+    so end-to-end visibility is inherently split no matter what.
+  - **Fold in the "registered but not flashed" GUI dead-end item** (below) — a
+    resumable/observable pipeline makes "build failed" a visible retryable state
+    rather than a stuck card, so that item is the proper fix that this refactor
+    enables. Do them together.
+  - Do NOT implement in the cert-migration branch. New branch, after the ML-DSA
+    feature reaches its definition of done.
 - **GUI state gap: "registered but not flashed" is a dead-end.** When a device is
   registered but its firmware build failed (no firmware in S3), the builder-Pi
   GUI card only offers Reflash/Serial/Deregister — and Reflash only DOWNLOADS
