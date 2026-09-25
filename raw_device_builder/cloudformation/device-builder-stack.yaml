@@ -468,16 +468,22 @@ Resources:
             "PrepareBuild": {
               "Type": "Task",
               "Resource": "arn:aws:states:::lambda:invoke",
+              "Comment": "Pass the requested firmware variant through. prepare-build defaults it to 'pqc' when absent (backward compatible) and echoes the resolved variant + version + per-device build env back. It does NOT start a build (WaitForBuild is the sole builder).",
               "Parameters": {
                 "FunctionName": "${PrepareBuildFunctionArn}",
-                "Payload": { "thingName.$": "$.thingName" }
+                "Payload": {
+                  "thingName.$": "$.thingName",
+                  "variant.$": "$.variant"
+                }
               },
               "ResultSelector": {
                 "thingName.$": "$.Payload.thingName",
                 "serialNumber.$": "$.Payload.serialNumber",
+                "variant.$": "$.Payload.variant",
+                "version.$": "$.Payload.version",
                 "s3Key.$": "$.Payload.s3Key",
                 "buildNeeded.$": "$.Payload.buildNeeded",
-                "buildId.$": "$.Payload.buildId"
+                "buildEnv.$": "$.Payload.buildEnv"
               },
               "ResultPath": "$.prepare",
               "Next": "BuildNeeded?",
@@ -495,7 +501,12 @@ Resources:
                 "ProjectName": "${BuildProjectName}",
                 "EnvironmentVariablesOverride": [
                   { "Name": "DEVICE_SERIAL", "Value.$": "$.prepare.serialNumber", "Type": "PLAINTEXT" },
-                  { "Name": "FIRMWARE_VARIANT", "Value": "pqc", "Type": "PLAINTEXT" }
+                  { "Name": "FIRMWARE_VERSION", "Value.$": "$.prepare.version", "Type": "PLAINTEXT" },
+                  { "Name": "FIRMWARE_VARIANT", "Value.$": "$.prepare.variant", "Type": "PLAINTEXT" },
+                  { "Name": "WIFI_SSID", "Value.$": "$.prepare.buildEnv.wifiSsid", "Type": "PLAINTEXT" },
+                  { "Name": "WIFI_PASSWORD", "Value.$": "$.prepare.buildEnv.wifiPassword", "Type": "PLAINTEXT" },
+                  { "Name": "BROKER_ENDPOINT", "Value.$": "$.prepare.buildEnv.brokerEndpoint", "Type": "PLAINTEXT" },
+                  { "Name": "IOT_ENDPOINT", "Value.$": "$.prepare.buildEnv.iotEndpoint", "Type": "PLAINTEXT" }
                 ]
               },
               "ResultPath": null,
@@ -523,7 +534,9 @@ Resources:
                 "Payload": {
                   "thingName.$": "$.thingName",
                   "serialNumber.$": "$.prepare.serialNumber",
-                  "s3Key.$": "$.prepare.s3Key"
+                  "s3Key.$": "$.prepare.s3Key",
+                  "version.$": "$.prepare.version",
+                  "variant.$": "$.prepare.variant"
                 }
               },
               "ResultPath": "$.publish",

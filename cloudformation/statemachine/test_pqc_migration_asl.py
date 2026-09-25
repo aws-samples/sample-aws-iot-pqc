@@ -117,3 +117,67 @@ def test_substitution_placeholders_present(asl):
     for placeholder in ("${DeviceTableName}", "${PrepareBuildFunctionArn}",
                         "${PublishOtaFunctionArn}", "${BuildProjectName}"):
         assert placeholder in raw, f"missing substitution {placeholder}"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Drift guard: the DEPLOYED definition is the inline DefinitionString in
+# device-builder-stack.yaml, NOT this .asl.json file. The .asl.json is the
+# reviewed/tested source of truth, but CloudFormation deploys the inline copy.
+# These two silently drifted once (the inline copy kept an old buildId
+# ResultSelector and a hardcoded FIRMWARE_VARIANT after the .asl.json was
+# updated), which passed every test above yet failed at runtime with
+# States.Runtime "$.Payload.buildId could not be found". This test fails if the
+# two ever diverge again on the states that carry the variant/build contract.
+# ─────────────────────────────────────────────────────────────────────────────
+_STACK_YAML = os.path.normpath(
+    os.path.join(HERE, "..", "..", "raw_device_builder", "cloudformation",
+                 "device-builder-stack.yaml")
+)
+
+
+def _load_inline_definition():
+    """Extract + parse the inline Step Functions DefinitionString from the
+    device-builder stack. Returns the parsed ASL dict (the ${...} substitution
+    tokens are quoted strings, so it is valid JSON)."""
+    with open(_STACK_YAML) as f:
+        txt = f.read()
+    # The block runs from 'DefinitionString: |' to the next blank line + comment.
+    m = re.search(r"DefinitionString:\s*\|\n(.*?)\n\n\s*#", txt, re.DOTALL)
+    assert m, "could not locate the inline DefinitionString in device-builder-stack.yaml"
+    block = m.group(1)
+    lines = block.split("\n")
+    indent = min(len(l) - len(l.lstrip()) for l in lines if l.strip())
+    dedented = "\n".join(l[indent:] for l in lines)
+    return json.loads(dedented)
+
+
+def _strip_comments(state):
+    return {k: v for k, v in state.items() if k != "Comment"}
+
+
+@pytest.fixture(scope="module")
+def inline_asl():
+    return _load_inline_definition()
+
+
+@pytest.mark.parametrize("state_name", ["PrepareBuild", "WaitForBuild", "PublishOta"])
+def test_inline_definition_matches_asl_file(asl, inline_asl, state_name):
+    """The deployed (inline) definition must match the tested .asl.json on the
+    states that carry the variant + build-env contract. Comment fields are
+    ignored (wording may differ); everything functional must be identical."""
+    file_state = _strip_comments(asl["States"][state_name])
+    inline_state = _strip_comments(inline_asl["States"][state_name])
+    assert inline_state == file_state, (
+        f"{state_name} has drifted between pqc-migration.asl.json and the inline "
+        f"DefinitionString in device-builder-stack.yaml — update the inline copy "
+        f"(that is the one CloudFormation actually deploys)."
+    )
+
+
+def test_inline_definition_has_no_stale_buildid(inline_asl):
+    """Regression guard for the exact runtime failure seen on pqc-a: the inline
+    PrepareBuild ResultSelector must not reference the removed $.Payload.buildId."""
+    rs = inline_asl["States"]["PrepareBuild"]["ResultSelector"]
+    assert "buildId.$" not in rs, "inline PrepareBuild still references removed buildId"
+    assert rs.get("buildEnv.$") == "$.Payload.buildEnv"
+    assert rs.get("variant.$") == "$.Payload.variant"
