@@ -126,19 +126,25 @@
 #define WOLFSSL_SMALL_STACK
 #define WOLFSSL_SMALL_STACK_CACHE
 
-// Increase max handshake message size for PQC. ML-KEM keys are larger than
-// classical, but ML-DSA-44 CERTIFICATES are much larger again: a single
-// ML-DSA-44 cert is ~3.8 KB, and the broker sends a CHAIN (server cert + issuing
-// CA cert), so the TLS Certificate message is ~8 KB+ — over the old 8192 cap.
-// With the cap too small the device aborted the handshake right after
-// "Starting TLS 1.3 PQC handshake" with wolfSSL BUFFER_E / "Handshake message
-// too large" (code=-404) when receiving the broker's ML-DSA-44 cert on 8884
-// (observed on the pqc-a fw2->fw3 migration). 32 KB gives comfortable headroom
-// for the inbound broker chain AND the device's own outbound ML-DSA cert +
-// CertificateVerify. LARGE_STATIC_BUFFERS keeps the record buffers big enough
-// for these multi-KB handshake messages.
-#define MAX_CERTIFICATE_SZ   32768
-#define LARGE_STATIC_BUFFERS
+// Max handshake message size for PQC. ML-KEM keys are larger than classical,
+// but ML-DSA-44 CERTIFICATES are much larger again: a single ML-DSA-44 cert is
+// ~3.8 KB, and the broker sends a CHAIN (server cert + issuing CA cert), so the
+// TLS Certificate message is ~8 KB+ — over the old 8192 cap. With the cap too
+// small the device aborted the handshake right after "Starting TLS 1.3 PQC
+// handshake" with wolfSSL BUFFER_E / "Handshake message too large" (code=-404)
+// when receiving the broker's ML-DSA-44 cert on 8884 (observed on the pqc-a
+// fw2->fw3 migration).
+//
+// 16 KB comfortably covers the ~8 KB inbound ML-DSA chain AND the device's own
+// outbound ML-DSA cert + CertificateVerify, with headroom, while keeping RAM use
+// modest — the ESP32-S3 min-heap during the handshake was ~44-90 KB, so we must
+// not over-reserve. We deliberately do NOT define LARGE_STATIC_BUFFERS: that
+// forces wolfSSL to reserve the record/cert buffers at their MAX size for the
+// whole session, which would waste ~tens of KB of heap. Without it wolfSSL grows
+// the input buffer dynamically only when the large cert actually arrives (peak
+// memory ~ one message), which is how wolfSSL intends large PQC certs to be
+// handled and is far safer on a constrained device.
+#define MAX_CERTIFICATE_SZ   16384
 
 // ─── Disable Unused Features (save flash/RAM) ──────────────────────────────
 #define NO_DSA
