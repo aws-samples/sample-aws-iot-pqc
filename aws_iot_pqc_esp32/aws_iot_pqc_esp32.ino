@@ -276,13 +276,26 @@ static int wolfssl_send_cb(WOLFSSL* ssl, char* buf, int sz, void* ctx) {
 
 static int wolfssl_recv_cb(WOLFSSL* ssl, char* buf, int sz, void* ctx) {
     wolfssl_io_ctx_t* io = (wolfssl_io_ctx_t*)ctx;
-    if (!io || !io->client || !io->client->connected()) {
-        ESP_LOGD(TAG_TLS, "recv_cb: connection closed");
+    if (!io || !io->client) {
+        ESP_LOGD(TAG_TLS, "recv_cb: no client");
         return WOLFSSL_CBIO_ERR_CONN_CLOSE;
     }
 
-    // Non-blocking: if no data available, signal WANT_READ
-    if (io->client->available() == 0) {
+    // IMPORTANT: drain buffered bytes BEFORE honouring connected()==false.
+    // When the peer (e.g. S3 serving the OTA firmware) half-closes the TCP
+    // connection right after sending the final TLS record, WiFiClient::
+    // connected() can report false while available() still has the last bytes
+    // buffered. If we returned CONN_CLOSE here we would drop those bytes and the
+    // OTA download would fail a few hundred bytes short of EOF (observed:
+    // "Download error at 1199644/1200416"). So: if there is buffered data, read
+    // it regardless of connected(); only report CONN_CLOSE once the socket is
+    // BOTH closed AND fully drained.
+    int avail = io->client->available();
+    if (avail == 0) {
+        if (!io->client->connected()) {
+            ESP_LOGD(TAG_TLS, "recv_cb: connection closed and drained");
+            return WOLFSSL_CBIO_ERR_CONN_CLOSE;
+        }
         ESP_LOGV(TAG_TLS, "recv_cb: no data available, WANT_READ");
         return WOLFSSL_CBIO_ERR_WANT_READ;
     }
@@ -1120,20 +1133,34 @@ void otaTask(void* pvParameters) {
         int lastProgress = 0;
         bool downloadOk = true;
 
+        // Bounded WANT_READ retry: near EOF the last TLS record can be briefly
+        // in flight (socket momentarily empty), so a WANT_READ is normal and we
+        // wait for it rather than aborting. Cap the wait so a genuinely stalled
+        // transfer still fails instead of hanging forever: 500 * 10ms = ~5s of
+        // no progress. The counter resets on every successful read.
+        const int OTA_MAX_WANT_READ_RETRIES = 500;
+        int wantReadRetries = 0;
+
         while (totalRead < contentLength) {
             int toRead = min((int)sizeof(buf), contentLength - totalRead);
             int bytesRead = wolfSSL_read(otaSsl, buf, toRead);
 
             if (bytesRead <= 0) {
                 int sslErr = wolfSSL_get_error(otaSsl, bytesRead);
-                if (sslErr == WOLFSSL_ERROR_WANT_READ) {
+                if (sslErr == WOLFSSL_ERROR_WANT_READ || sslErr == WOLFSSL_ERROR_WANT_WRITE) {
+                    if (++wantReadRetries > OTA_MAX_WANT_READ_RETRIES) {
+                        ESP_LOGE(TAG_OTA, "Download stalled at %d/%d bytes (WANT_READ timeout)", totalRead, contentLength);
+                        downloadOk = false;
+                        break;
+                    }
                     vTaskDelay(pdMS_TO_TICKS(10));
                     continue;
                 }
-                ESP_LOGE(TAG_OTA, "Download error at %d/%d bytes", totalRead, contentLength);
+                ESP_LOGE(TAG_OTA, "Download error at %d/%d bytes (sslErr=%d)", totalRead, contentLength, sslErr);
                 downloadOk = false;
                 break;
             }
+            wantReadRetries = 0;
 
             err = esp_ota_write(otaHandle, buf, bytesRead);
             if (err != ESP_OK) {
