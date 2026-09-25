@@ -40,7 +40,13 @@ s3 = boto3.client(
 )
 
 PQC_VERSION = "1.0.0-pqc"
-PRESIGNED_URL_EXPIRY = 300  # 5 minutes
+# Presigned URL lifetime. The device may not fetch immediately: it can be
+# mid-reboot when the OTA command fires, reconnect, then start the download,
+# so a short window meant the URL was already expired by the time the device
+# issued the GET — S3 then closed the TLS session with zero bytes, which the
+# device saw as `Header read error (r=0, err=6)` / `Invalid content length: 0`.
+# 15 minutes comfortably covers a reconnect + a large PQC firmware download.
+PRESIGNED_URL_EXPIRY = 900  # 15 minutes
 
 # The migration state machine's WaitForBuild uses the CodeBuild `.sync`
 # integration, which returns when the build's BUILD phase completes — but the
