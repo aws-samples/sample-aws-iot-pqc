@@ -160,6 +160,38 @@ Backlog candidates surfaced during rebuilds (not yet fixed):
   a flag-day cutover. Lower urgency than Step 1 (cert forgery needs a quantum
   computer that does not yet exist), and gated on the CA feasibility question in
   part 1.
+- **[Cloud dashboard — Step 2 device-state display: 3 fixes] Surface the real
+  firmware version + running variant, and make the picker offer only the OTHER
+  variants.** Observed on pqc-a (Sep 25) during the first full migration test,
+  on the cloud dashboard (`raw_device_builder/dashboard-v2/frontend`), device
+  card for esp32-C69E18 running fw1 classical. Three related defects, all rooted
+  in the same gap — the device telemetry / `pqc-workshop-devices` record does not
+  carry the firmware version or the variant, so the card can't show them:
+  1. **Firmware version shows `-`.** The card's "Firmware" metric renders
+     `device.firmwareVersion`, but the record's `firmwareVersion` is null (the
+     device telemetry doesn't report it, and `detectVariant` only *reads* it).
+     Fix: have the ESP32 firmware publish its `FIRMWARE_VERSION` in telemetry and
+     the telemetry-processor Lambda write it to `firmwareVersion`, so the card
+     shows e.g. `1.0.0` / `2.0.0` / `3.0.0` instead of `-`.
+  2. **"Running:" shows `unknown`.** `detectVariant(device)` (App.jsx) infers the
+     variant from `firmwareVersion` (1.x/2.x/3.x) with a `pqcAlgorithm` fallback;
+     with `firmwareVersion` null and only `ECDHE-P256` in `pqcAlgorithm` it
+     returns null → "unknown". Fixing (1) makes detectVariant resolve correctly;
+     alternatively have telemetry carry an explicit `variant`/`firmwareType`
+     field and key off that (more robust than string-matching the version).
+  3. **Picker lists the CURRENT variant too.** The `<select>` renders all of
+     VARIANTS (with the current one tagged "(current)"). It should offer only the
+     variants you can switch TO — exclude `currentVariant` from the options (and
+     drop the now-unnecessary "(current)" suffix). Keep a sensible default when
+     the current variant is unknown (fall back to showing all, or default to pqc).
+  Note the fix order: (1) is the enabler — once `firmwareVersion` is real
+  telemetry, (2) and (3) mostly fall out (detectVariant works → the picker can
+  exclude the known current). User decision (Sep 25): DEFER until the initial
+  full migration path (fw1→2→3 + rollback) is proven on pqc-a; then adjust the
+  GUI + registry/telemetry together and re-test. Touches: the ESP32 sketches
+  (publish version/variant in telemetry), dashboard/lambda/telemetry-processor
+  (persist firmwareVersion/variant), and App.jsx (detectVariant + picker option
+  filtering).
 - **[GUI — double-click causes a duplicate registration/build] Disable the
   "Register & Flash" button once clicked.** Observed on pqc-b (Sep 18): during a
   parallel-flash test a double-click on one device's button fired TWO
@@ -272,8 +304,25 @@ Backlog candidates surfaced during rebuilds (not yet fixed):
   LAST and gate on that. Recommend (a)+(b). This is exactly the "assumed
   synchronous but actually eventually-consistent" class of bug seen elsewhere in
   this project; intermittent — will bite workshop attendees randomly.
-- **[BUG — migrationStatus never reconciled to "migrated" after PQC confirmed]
-  Close the migration loop when the device reports it is actually on ML-KEM.**
+- **[BLOCKER for pqc-b push — migrationStatus never reconciled to "migrated"
+  after PQC confirmed; it BLOCKS the next migration] Close the migration loop
+  when the device reports it is actually on ML-KEM.**
+  UPGRADED from cosmetic to BLOCKER on pqc-a (Sep 25) during the full
+  fw1->fw2->fw3 migration test: after fw1->fw2 succeeded and the device
+  reconnected reporting `SECP256R1_MLKEM768`, the card stayed on the disabled
+  "Rebooting into PQC…" spinner and **the firmware picker + Flash button
+  disappeared**, so fw2->fw3 could NOT be started at all. Root cause in App.jsx:
+  `migrating = MIGRATION_IN_PROGRESS.includes(device.migrationStatus)` (building/
+  pushing-ota/rebooting) → when migrating, the card renders the disabled spinner
+  INSTEAD of the picker+Flash. Because migrationStatus is stuck at `rebooting`
+  forever (never reconciled), a device that finished one migration is
+  permanently locked out of the next one. Manual unblock used during the test:
+  `aws dynamodb update-item ... REMOVE migrationStatus, migrationError` on the
+  device record — attendees obviously can't do that, so this MUST be fixed
+  before pqc-b (the workshop's whole point is chaining migrations
+  classical->pqc->pqc-mldsa). The reconcile fix below also fixes the earlier
+  "Running: unknown" / firmware-version display items (they share the telemetry
+  gap). Prior observation retained:
   Observed on pqc-b (Sep 18): both devices (esp32-C69E44, esp32-C69DE0)
   successfully migrated — Step Function SUCCEEDED, PQC firmware built + OTA'd,
   devices rebooted and reconnected to the broker with the hybrid handshake
@@ -562,12 +611,22 @@ Backlog candidates surfaced during rebuilds (not yet fixed):
   Studio run. (Note: the AP lives in an SSM document run by the remote
   orchestrator, not in an on-Pi `setup-all.sh` — the on-Pi provisioning was moved
   to SSM documents; the outcome is the same: no manual `nmcli`.)
-- **Dashboard LED button not working (low priority, later fix).** On the device
+- **[BLOCKER for pqc-b push] Dashboard LED on/off button not working.**
+  Re-confirmed on pqc-a (Sep 25) during the full migration test: the LED on/off
+  control on the device card does not actuate the device. On the device
   dashboard, the LED (command) button does not actuate the device. Likely the
   cmd/<thing>/+ command path (dashboard -> AppSync/API -> IoT -> broker bridge
   inbound topic -> device) or the firmware's command handler. Device DOES
   subscribe to cmd/esp32-<serial>/+ (seen in broker logs), so the downlink wiring
-  is the place to check. Defer — not blocking device connect/telemetry/migration.
+  is the place to check. In the v2 frontend the LED toggle calls
+  `onCommand(thingName, 'led-on'|'led-off', 'control')` -> the `sendCommand`
+  AppSync mutation -> command-publisher Lambda -> IoT publish; audit that whole
+  chain (topic suffix 'control' vs the firmware's expected `cmd/<thing>/+`
+  subscription, the command-publisher topic construction, and the firmware
+  command handler). User decision (Sep 25): this MUST be fixed before we push to
+  pqc-b (no longer "low priority / defer"). Not blocking the current
+  connect/telemetry/migration validation, but a required GUI fix for the pqc-b
+  gate. Relates to the "dashboard v2 command/mutation wiring audit" note above.
 - **Registrar partial-failure cleanup (near-term, low effort).** The
   `device-registrar` Lambda does cert -> create thing -> create policy ->
   DynamoDB -> start CodeBuild sequentially; if a later step fails the earlier

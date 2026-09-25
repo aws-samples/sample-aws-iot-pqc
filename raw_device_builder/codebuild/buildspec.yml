@@ -142,7 +142,7 @@ phases:
       - echo "Compiling ${FIRMWARE_VARIANT} firmware with pqc_workshop partition table..."
       - |
         arduino-cli compile \
-          -b "esp32:esp32:XIAO_ESP32S3:USBMode=hwcdc,CDCOnBoot=default,DebugLevel=info,PartitionScheme=default_8MB" \
+          -b "esp32:esp32:XIAO_ESP32S3:USBMode=hwcdc,CDCOnBoot=cdc,DebugLevel=info,PartitionScheme=default_8MB" \
           --build-property "build.partitions=pqc_workshop" \
           --build-property "upload.maximum_size=3670016" \
           --export-binaries \
@@ -173,7 +173,7 @@ phases:
           "buildId": "$CODEBUILD_BUILD_ID",
           "buildTime": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
           "partitionTable": "pqc_workshop",
-          "fqbn": "esp32:esp32:XIAO_ESP32S3:USBMode=hwcdc,CDCOnBoot=default,DebugLevel=info,PartitionScheme=default_8MB"
+          "fqbn": "esp32:esp32:XIAO_ESP32S3:USBMode=hwcdc,CDCOnBoot=cdc,DebugLevel=info,PartitionScheme=default_8MB"
         }
         EOF
       - aws s3 cp /tmp/build-metadata.json "s3://$FIRMWARE_BUCKET/$S3_PREFIX/metadata.json"

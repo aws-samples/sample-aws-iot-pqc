@@ -47,7 +47,7 @@ React Dashboard (S3 + CloudFront + Cognito guest auth)
 
 ## ESP32 Build System
 
-- **FQBN:** `esp32:esp32:XIAO_ESP32S3:USBMode=hwcdc,CDCOnBoot=default,DebugLevel=info,PartitionScheme=default_8MB`
+- **FQBN:** `esp32:esp32:XIAO_ESP32S3:USBMode=hwcdc,CDCOnBoot=cdc,DebugLevel=info,PartitionScheme=default_8MB` (CDCOnBoot=cdc so USB-CDC serial is on for the running sketch, not just during flash)
 - **Custom partition table:** `esp32-flash/partitions_pqc_workshop.csv` (OTA_0=Classical at 0x10000, OTA_1=PQC at 0x390000)
 - **Build property:** `build.partitions=pqc_workshop`
 - **MQTT Library:** MQTT by Joel Gaehwiler (NOT PubSubClient)

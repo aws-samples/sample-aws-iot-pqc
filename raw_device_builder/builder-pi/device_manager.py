@@ -22,7 +22,7 @@ from typing import Optional, Dict, List
 
 
 # ─── Constants ───────────────────────────────────────────────────────────────
-FQBN = "esp32:esp32:XIAO_ESP32S3:USBMode=hwcdc,CDCOnBoot=default,DebugLevel=info,PartitionScheme=default_8MB"
+FQBN = "esp32:esp32:XIAO_ESP32S3:USBMode=hwcdc,CDCOnBoot=cdc,DebugLevel=info,PartitionScheme=default_8MB"
 ARDUINO_CLI = "arduino-cli"
 FIRMWARE_DIR = "/opt/pqc-workshop/firmware"
 
