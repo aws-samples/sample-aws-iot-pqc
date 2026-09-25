@@ -46,25 +46,28 @@ phases:
       - echo "Downloading firmware source from S3..." && aws s3 cp "s3://$FIRMWARE_BUCKET/source/$SKETCH_NAME.ino" "$SKETCH_DIR/$SKETCH_NAME.ino"
       # Sanitize the broker endpoint: MQTT_BROKER_ENDPOINT must be a BARE host
       # (the sketch supplies the port separately via MQTT_BROKER_PORT). If the
-      # value arrives with a ':port' suffix (e.g. from the GUI/registry), the
-      # firmware would do a DNS lookup of "host:port" and fail
-      # ("DNS Failed ... error -54"). Strip a trailing :port and, if present,
-      # use it as the port when BROKER_PORT is unset/default.
+      # value arrives with a ':port' suffix (e.g. from the GUI/registry), strip
+      # it — otherwise the firmware does a DNS lookup of "host:port" and fails
+      # ("DNS Failed ... error -54"). We ignore any parsed :port for port
+      # selection (the variant decides the port — see below).
       - |
         case "$BROKER_ENDPOINT" in
-          *:*)
-            _BE_PORT="${BROKER_ENDPOINT##*:}"
-            BROKER_ENDPOINT="${BROKER_ENDPOINT%:*}"
-            if [ -z "${BROKER_PORT:-}" ] || [ "${BROKER_PORT}" = "8883" ]; then
-              case "$_BE_PORT" in ''|*[!0-9]*) : ;; *) BROKER_PORT="$_BE_PORT" ;; esac
-            fi
-            ;;
+          *:*) BROKER_ENDPOINT="${BROKER_ENDPOINT%:*}" ;;
         esac
-      # Port precedence: an explicit caller BROKER_PORT (or one parsed from the
-      # endpoint ':port' suffix above) wins; otherwise fall back to the variant's
-      # DEFAULT_BROKER_PORT (8883 for classical/pqc, 8884 for pqc-mldsa).
-      - '[ -z "${BROKER_PORT:-}" ] && BROKER_PORT="${DEFAULT_BROKER_PORT}" || true'
-      - echo "Broker endpoint (host)= $BROKER_ENDPOINT  port= $BROKER_PORT"
+      # Port selection: the BROKER PORT IS A PROPERTY OF THE VARIANT, not a
+      # caller input. classical/pqc use the classical listener (8883);
+      # pqc-mldsa uses the ML-DSA-44 listener (8884). DEFAULT_BROKER_PORT was set
+      # per-variant above, so it is ALWAYS authoritative here.
+      #
+      # We deliberately do NOT honour the project's static BROKER_PORT env: it
+      # defaults to 8883 for every build, so letting it "win" silently forced the
+      # pqc-mldsa firmware onto 8883 — where the broker presents its CLASSICAL
+      # server cert, which the device (trusting only the ML-DSA CA) cannot verify
+      # (wolfSSL ASN_NO_SIGNER_E / -188). Bug caught on the pqc-a fw2->fw3
+      # migration: the device booted v3 + ML-KEM but hit :8883 and the handshake
+      # failed. The variant default is the single source of truth for the port.
+      - BROKER_PORT="${DEFAULT_BROKER_PORT}"
+      - echo "Broker endpoint (host)= $BROKER_ENDPOINT  port= $BROKER_PORT (from variant ${FIRMWARE_VARIANT})"
       # ─── Issue the device certificate from AWS Private CA (in-build) ─────────
       # All device-cert issuance happens HERE (not in the Lambda), so classical
       # and ML-DSA-44 share one path and the private key never leaves this build.
