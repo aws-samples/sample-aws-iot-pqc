@@ -220,7 +220,7 @@ class DeviceManager:
         slot.status = 'downloading'
         slot.log('Downloading firmware from S3...')
 
-        firmware_version = self.config.get('firmware_version', '0.1.0')
+        firmware_version = self.config.get('firmware_version', '1.0.0-classical')
         s3_prefix = f'{slot.serial_number}/{firmware_version}'
         local_dir = os.path.join(FIRMWARE_DIR, slot.serial_number, firmware_version)
         os.makedirs(local_dir, exist_ok=True)

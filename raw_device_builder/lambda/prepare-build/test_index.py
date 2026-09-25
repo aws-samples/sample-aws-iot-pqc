@@ -32,9 +32,9 @@ FIRMWARE_BUCKET = "pqc-workshop-firmware-087195661091"
 BUILD_PROJECT = "pqc-workshop-firmware-build"
 
 # Keep in sync with prepare-build/index.py VARIANT_CONFIG.
-PQC_VERSION = "1.0.0-pqc"
-MLDSA_VERSION = "2.0.0-mldsa"
-CLASSICAL_VERSION = "0.1.0"
+PQC_VERSION = "2.0.0-pqc"
+MLDSA_VERSION = "3.0.0-mldsa"
+CLASSICAL_VERSION = "1.0.0-classical"
 
 
 def _env():

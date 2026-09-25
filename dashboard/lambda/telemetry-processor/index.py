@@ -51,6 +51,7 @@ def handler(event, context):
             'chipTempC': str(event.get('chip_temp_c', 0)),
             'pqcAlgorithm': event.get('pqc_algorithm'),
             'tlsVersion': event.get('tls_version'),
+            'certSigAlg': event.get('cert_sig_alg'),
             'status': 'online',
         }
         # Only include firmware_version if present (don't overwrite with 'unknown')
@@ -84,6 +85,10 @@ def handler(event, context):
             update_parts.append('#tlsVersion = :tlsVersion')
             attr_names['#tlsVersion'] = 'tlsVersion'
             attr_values[':tlsVersion'] = event['tls_version']
+        if 'cert_sig_alg' in event:
+            update_parts.append('#certSigAlg = :certSigAlg')
+            attr_names['#certSigAlg'] = 'certSigAlg'
+            attr_values[':certSigAlg'] = event['cert_sig_alg']
 
     # Update DynamoDB (only modifies fields present — doesn't clear others)
     table.update_item(

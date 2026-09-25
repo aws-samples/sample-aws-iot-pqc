@@ -878,7 +878,10 @@ Resources:
           - Name: DEVICE_SERIAL
             Value: placeholder
           - Name: FIRMWARE_VERSION
-            Value: '0.1.0'
+            # Canonical classical version — matches VARIANT_CONFIG["classical"]
+            # (prepare-build) and the device-registrar default. Overridden per
+            # build by the migration state machine / registrar.
+            Value: '1.0.0-classical'
           - Name: FIRMWARE_BUCKET
             Value: !Sub '${FirmwareBucketName}-${AWS::AccountId}'
           - Name: WIFI_SSID

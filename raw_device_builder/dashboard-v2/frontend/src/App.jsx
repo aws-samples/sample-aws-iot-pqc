@@ -100,15 +100,17 @@ const VARIANT_LABELS = {
 };
 
 // Best-effort "what is the device running now" from live telemetry. The device
-// reports firmwareVersion via telemetry (sketch #define: 1.0.0 classical /
-// 2.0.0 pqc / 3.0.0 pqc-mldsa); pqcAlgorithm corroborates the key exchange.
-// Used only to pre-select the picker's next logical step — the operator can
-// always override, so an unknown/missing reading just defaults to "pqc".
+// reports firmwareVersion via telemetry. The version is the single canonical
+// per-variant string (matches the S3 artifact dir + OTA job): the variant is
+// the suffix — 1.0.0-classical / 2.0.0-pqc / 3.0.0-mldsa. Match on the suffix
+// (robust to future major-number changes). Used only to pre-select the picker's
+// next logical step — the operator can always override, so an unknown/missing
+// reading just defaults to "pqc".
 function detectVariant(device) {
-  const v = (device.firmwareVersion || '').trim();
-  if (v.startsWith('3.')) return 'pqc-mldsa';
-  if (v.startsWith('2.')) return 'pqc';
-  if (v.startsWith('1.')) return 'classical';
+  const v = (device.firmwareVersion || '').trim().toLowerCase();
+  if (v.endsWith('-mldsa')) return 'pqc-mldsa';
+  if (v.endsWith('-pqc')) return 'pqc';
+  if (v.endsWith('-classical')) return 'classical';
   // No firmwareVersion reading yet: fall back to the key-exchange signal.
   const alg = device.pqcAlgorithm || '';
   if (alg.includes('MLKEM') || alg.includes('Kyber') || alg.includes('PQC')) return 'pqc';
@@ -127,6 +129,10 @@ function DeviceCard({ device, onCommand, onShowLog, onFlash }) {
   const [ledOn, setLedOn] = useState(true);
   const isPqc = device.pqcAlgorithm &&
     (device.pqcAlgorithm.includes('MLKEM') || device.pqcAlgorithm.includes('Kyber') || device.pqcAlgorithm.includes('PQC'));
+  // The certificate signer is post-quantum only once it is an ML-DSA cert
+  // (v3). PQC key exchange (v2) still uses a classical ECDSA certificate.
+  const isPqcCert = device.certSigAlg &&
+    (device.certSigAlg.includes('ML-DSA') || device.certSigAlg.includes('MLDSA') || device.certSigAlg.includes('Dilithium'));
   const lastSeenDate = device.lastSeen ? new Date(device.lastSeen) : null;
   const isStale = lastSeenDate ? (Date.now() - lastSeenDate.getTime() > 90000) : true;
   const isOnline = device.status === 'online' && !isStale;
@@ -148,6 +154,10 @@ function DeviceCard({ device, onCommand, onShowLog, onFlash }) {
         <div className="metric">
           <label>Key Exchange</label>
           <span className={isPqc ? 'pqc-text' : 'classical-text'}>{device.pqcAlgorithm || '—'}</span>
+        </div>
+        <div className="metric">
+          <label>Cert Signature</label>
+          <span className={isPqcCert ? 'pqc-text' : 'classical-text'}>{device.certSigAlg || '—'}</span>
         </div>
         <div className="metric">
           <label>TLS Version</label>

@@ -39,7 +39,7 @@ s3 = boto3.client(
     config=Config(signature_version="s3v4", s3={"addressing_style": "virtual"}),
 )
 
-PQC_VERSION = "1.0.0-pqc"
+PQC_VERSION = "2.0.0-pqc"  # canonical pqc version; matches VARIANT_CONFIG["pqc"]
 # Presigned URL lifetime. The device may not fetch immediately: it can be
 # mid-reboot when the OTA command fires, reconnect, then start the download,
 # so a short window meant the URL was already expired by the time the device
@@ -72,7 +72,7 @@ def handler(event, context):
     s3_key = event.get("s3Key") or f"{serial_number}/{PQC_VERSION}/firmware.bin"
     bucket = os.environ["FIRMWARE_BUCKET"]
     # The firmware version being pushed. The state machine passes the resolved
-    # per-variant version (e.g. 1.0.0-pqc, 2.0.0-mldsa); fall back to parsing it
+    # per-variant version (e.g. 2.0.0-pqc, 3.0.0-mldsa); fall back to parsing it
     # from the S3 key (<serial>/<version>/firmware.bin), then to PQC_VERSION for
     # the original migrate-to-PQC callers that pre-date variant support.
     version = event.get("version")

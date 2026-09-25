@@ -10,6 +10,7 @@ export const LIST_DEVICES = `
       firmwareVersion
       pqcAlgorithm
       tlsVersion
+      certSigAlg
       wifiRssi
       freeHeap
       minHeap

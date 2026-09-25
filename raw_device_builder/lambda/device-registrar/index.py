@@ -98,7 +98,10 @@ def handler(event, context):
     # Broker endpoint resolution: explicit override -> SSM (live source of
     # truth, published from the broker stack output) -> env fallback.
     broker_endpoint = body.get('brokerEndpoint') or broker_from_ssm() or DEFAULT_BROKER
-    firmware_version = body.get('firmwareVersion', '0.1.0')
+    # Canonical classical version — must match VARIANT_CONFIG["classical"]["version"]
+    # in prepare-build. This is the initial-flash path (variant fixed to
+    # 'classical' below), so it pins the artifact to the classical S3 dir.
+    firmware_version = body.get('firmwareVersion', '1.0.0-classical')
 
     thing_name = f'esp32-{serial_number}'
     account_id = context.invoked_function_arn.split(':')[4]

@@ -46,13 +46,18 @@ def test_telemetry_event_writes_fields():
         "device": "esp32-FC22E0", "message_id": 5, "uptime_sec": 100,
         "wifi_rssi": -50, "free_heap": 200000, "min_heap": 180000,
         "chip_temp_c": 42, "pqc_algorithm": "SECP256R1_MLKEM768",
-        "tls_version": "TLSv1.3", "firmware_version": "1.0.0-pqc",
+        "tls_version": "TLSv1.3", "firmware_version": "3.0.0-mldsa",
+        "cert_sig_alg": "ML-DSA-44",
     }
     mod.handler(event, None)
 
     item = tbl.get_item(Key={"thingName": "esp32-FC22E0"})["Item"]
     assert item["pqcAlgorithm"] == "SECP256R1_MLKEM768"
     assert item["tlsVersion"] == "TLSv1.3"
+    assert item["certSigAlg"] == "ML-DSA-44"
+    # firmwareVersion is now carried on the periodic telemetry payload (not only
+    # the connect-time lifecycle message), so the dashboard shows it reliably.
+    assert item["firmwareVersion"] == "3.0.0-mldsa"
     assert item["status"] == "online"
     assert item["messageId"] == 5
     assert "lastSeen" in item and "ttl" in item
@@ -64,10 +69,18 @@ def test_lifecycle_event_writes_status_and_ip():
     _env()
     mod = load_handler_module(os.path.join(HERE, "index.py"), "telemetry_processor_index2")
 
-    mod.handler({"thingName": "esp32-FC22E0", "status": "offline", "ip": "10.0.0.5"}, None)
+    mod.handler(
+        {
+            "thingName": "esp32-FC22E0", "status": "online", "ip": "10.0.0.5",
+            "pqc_algorithm": "SECP256R1_MLKEM768", "tls_version": "TLSv1.3",
+            "cert_sig_alg": "ECDSA-P256",
+        },
+        None,
+    )
     item = tbl.get_item(Key={"thingName": "esp32-FC22E0"})["Item"]
-    assert item["status"] == "offline"
+    assert item["status"] == "online"
     assert item["ipAddress"] == "10.0.0.5"
+    assert item["certSigAlg"] == "ECDSA-P256"
 
 
 @mock_aws

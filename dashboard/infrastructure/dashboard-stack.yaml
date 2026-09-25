@@ -141,6 +141,7 @@ Resources:
           firmwareVersion: String
           pqcAlgorithm: String
           tlsVersion: String
+          certSigAlg: String
           wifiRssi: Int
           freeHeap: Int
           minHeap: Int
@@ -203,6 +204,7 @@ Resources:
           firmwareVersion: String
           pqcAlgorithm: String
           tlsVersion: String
+          certSigAlg: String
           wifiRssi: Int
           freeHeap: Int
           minHeap: Int

@@ -83,7 +83,21 @@ static const char* TAG_OTA     = "ota";
 #define MQTT_TASK_CORE          1       // Run MQTT on core 1 (if available)
 
 // ─── Firmware Version ───────────────────────────────────────────────────────
-#define FIRMWARE_VERSION "1.0.0"
+// Single canonical version per variant. CodeBuild injects FIRMWARE_VERSION into
+// secrets.h (from prepare-build's VARIANT_CONFIG), so the value the device
+// reports in telemetry is identical to the S3 artifact dir and the OTA job
+// version — the dashboard, firmware bucket, and device all agree. This #define
+// is only a fallback for a local/desktop build where secrets.h did not set it.
+#ifndef FIRMWARE_VERSION
+#define FIRMWARE_VERSION "1.0.0-classical"
+#endif
+
+// ─── Certificate Signature Algorithm ────────────────────────────────────────
+// The signature algorithm of the X.509 client certificate this firmware
+// presents during the TLS handshake. Fixed per firmware variant: the classical
+// firmware presents an ECDSA P-256 signed certificate. Reported in live
+// telemetry so the dashboard can show which certificate type is in use.
+#define CERT_SIGNATURE_ALG "ECDSA-P256"
 
 // ─── LED Configuration ──────────────────────────────────────────────────────
 // XIAO ESP32-S3 built-in LED is on GPIO 21
@@ -1279,7 +1293,7 @@ void mqttTask(void* pvParameters) {
                 // Announce that the device is online. This is the counterpart
                 // to the LWT offline message. Retained so new subscribers
                 // immediately know the device state.
-                char onlinePayload[256];
+                char onlinePayload[320];
                 snprintf(onlinePayload, sizeof(onlinePayload),
                          "{"
                          "\"status\":\"online\","
@@ -1287,6 +1301,7 @@ void mqttTask(void* pvParameters) {
                          "\"firmware_version\":\"%s\","
                          "\"pqc_algorithm\":\"%s\","
                          "\"tls_version\":\"%s\","
+                         "\"cert_sig_alg\":\"%s\","
                          "\"ip\":\"%s\","
                          "\"uptime_sec\":%lu"
                          "}",
@@ -1294,6 +1309,7 @@ void mqttTask(void* pvParameters) {
                          FIRMWARE_VERSION,
                          g_tlsKeyExchange,
                          g_tlsVersion,
+                         CERT_SIGNATURE_ALG,
                          WiFi.localIP().toString().c_str(),
                          millis() / 1000);
 
@@ -1331,10 +1347,11 @@ void mqttTask(void* pvParameters) {
 
             // Build a JSON telemetry message
             float chipTempC = temperatureRead(); // Internal die temperature (°C)
-            char payload[512];
+            char payload[576];
             snprintf(payload, sizeof(payload),
                      "{"
                      "\"device\":\"%s\","
+                     "\"firmware_version\":\"%s\","
                      "\"message_id\":%lu,"
                      "\"timestamp\":%lu,"
                      "\"uptime_sec\":%lu,"
@@ -1344,9 +1361,11 @@ void mqttTask(void* pvParameters) {
                      "\"chip_temp_c\":%.1f,"
                      "\"pqc_algorithm\":\"%s\","
                      "\"tls_version\":\"%s\","
+                     "\"cert_sig_alg\":\"%s\","
                      "\"broker_endpoint\":\"%s:%d\""
                      "}",
                      g_thingName,
+                     FIRMWARE_VERSION,
                      messageCount,
                      (unsigned long)(millis() / 1000), // Approximate epoch placeholder
                      millis() / 1000,
@@ -1356,6 +1375,7 @@ void mqttTask(void* pvParameters) {
                      chipTempC,
                      g_tlsKeyExchange,
                      g_tlsVersion,
+                     CERT_SIGNATURE_ALG,
                      MQTT_BROKER_ENDPOINT, MQTT_BROKER_PORT);
 
             if (mqttClient.publish(g_topicTelemetry, payload)) {

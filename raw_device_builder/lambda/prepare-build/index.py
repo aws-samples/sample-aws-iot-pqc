@@ -49,9 +49,9 @@ ssm = boto3.client("ssm")
 #   pqc        → hybrid ML-KEM key exchange, classical (ECDSA) device cert
 #   pqc-mldsa  → hybrid ML-KEM key exchange + ML-DSA-44 device cert (Step 2)
 VARIANT_CONFIG = {
-    "classical": {"build_variant": "classical", "version": "0.1.0"},
-    "pqc": {"build_variant": "pqc", "version": "1.0.0-pqc"},
-    "pqc-mldsa": {"build_variant": "pqc-mldsa", "version": "2.0.0-mldsa"},
+    "classical": {"build_variant": "classical", "version": "1.0.0-classical"},
+    "pqc": {"build_variant": "pqc", "version": "2.0.0-pqc"},
+    "pqc-mldsa": {"build_variant": "pqc-mldsa", "version": "3.0.0-mldsa"},
 }
 DEFAULT_VARIANT = "pqc"  # backward-compatible with the original migrate-to-PQC flow
 
