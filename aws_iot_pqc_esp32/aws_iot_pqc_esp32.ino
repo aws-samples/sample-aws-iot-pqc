@@ -1378,7 +1378,7 @@ void mqttTask(void* pvParameters) {
 
             // Build a JSON telemetry message
             float chipTempC = temperatureRead(); // Internal die temperature (°C)
-            char payload[512];
+            char payload[640];
             snprintf(payload, sizeof(payload),
                      "{"
                      "\"device\":\"%s\","
@@ -1388,7 +1388,13 @@ void mqttTask(void* pvParameters) {
                      "\"uptime_sec\":%lu,"
                      "\"wifi_rssi\":%d,"
                      "\"free_heap\":%u,"
+                     "\"heap_total\":%u,"
                      "\"min_heap\":%u,"
+                     "\"max_alloc_heap\":%u,"
+                     "\"sketch_size\":%u,"
+                     "\"free_sketch_space\":%u,"
+                     "\"psram_size\":%u,"
+                     "\"psram_free\":%u,"
                      "\"chip_temp_c\":%.1f,"
                      "\"pqc_algorithm\":\"%s\","
                      "\"tls_version\":\"%s\","
@@ -1401,7 +1407,13 @@ void mqttTask(void* pvParameters) {
                      millis() / 1000,
                      WiFi.RSSI(),
                      ESP.getFreeHeap(),
+                     ESP.getHeapSize(),
                      ESP.getMinFreeHeap(),
+                     ESP.getMaxAllocHeap(),
+                     ESP.getSketchSize(),
+                     ESP.getFreeSketchSpace(),
+                     ESP.getPsramSize(),
+                     ESP.getFreePsram(),
                      chipTempC,
                      g_tlsKeyExchange,
                      g_tlsVersion,

@@ -13,7 +13,13 @@ export const LIST_DEVICES = `
       certSigAlg
       wifiRssi
       freeHeap
+      heapTotal
       minHeap
+      maxAllocHeap
+      sketchSize
+      freeSketchSpace
+      psramSize
+      psramFree
       chipTempC
       ipAddress
       uptimeSec

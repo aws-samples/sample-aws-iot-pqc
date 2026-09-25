@@ -144,7 +144,13 @@ Resources:
           certSigAlg: String
           wifiRssi: Int
           freeHeap: Int
+          heapTotal: Int
           minHeap: Int
+          maxAllocHeap: Int
+          sketchSize: Int
+          freeSketchSpace: Int
+          psramSize: Int
+          psramFree: Int
           chipTempC: Float
           ipAddress: String
           uptimeSec: Int
@@ -207,7 +213,13 @@ Resources:
           certSigAlg: String
           wifiRssi: Int
           freeHeap: Int
+          heapTotal: Int
           minHeap: Int
+          maxAllocHeap: Int
+          sketchSize: Int
+          freeSketchSpace: Int
+          psramSize: Int
+          psramFree: Int
           chipTempC: Float
           ipAddress: String
           uptimeSec: Int

@@ -172,8 +172,40 @@ function DeviceCard({ device, onCommand, onShowLog, onFlash }) {
           <span>{device.wifiRssi ? `${device.wifiRssi} dBm` : '—'}</span>
         </div>
         <div className="metric">
-          <label>Heap</label>
-          <span>{device.freeHeap ? `${Math.round(device.freeHeap / 1024)}KB` : '—'}</span>
+          <label>Heap free / used / total</label>
+          <span>
+            {device.freeHeap != null && device.heapTotal != null
+              ? `${formatKB(device.freeHeap)} / ${formatKB(device.heapTotal - device.freeHeap)} / ${formatKB(device.heapTotal)}`
+              : device.freeHeap != null
+                ? `${formatKB(device.freeHeap)} free`
+                : '—'}
+          </span>
+        </div>
+        <div className="metric">
+          <label>Min heap (low-water)</label>
+          <span>{device.minHeap != null ? formatKB(device.minHeap) : '—'}</span>
+        </div>
+        <div className="metric">
+          <label>Max contiguous block</label>
+          <span>{device.maxAllocHeap != null ? formatKB(device.maxAllocHeap) : '—'}</span>
+        </div>
+        <div className="metric">
+          <label>Flash free (OTA headroom)</label>
+          <span>{device.freeSketchSpace != null ? formatKB(device.freeSketchSpace) : '—'}</span>
+        </div>
+        <div className="metric">
+          <label>App size</label>
+          <span>{device.sketchSize != null ? formatKB(device.sketchSize) : '—'}</span>
+        </div>
+        <div className="metric">
+          <label>PSRAM free / total</label>
+          <span>
+            {device.psramSize != null
+              ? (device.psramSize === 0
+                  ? 'disabled'
+                  : `${formatKB(device.psramFree)} / ${formatKB(device.psramSize)}`)
+              : '—'}
+          </span>
         </div>
         <div className="metric">
           <label>Temp</label>
@@ -419,6 +451,13 @@ function formatUptime(seconds) {
   if (seconds < 60) return `${seconds}s`;
   if (seconds < 3600) return `${Math.floor(seconds / 60)}m`;
   return `${Math.floor(seconds / 3600)}h ${Math.floor((seconds % 3600) / 60)}m`;
+}
+
+// Render a byte count in KB (device memory/flash numbers), or an em dash when
+// the value is missing. 0 is a real value (e.g. PSRAM disabled) so it is kept.
+function formatKB(bytes) {
+  if (bytes === undefined || bytes === null) return '—';
+  return `${Math.round(bytes / 1024)}KB`;
 }
 
 function truncate(str, maxLen) {

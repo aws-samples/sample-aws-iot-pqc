@@ -44,7 +44,10 @@ def test_telemetry_event_writes_fields():
 
     event = {
         "device": "esp32-FC22E0", "message_id": 5, "uptime_sec": 100,
-        "wifi_rssi": -50, "free_heap": 200000, "min_heap": 180000,
+        "wifi_rssi": -50, "free_heap": 200000, "heap_total": 327680,
+        "min_heap": 180000, "max_alloc_heap": 110000,
+        "sketch_size": 1200000, "free_sketch_space": 1900000,
+        "psram_size": 0, "psram_free": 0,
         "chip_temp_c": 42, "pqc_algorithm": "SECP256R1_MLKEM768",
         "tls_version": "TLSv1.3", "firmware_version": "3.0.0-mldsa",
         "cert_sig_alg": "ML-DSA-44",
@@ -58,6 +61,13 @@ def test_telemetry_event_writes_fields():
     # firmwareVersion is now carried on the periodic telemetry payload (not only
     # the connect-time lifecycle message), so the dashboard shows it reliably.
     assert item["firmwareVersion"] == "3.0.0-mldsa"
+    # Operational memory/storage metrics land from the telemetry payload.
+    assert item["heapTotal"] == 327680
+    assert item["maxAllocHeap"] == 110000
+    assert item["freeSketchSpace"] == 1900000
+    assert item["sketchSize"] == 1200000
+    # PSRAM is reported even when disabled (0) so the panel is self-documenting.
+    assert item["psramSize"] == 0
     assert item["status"] == "online"
     assert item["messageId"] == 5
     assert "lastSeen" in item and "ttl" in item
