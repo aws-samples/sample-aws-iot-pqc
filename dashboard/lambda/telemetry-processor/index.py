@@ -105,4 +105,36 @@ def handler(event, context):
     )
     print(f"Updated device: {thing_name}")
 
+    # ─── Reconcile a finished migration ──────────────────────────────────────
+    # The PQC migration state machine's terminal write is migrationStatus =
+    # "rebooting"; nothing else ever moves it forward. The dashboard treats
+    # "rebooting" (with building / pushing-ota) as "migration in progress" and
+    # hides the firmware picker — so once the device reboots into the new
+    # firmware the operator is locked out of the NEXT migration until the field
+    # is cleared by hand. That is a real workshop blocker (a device cannot be
+    # advanced classical -> pqc -> pqc-mldsa without manual DynamoDB surgery).
+    #
+    # This message IS the device reporting in on the new firmware (it just sent
+    # telemetry / an online lifecycle event), so the reboot is complete. Clear
+    # migrationStatus + migrationError to return the device to a terminal,
+    # pickable state. We ONLY do this when the stored status is "rebooting":
+    # during "building" / "pushing-ota" the device is still running the OLD
+    # firmware and legitimately publishing telemetry, and clearing then would
+    # unhide the picker mid-migration. The conditional write makes this safe
+    # under concurrency — if the field changed underneath us, the reconcile is
+    # simply skipped.
+    is_live_report = ('message_id' in event) or (event.get('status') == 'online')
+    if is_live_report:
+        try:
+            table.update_item(
+                Key={'thingName': thing_name},
+                UpdateExpression='REMOVE migrationStatus, migrationError',
+                ConditionExpression='migrationStatus = :rebooting',
+                ExpressionAttributeValues={':rebooting': 'rebooting'},
+            )
+            print(f"Reconciled finished migration for {thing_name} (cleared rebooting status)")
+        except dynamodb.meta.client.exceptions.ConditionalCheckFailedException:
+            # Not in the rebooting state (the common case) — nothing to reconcile.
+            pass
+
     return {'statusCode': 200, 'body': f'Updated {thing_name}'}

@@ -304,9 +304,30 @@ Backlog candidates surfaced during rebuilds (not yet fixed):
   LAST and gate on that. Recommend (a)+(b). This is exactly the "assumed
   synchronous but actually eventually-consistent" class of bug seen elsewhere in
   this project; intermittent — will bite workshop attendees randomly.
-- **[BLOCKER for pqc-b push — migrationStatus never reconciled to "migrated"
-  after PQC confirmed; it BLOCKS the next migration] Close the migration loop
-  when the device reports it is actually on ML-KEM.**
+- **[RESOLVED — Sep 28, telemetry-processor now self-reconciles] migrationStatus
+  never reconciled to a terminal state after a migration finished; it BLOCKED the
+  next migration.**
+  FIX SHIPPED: `dashboard/lambda/telemetry-processor/index.py` now does a
+  conditional `REMOVE migrationStatus, migrationError` whenever a device sends a
+  live report (a `message_id` telemetry message OR an `online` lifecycle event)
+  while `migrationStatus == 'rebooting'`. That is exactly the "device is back on
+  the new firmware" signal, so the reboot is complete and the picker returns on
+  its own — no manual DynamoDB surgery. It ONLY clears `rebooting`: `building` /
+  `pushing-ota` are left alone (the device is still on the OLD firmware and
+  legitimately publishing then), and the write is conditional so it is safe under
+  concurrency. Tests added in `test_index.py`
+  (test_reconciles_rebooting_migration_on_telemetry,
+  test_reconciles_rebooting_on_online_lifecycle,
+  test_does_not_reconcile_building_or_pushing); 57 pytest pass. Deployed to pqc-b
+  and confirmed live during the pqc-b rebuild's fw1->fw2 test (device
+  esp32-C69DE0). Chosen approach = the steering's recommended option (a): the
+  signal (device reporting in) and the writer (telemetry-processor) already
+  existed; it just needed the conditional clear. NOTE we clear the field rather
+  than set `migrationStatus=migrated`, because the dashboard's only check is
+  membership in MIGRATION_IN_PROGRESS (building/pushing-ota/rebooting) — any
+  value NOT in that set (including absent) returns the picker, and "what variant
+  is running" is derived from live telemetry (firmwareVersion/pqcAlgorithm), not
+  from migrationStatus. Original write-up retained below for history.
   UPGRADED from cosmetic to BLOCKER on pqc-a (Sep 25) during the full
   fw1->fw2->fw3 migration test: after fw1->fw2 succeeded and the device
   reconnected reporting `SECP256R1_MLKEM768`, the card stayed on the disabled

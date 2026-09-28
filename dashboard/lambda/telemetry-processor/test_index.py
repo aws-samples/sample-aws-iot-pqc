@@ -104,8 +104,69 @@ def test_preserves_migration_status():
     mod.handler({"device": "esp32-FC22E0", "message_id": 1, "pqc_algorithm": "none"}, None)
     item = tbl.get_item(Key={"thingName": "esp32-FC22E0"})["Item"]
     # migrationStatus survives because the processor uses UpdateItem, not put_item.
+    # It is ALSO preserved through "building" (the device is still on the OLD
+    # firmware here) — only "rebooting" is reconciled (see the tests below).
     assert item["migrationStatus"] == "building"
     assert item["pqcAlgorithm"] == "none"
+
+
+@mock_aws
+def test_reconciles_rebooting_migration_on_telemetry():
+    """A device that reports in while migrationStatus=='rebooting' has finished
+    its reboot into the new firmware, so the processor clears migrationStatus /
+    migrationError — otherwise the dashboard hides the picker forever and the
+    operator can't start the next migration."""
+    tbl = _make_table()
+    tbl.put_item(Item={
+        "thingName": "esp32-FC22E0",
+        "migrationStatus": "rebooting",
+        "migrationError": "",
+    })
+    _env()
+    mod = load_handler_module(os.path.join(HERE, "index.py"), "telemetry_processor_reconcile")
+
+    mod.handler(
+        {"device": "esp32-FC22E0", "message_id": 1, "pqc_algorithm": "SECP256R1_MLKEM768"},
+        None,
+    )
+    item = tbl.get_item(Key={"thingName": "esp32-FC22E0"})["Item"]
+    assert "migrationStatus" not in item
+    assert "migrationError" not in item
+    assert item["pqcAlgorithm"] == "SECP256R1_MLKEM768"
+
+
+@mock_aws
+def test_reconciles_rebooting_on_online_lifecycle():
+    """The online lifecycle event (no message_id) also reconciles a rebooting
+    device — it is equally a 'device is back on the new firmware' signal."""
+    tbl = _make_table()
+    tbl.put_item(Item={"thingName": "esp32-FC22E0", "migrationStatus": "rebooting"})
+    _env()
+    mod = load_handler_module(os.path.join(HERE, "index.py"), "telemetry_processor_reconcile2")
+
+    mod.handler(
+        {"thingName": "esp32-FC22E0", "status": "online", "pqc_algorithm": "SECP256R1_MLKEM768"},
+        None,
+    )
+    item = tbl.get_item(Key={"thingName": "esp32-FC22E0"})["Item"]
+    assert "migrationStatus" not in item
+
+
+@mock_aws
+def test_does_not_reconcile_building_or_pushing():
+    """During building / pushing-ota the device is still on the OLD firmware and
+    legitimately publishing telemetry — the picker must stay hidden, so these
+    in-progress states must NOT be cleared by an incoming telemetry message."""
+    tbl = _make_table()
+    _env()
+    for i, status in enumerate(("building", "pushing-ota")):
+        tbl.put_item(Item={"thingName": "esp32-FC22E0", "migrationStatus": status})
+        mod = load_handler_module(
+            os.path.join(HERE, "index.py"), f"telemetry_processor_noreconcile{i}"
+        )
+        mod.handler({"device": "esp32-FC22E0", "message_id": 1}, None)
+        item = tbl.get_item(Key={"thingName": "esp32-FC22E0"})["Item"]
+        assert item["migrationStatus"] == status
 
 
 @mock_aws
