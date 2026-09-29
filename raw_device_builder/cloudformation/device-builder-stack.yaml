@@ -640,6 +640,177 @@ Resources:
       Code: ../lambda/device-deregistrar
 
   # ═══════════════════════════════════════════════════════════════════════════
+  # Fleet Cleanup — custom resource that deletes ALL esp32-* devices on teardown
+  # ═══════════════════════════════════════════════════════════════════════════
+  #
+  # Deleting the master stack cascades to this nested stack, but CloudFormation
+  # does NOT own the IoT Things / certs / per-device policies / device rows that
+  # the builder-Pi registrar creates at runtime — so without this, a torn-down
+  # workshop leaves every registered esp32-* device behind. On the NEXT deploy
+  # those boards are still flashed with still-valid certs, reconnect to the new
+  # broker, and reappear as ghost cards (the exact problem seen on the pqc-b
+  # rebuild). This custom resource runs ONLY on stack Delete and enumerates all
+  # esp32-* Things, tearing each down (detach principals, deactivate + delete
+  # certs, delete the per-device policy, delete the Thing) and removing its rows
+  # from BOTH device tables. It makes a clean rebuild start from an empty fleet
+  # with no manual "delete the old Things first" step.
+  #
+  # Create/Update are no-ops: this is a teardown-only broom.
+
+  FleetCleanupRole:
+    Type: AWS::IAM::Role
+    Properties:
+      # No explicit RoleName (auto-generated) so repeat deploys in a shared
+      # account don't collide on a fixed name.
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: FleetCleanupPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - iot:ListThings
+                  - iot:ListThingPrincipals
+                  - iot:DetachThingPrincipal
+                  - iot:DetachPolicy
+                  - iot:UpdateCertificate
+                  - iot:DeleteCertificate
+                  - iot:DeletePolicy
+                  - iot:DeleteThing
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - dynamodb:DeleteItem
+                  - dynamodb:Scan
+                Resource:
+                  - !GetAtt DeviceRegistryTable.Arn
+                  - !Sub 'arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/pqc-workshop-devices'
+
+  FleetCleanupFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      # No explicit FunctionName (auto-generated) to stay repeat-deploy safe.
+      Runtime: python3.12
+      Handler: index.handler
+      Timeout: 300
+      Role: !GetAtt FleetCleanupRole.Arn
+      Environment:
+        Variables:
+          REGISTRY_TABLE: !Ref DeviceRegistryTable
+          DEVICE_TABLE: pqc-workshop-devices
+      Code:
+        ZipFile: |
+          import boto3
+          import cfnresponse
+
+          iot = boto3.client('iot')
+          ddb = boto3.resource('dynamodb')
+
+          import os
+          REGISTRY_TABLE = os.environ['REGISTRY_TABLE']
+          DEVICE_TABLE = os.environ['DEVICE_TABLE']
+
+
+          def _teardown_thing(thing_name):
+              """Detach + delete a single Thing's certs, policies, and the Thing."""
+              errors = []
+              try:
+                  principals = iot.list_thing_principals(thingName=thing_name).get('principals', [])
+              except Exception as e:
+                  principals = []
+                  errors.append(f'list_thing_principals({thing_name}): {e}')
+              for cert_arn in principals:
+                  cert_id = cert_arn.split('/')[-1]
+                  try:
+                      iot.detach_thing_principal(thingName=thing_name, principal=cert_arn)
+                  except Exception as e:
+                      errors.append(f'detach_thing_principal({cert_id}): {e}')
+                  # Detach any policies still attached to the cert, then delete it.
+                  try:
+                      pols = iot.list_attached_policies(target=cert_arn).get('policies', [])
+                      for p in pols:
+                          try:
+                              iot.detach_policy(policyName=p['policyName'], target=cert_arn)
+                          except Exception as e:
+                              errors.append(f"detach_policy({p['policyName']}): {e}")
+                  except Exception as e:
+                      errors.append(f'list_attached_policies({cert_id}): {e}')
+                  try:
+                      iot.update_certificate(certificateId=cert_id, newStatus='INACTIVE')
+                      iot.delete_certificate(certificateId=cert_id, forceDelete=True)
+                  except Exception as e:
+                      errors.append(f'delete_certificate({cert_id}): {e}')
+              # Conventional per-device policy name (pqc-device-<serial>).
+              serial = thing_name[len('esp32-'):] if thing_name.startswith('esp32-') else thing_name
+              try:
+                  iot.delete_policy(policyName=f'pqc-device-{serial}')
+              except iot.exceptions.ResourceNotFoundException:
+                  pass
+              except Exception as e:
+                  errors.append(f'delete_policy(pqc-device-{serial}): {e}')
+              try:
+                  iot.delete_thing(thingName=thing_name)
+              except iot.exceptions.ResourceNotFoundException:
+                  pass
+              except Exception as e:
+                  errors.append(f'delete_thing({thing_name}): {e}')
+              # Remove rows from both tables (registry keyed by serialNumber,
+              # dashboard table keyed by thingName). Best-effort.
+              try:
+                  ddb.Table(REGISTRY_TABLE).delete_item(Key={'serialNumber': serial})
+              except Exception as e:
+                  errors.append(f'registry delete_item({serial}): {e}')
+              try:
+                  ddb.Table(DEVICE_TABLE).delete_item(Key={'thingName': thing_name})
+              except Exception as e:
+                  errors.append(f'device delete_item({thing_name}): {e}')
+              return errors
+
+
+          def handler(event, context):
+              # Teardown-only: Create/Update do nothing.
+              if event['RequestType'] != 'Delete':
+                  cfnresponse.send(event, context, cfnresponse.SUCCESS, {})
+                  return
+              all_errors = []
+              deleted = 0
+              try:
+                  paginator = iot.get_paginator('list_things')
+                  for page in paginator.paginate():
+                      for thing in page.get('things', []):
+                          name = thing['thingName']
+                          if not name.startswith('esp32-'):
+                              continue
+                          errs = _teardown_thing(name)
+                          all_errors.extend(errs)
+                          deleted += 1
+                  print(f"Fleet cleanup: tore down {deleted} esp32-* device(s), "
+                        f"{len(all_errors)} non-critical error(s)")
+                  if all_errors:
+                      for e in all_errors:
+                          print(f"  - {e}")
+              except Exception as e:
+                  # Never block stack deletion on cleanup failure — a stuck
+                  # DELETE is worse than a leftover device. Log and succeed.
+                  print(f"Fleet cleanup error (ignored so DELETE can proceed): {e}")
+              cfnresponse.send(event, context, cfnresponse.SUCCESS,
+                               {'DevicesDeleted': deleted})
+
+  FleetCleanup:
+    Type: Custom::FleetCleanup
+    Properties:
+      ServiceToken: !GetAtt FleetCleanupFunction.Arn
+
+  # ═══════════════════════════════════════════════════════════════════════════
   # Lambda — Firmware Pusher (generates presigned URLs for OTA)
   # ═══════════════════════════════════════════════════════════════════════════
 

@@ -1,10 +1,19 @@
 """
 Unit tests for the telemetry-processor Lambda.
 
-Key behavior under test: it uses UpdateItem (not put_item), so it updates only
-the fields present in the event and PRESERVES other fields — critically
-migrationStatus, which the migration state machine writes. A put_item-based
-processor would clobber migrationStatus on every telemetry message.
+Key behavior under test:
+
+1. It uses UpdateItem (not put_item), so it updates only the fields present in
+   the event and PRESERVES other fields — critically migrationStatus, which the
+   migration state machine writes. A put_item-based processor would clobber
+   migrationStatus on every telemetry message.
+
+2. Registered-only guard: the UpdateItem is conditional on
+   attribute_exists(registeredAt), so telemetry from a device that was never
+   registered through the builder-Pi (e.g. a board left flashed from a previous
+   deployment) does NOT create a ghost row / dashboard card. The registrar
+   writes registeredAt before the device is flashed, so a legitimate device is
+   never blocked.
 """
 import os
 import sys
@@ -36,9 +45,26 @@ def _make_table():
     return ddb.Table(TABLE)
 
 
+def _register(tbl, thing_name="esp32-FC22E0", **extra):
+    """Seed a REGISTERED device row, as the registrar Lambda would (it always
+    writes serialNumber + registeredAt). The telemetry-processor's
+    registered-only guard requires serialNumber to exist, so telemetry only
+    lands for devices with this row."""
+    serial = thing_name.split("-")[-1]
+    item = {
+        "thingName": thing_name,
+        "serialNumber": serial,
+        "registeredAt": "2026-01-01T00:00:00Z",
+        "status": "registered",
+    }
+    item.update(extra)
+    tbl.put_item(Item=item)
+
+
 @mock_aws
 def test_telemetry_event_writes_fields():
     tbl = _make_table()
+    _register(tbl)
     _env()
     mod = load_handler_module(os.path.join(HERE, "index.py"), "telemetry_processor_index")
 
@@ -76,6 +102,7 @@ def test_telemetry_event_writes_fields():
 @mock_aws
 def test_lifecycle_event_writes_status_and_ip():
     tbl = _make_table()
+    _register(tbl)
     _env()
     mod = load_handler_module(os.path.join(HERE, "index.py"), "telemetry_processor_index2")
 
@@ -97,7 +124,7 @@ def test_lifecycle_event_writes_status_and_ip():
 def test_preserves_migration_status():
     """The critical guard: a telemetry update must NOT wipe migrationStatus."""
     tbl = _make_table()
-    tbl.put_item(Item={"thingName": "esp32-FC22E0", "migrationStatus": "building"})
+    _register(tbl, migrationStatus="building")
     _env()
     mod = load_handler_module(os.path.join(HERE, "index.py"), "telemetry_processor_index3")
 
@@ -117,11 +144,7 @@ def test_reconciles_rebooting_migration_on_telemetry():
     migrationError — otherwise the dashboard hides the picker forever and the
     operator can't start the next migration."""
     tbl = _make_table()
-    tbl.put_item(Item={
-        "thingName": "esp32-FC22E0",
-        "migrationStatus": "rebooting",
-        "migrationError": "",
-    })
+    _register(tbl, migrationStatus="rebooting", migrationError="")
     _env()
     mod = load_handler_module(os.path.join(HERE, "index.py"), "telemetry_processor_reconcile")
 
@@ -140,7 +163,7 @@ def test_reconciles_rebooting_on_online_lifecycle():
     """The online lifecycle event (no message_id) also reconciles a rebooting
     device — it is equally a 'device is back on the new firmware' signal."""
     tbl = _make_table()
-    tbl.put_item(Item={"thingName": "esp32-FC22E0", "migrationStatus": "rebooting"})
+    _register(tbl, migrationStatus="rebooting")
     _env()
     mod = load_handler_module(os.path.join(HERE, "index.py"), "telemetry_processor_reconcile2")
 
@@ -160,7 +183,7 @@ def test_does_not_reconcile_building_or_pushing():
     tbl = _make_table()
     _env()
     for i, status in enumerate(("building", "pushing-ota")):
-        tbl.put_item(Item={"thingName": "esp32-FC22E0", "migrationStatus": status})
+        _register(tbl, migrationStatus=status)
         mod = load_handler_module(
             os.path.join(HERE, "index.py"), f"telemetry_processor_noreconcile{i}"
         )
@@ -179,3 +202,63 @@ def test_skips_unknown_device():
     # Nothing written.
     scan = tbl.scan()
     assert scan["Count"] == 0
+
+
+@mock_aws
+def test_unregistered_device_telemetry_creates_no_ghost_row():
+    """A device that publishes telemetry but was never registered (no row with
+    serialNumber) must NOT get a row — otherwise it becomes a ghost card on the
+    dashboard. This is the leftover-from-a-previous-deployment case: the board
+    is still flashed and reconnects with a valid cert, but was not registered on
+    this build."""
+    tbl = _make_table()
+    _env()
+    mod = load_handler_module(os.path.join(HERE, "index.py"), "telemetry_processor_ghost1")
+
+    result = mod.handler(
+        {
+            "device": "esp32-C69E44", "message_id": 12,
+            "pqc_algorithm": "SECP256R1_MLKEM768", "tls_version": "TLSv1.3",
+            "cert_sig_alg": "ML-DSA-44", "firmware_version": "3.0.0-mldsa",
+        },
+        None,
+    )
+    assert "Skipped unregistered" in result["body"]
+    # No row was created for the unregistered device.
+    assert tbl.scan()["Count"] == 0
+    assert "Item" not in tbl.get_item(Key={"thingName": "esp32-C69E44"})
+
+
+@mock_aws
+def test_unregistered_device_lifecycle_creates_no_ghost_row():
+    """The online lifecycle event path is guarded too — an unregistered device
+    coming online must not materialise a row."""
+    tbl = _make_table()
+    _env()
+    mod = load_handler_module(os.path.join(HERE, "index.py"), "telemetry_processor_ghost2")
+
+    result = mod.handler(
+        {"thingName": "esp32-C69DE0", "status": "online", "ip": "10.0.0.9"},
+        None,
+    )
+    assert "Skipped unregistered" in result["body"]
+    assert tbl.scan()["Count"] == 0
+
+
+@mock_aws
+def test_registered_device_telemetry_is_not_skipped():
+    """Sanity counterpart: a properly-registered device (row has serialNumber)
+    is updated normally — the guard must not block legitimate devices."""
+    tbl = _make_table()
+    _register(tbl, "esp32-C69E44")
+    _env()
+    mod = load_handler_module(os.path.join(HERE, "index.py"), "telemetry_processor_ghost3")
+
+    result = mod.handler(
+        {"device": "esp32-C69E44", "message_id": 7, "pqc_algorithm": "SECP256R1_MLKEM768"},
+        None,
+    )
+    assert "Skipped" not in result["body"]
+    item = tbl.get_item(Key={"thingName": "esp32-C69E44"})["Item"]
+    assert item["messageId"] == 7
+    assert item["serialNumber"] == "C69E44"  # preserved

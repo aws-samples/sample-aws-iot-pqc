@@ -346,7 +346,17 @@ Resources:
         RuntimeVersion: 1.0.0
       Code: |
         export function request(ctx) {
-          return { operation: 'Scan' };
+          // Only surface devices that were REGISTERED through the builder-Pi.
+          // The registrar writes `serialNumber`; a device that merely publishes
+          // telemetry (e.g. a board left flashed from a previous deployment)
+          // has no such attribute, so filtering on its existence keeps ghost
+          // devices off the dashboard even if a row leaks into the table.
+          return {
+            operation: 'Scan',
+            filter: {
+              expression: 'attribute_exists(serialNumber)',
+            },
+          };
         }
         export function response(ctx) {
           return ctx.result.items;

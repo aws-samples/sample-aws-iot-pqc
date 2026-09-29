@@ -96,14 +96,42 @@ def handler(event, context):
             attr_names['#certSigAlg'] = 'certSigAlg'
             attr_values[':certSigAlg'] = event['cert_sig_alg']
 
-    # Update DynamoDB (only modifies fields present — doesn't clear others)
-    table.update_item(
-        Key={'thingName': thing_name},
-        UpdateExpression='SET ' + ', '.join(update_parts),
-        ExpressionAttributeNames=attr_names,
-        ExpressionAttributeValues=attr_values,
-    )
-    print(f"Updated device: {thing_name}")
+    # Update DynamoDB (only modifies fields present — doesn't clear others).
+    #
+    # ─── Registered-only guard ───────────────────────────────────────────────
+    # The dashboard must ONLY show devices that were registered through the
+    # builder-Pi. Without a guard, this bare UpdateItem is an UPSERT: any device
+    # that merely publishes to the broker — e.g. a board still flashed from a
+    # PREVIOUS deployment that reconnects with a still-valid cert — would create
+    # a brand-new row and therefore a ghost card, before it was ever registered
+    # on this build.
+    #
+    # We gate on `attribute_exists(serialNumber)`. The registrar's put_item is
+    # the ONLY writer of `serialNumber` into this table (see
+    # raw_device_builder/lambda/device-registrar/index.py); the telemetry
+    # payload has no serial number, so this processor never sets it. The
+    # registrar creates the row BEFORE the device is flashed and starts
+    # publishing, so a legitimately-registered device always satisfies the
+    # condition — while a leftover/unregistered device has no row (or a
+    # telemetry-only row lacking serialNumber), the condition fails, and we skip
+    # the write instead of materialising a ghost card. We deliberately use
+    # serialNumber rather than registeredAt: both are registrar-only, but
+    # serialNumber is the device's stable identity field and cannot be
+    # fabricated from a telemetry message.
+    try:
+        table.update_item(
+            Key={'thingName': thing_name},
+            UpdateExpression='SET ' + ', '.join(update_parts),
+            ExpressionAttributeNames=attr_names,
+            ExpressionAttributeValues=attr_values,
+            ConditionExpression='attribute_exists(serialNumber)',
+        )
+        print(f"Updated device: {thing_name}")
+    except dynamodb.meta.client.exceptions.ConditionalCheckFailedException:
+        # Device was never registered on this deployment (no serialNumber row) —
+        # do not create a ghost card for it.
+        print(f"Skipping unregistered device (no serialNumber): {thing_name}")
+        return {'statusCode': 200, 'body': f'Skipped unregistered {thing_name}'}
 
     # ─── Reconcile a finished migration ──────────────────────────────────────
     # The PQC migration state machine's terminal write is migrationStatus =
