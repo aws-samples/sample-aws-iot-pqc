@@ -83,6 +83,31 @@ the teardown/rebuild. Handle these to keep a from-scratch deploy clean:
   a ~5-min deprecation wait. Detach principals + delete any `esp32-*` device
   Things first. (Leave `pqc-workshop-broker-bridge` to the broker stack's
   BridgeProvisioner custom resource.)
+- **[BUG — FleetCleanup does NOT reliably beat the ThingType delete; teardown
+  ordering race] The FleetCleanup custom resource (added to auto-delete esp32-*
+  Things on teardown) lives in `DeviceBuilderStack`, but the `esp32-pqc-device`
+  ThingType (`DeviceThingType`) lives in `DeviceStack`. There is NO cross-stack
+  dependency forcing DeviceBuilderStack (FleetCleanup) to finish before
+  DeviceStack deletes the ThingType, so on a nested-stack teardown they race.**
+  OBSERVED on the pqc-a rebuild (2026-09-30): master `delete-stack` failed with
+  `DeviceStack ... DELETE_FAILED: Can not delete thing type esp32-pqc-device with
+  things associated with it` — the two esp32-* Things were still present (certs
+  already detached, principals empty) when DeviceStack tried to drop the
+  ThingType. Manual recovery: `aws iot delete-thing` for each esp32-* Thing,
+  `aws iot deprecate-thing-type esp32-pqc-device` (starts the ~5-min cooldown),
+  wait out the cooldown, then re-run `delete-stack` (it then completed). So
+  FleetCleanup alone is NOT sufficient — it either didn't run before the
+  ThingType delete or ran in a stack that CFN tore down in parallel with
+  DeviceStack. Also note the ThingType's own ~5-min deprecation timer: even with
+  zero Things, an immediate retry can still fail until the cooldown elapses.
+  FIX OPTIONS (pick when addressed): (a) move the ThingType into the SAME stack
+  as FleetCleanup (or add an explicit DependsOn so FleetCleanup's Thing deletion
+  is ordered before the ThingType delete); (b) have FleetCleanup ALSO deprecate
+  the ThingType (best-effort) so the cooldown starts at teardown; (c) make
+  FleetCleanup delete the ThingType itself after clearing the Things. Until
+  fixed, a clean teardown may need the manual delete-thing + deprecate + wait +
+  retry dance above. This is a teardown-only reliability gap (does not affect a
+  fresh deploy), but it breaks the "one command clean teardown" goal.
 - **Stale SSM managed instances (builder-Pi).** Each `bundle-for-builder-pi.sh`
   run mints a NEW SSM managed-instance id; the physical Pi re-registers under a
   new `mi-...` id and the old ones linger as `ConnectionLost`. After registering
