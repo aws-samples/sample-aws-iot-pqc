@@ -785,6 +785,120 @@ Backlog candidates surfaced during rebuilds (not yet fixed):
 - Broker image build depends on `apt-get` from the Ubuntu mirror in the builder
   stage; hardened with retries/timeouts + 60-min CodeBuild timeout, but a fully
   offline/pinned base or pre-baked deps would be more robust for Workshop Studio.
+- **[SECURITY REVIEW BLOCKER — scoped IAM policy for the Cloud IDE deployment
+  role] Produce a service-scoped (not least-privilege) IAM policy that grants the
+  Workshop Studio Code Editor role exactly the services the deployment needs, and
+  nothing more.** HIGH IMPORTANCE — the workshop cannot pass its security review
+  with the current policy.
+
+  Context / where this lives: the workshop content repo is at
+  `/Volumes/workplace/studio.us-east-1.prod.workshops.aws/pqc-migration-for-iot`.
+  Its `contentspec.yaml` wires a `participantRole` whose policy is
+  `static/iam-policy.json`, and a `static/infrastructure/code-editor.yaml`
+  CloudFormation template that stands up the operator IDE (AWS Code Editor / VS
+  Code-in-browser on EC2 behind CloudFront). In this workshop the PARTICIPANT is
+  the OPERATOR, who runs the ENTIRE deployment (`deploy-workshop.sh` + the manual
+  firmware-image build + builder-Pi bundle/provisioning) from that Code Editor.
+  So the participant role IS the deployment role, and it must carry every
+  permission the deploy exercises. The repo already flags this: contentspec has a
+  `TODO: tighten for an attendee-facing event` and the policy is currently
+  effectively `service:*` on `*`.
+
+  Current state of `static/iam-policy.json` (the thing to replace): one
+  `Allow` statement with `Action` = `*:*`-style wildcards across ~25 services
+  (cloudformation, ec2, ecs, ecr, elasticloadbalancing, codebuild, lambda,
+  states, iot, iotanalytics, acm-pca, s3, dynamodb, appsync, cloudfront,
+  cognito-idp, cognito-identity, ssm, ssmmessages, ec2messages, secretsmanager,
+  kms, logs, cloudwatch, plus sts:GetCallerIdentity/AssumeRole) on `Resource:*`,
+  a blanket `iam:PassRole` on `*`, and a broad `iam:Create/Delete/...Role/Policy/
+  InstanceProfile` block. Functional, but a security review will reject the
+  open-ended `*` service actions and unscoped PassRole.
+
+  The ask (per user, 2026-09-30): NOT least-privilege — a **service-level**
+  policy that ONLY allows the services the deployment actually uses for
+  provisioning, scoped tighter than `*:*` where it is cheap to do so, but
+  pragmatic (broad within a service is acceptable; whole unused services are
+  not). The goal is "this role can only touch the services this workshop
+  provisions," which is what the reviewer needs to see.
+
+  What the deployment ACTUALLY uses (grounded in the deploy scripts + all the
+  stacks/CFN we rebuilt — use this as the authoritative service surface; verify
+  against the templates when writing the policy):
+  - **cloudformation** — deploy/delete the master `pqc-workshop` stack + nested
+    stacks (`aws cloudformation package/deploy`, CAPABILITY_NAMED_IAM +
+    CAPABILITY_AUTO_EXPAND).
+  - **iam** — the nested stacks create NAMED roles/policies (device-registrar,
+    codebuild-firmware, state-machine, dashboard roles, builder-pi-ssm, etc.),
+    instance profiles, and service-linked roles; plus `iam:PassRole` for
+    Lambda/CodeBuild/States/ECS/EC2 assuming them. This is the hardest to scope —
+    the review will care most here. Named-role ARNs are mostly known
+    (`pqc-workshop-*`), so PassRole + role management can be scoped to
+    `arn:aws:iam::<acct>:role/pqc-workshop-*` (and the CFN-generated
+    `pqc-workshop-*` auto-named roles). Confirm every role name/prefix.
+  - **s3** — create/read/write/delete + versioned-object cleanup on the workshop
+    buckets (`pqc-workshop-cfn-*`, `-broker-source-*`, `-dashboard-source-*`,
+    `-firmware-*`, dashboard hosting bucket), incl. `s3api` version ops used at
+    teardown.
+  - **ecr** — create repos, get-login/auth, push/pull, batch-delete-image
+    (mosquitto-broker, cert-issuer, firmware-builder).
+  - **codebuild** — create projects + start-build + batch-get-builds (broker
+    image, cert-issuer image, broker-cert-provisioner, dashboard build, firmware
+    image, per-device firmware build).
+  - **ecs / elasticloadbalancing** — Fargate broker service + task defs; the NLB
+    + target groups (8883 classical, 8884 ML-DSA).
+  - **ec2** — VPC create path (VPC, subnets, IGW, NAT, route tables, SGs,
+    endpoints, the VPC BPA exclusion) + the Code Editor EC2 instance.
+  - **acm-pca** — create/activate/delete the two Private CAs (classical
+    EC_prime256v1 + ML_DSA_44), issue certs. Also `acm` if used.
+  - **iot** — Things, thing types, policies, rules, endpoints, the broker-bridge
+    provisioning; `iotanalytics` only if actually referenced (verify — may be
+    droppable).
+  - **lambda** — all the workshop Lambdas (registrar, deregistrar, prepare-build,
+    publish-ota, start-migration, telemetry-processor, command-publisher,
+    message-logger, broker-log-reader, fleet-cleanup, build-trigger, ssm-
+    activation, dashboard build-trigger).
+  - **states** — the pqc-migration state machine (and the future registration
+    one).
+  - **dynamodb** — the 3 tables (devices, device-registry, message-log).
+  - **appsync** — the dashboard GraphQL API + resolvers + data sources.
+  - **cloudfront** — dashboard distribution + invalidations.
+  - **cognito-idp / cognito-identity** — dashboard identity pool.
+  - **ssm / ssmmessages / ec2messages** — `/pqc-workshop/*` params
+    (incl. SecureString WiFi pw), the SSM hybrid activation + documents that
+    provision the builder-Pi, Session Manager for the Code Editor EC2, and
+    `ssm:SendCommand`/`GetCommandInvocation` for remote Pi provisioning.
+  - **secretsmanager** — broker cert/bridge secrets.
+  - **kms** — decrypt for the SSM SecureString + any SSE.
+  - **logs / cloudwatch** — Lambda/CodeBuild/broker log groups, dashboard metrics,
+    the broker-log-reader Logs Insights queries.
+  - **sts** — GetCallerIdentity (every script) + AssumeRole (ada/profile).
+  - **events** — REQUIRED and currently MISSING from the policy: the
+    `codebuild:startBuild.sync` Step Functions integration needs
+    `events:PutRule/PutTargets/DescribeRule` on the managed
+    `StepFunctionsGetEvent*ForCodeBuildStartBuildRule`. The STATE-MACHINE role has
+    it, but if the OPERATOR ever runs a build sync directly it'd need it too —
+    audit whether the operator role needs `events:*`. (Likely yes for
+    completeness; confirm.)
+
+  Deliverables when this is done:
+  1. A rewritten `static/iam-policy.json` scoped to the service list above (drop
+    any service the deploy never calls — e.g. confirm/drop `iotanalytics`), with
+    `iam:PassRole` and IAM role/policy management scoped to `pqc-workshop-*` ARNs
+    where feasible, and the `events` permissions ADDED.
+  2. A short rationale doc mapping each allowed service -> what in the deploy
+    uses it (the reviewer will want this trace; the list above is the seed).
+  3. Re-validate by running a full clean deploy in a fresh account using ONLY the
+    scoped policy on the operator role — the definition-of-done is that
+    `deploy-workshop.sh` + firmware image + builder-Pi provisioning ALL succeed
+    with the tightened policy (a permission gap must fail the deploy, not pass
+    silently). Iterate: run, catch the AccessDenied, add the specific
+    service/action, re-run, until a clean deploy passes.
+  Caveat: verify the exact action/resource surface against the CFN templates and
+  the deploy/teardown scripts rather than trusting the list above verbatim — it
+  is the grounded starting point, not the final word. Keep it broad-within-service
+  (not least-privilege) per the user's explicit instruction; the reviewer's bar
+  is "no unused services + no unscoped PassRole/`*` service actions," not
+  per-action minimization.
 - **[Builder-Pi — automate the Pi build with a custom-image pipeline] Replace
   the register + SSM-document provisioning flow with a pre-baked Raspberry Pi OS
   image built by a pipeline, so a workshop Pi comes ready with all software and
