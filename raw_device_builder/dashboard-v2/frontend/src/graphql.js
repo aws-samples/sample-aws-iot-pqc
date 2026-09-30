@@ -10,9 +10,16 @@ export const LIST_DEVICES = `
       firmwareVersion
       pqcAlgorithm
       tlsVersion
+      certSigAlg
       wifiRssi
       freeHeap
+      heapTotal
       minHeap
+      maxAllocHeap
+      sketchSize
+      freeSketchSpace
+      psramSize
+      psramFree
       chipTempC
       ipAddress
       uptimeSec
@@ -35,8 +42,8 @@ export const SEND_COMMAND = `
 `;
 
 export const MIGRATE_FIRMWARE = `
-  mutation MigrateFirmware($thingName: String!) {
-    migrateFirmware(thingName: $thingName) {
+  mutation MigrateFirmware($thingName: String!, $variant: String) {
+    migrateFirmware(thingName: $thingName, variant: $variant) {
       success
       message
       thingName

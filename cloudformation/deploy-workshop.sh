@@ -285,6 +285,15 @@ echo "        - broker image source -> s3://${BROKER_SOURCE_BUCKET}/broker-image
 aws s3 cp "$PROJECT_ROOT/broker-container/docker/" \
     "s3://${BROKER_SOURCE_BUCKET}/broker-image/" --recursive >/dev/null
 
+# Shared cert-issuer build context (Dockerfile + issue_cert.py +
+# issue_broker_certs.py + buildspec-broker-certs.yml). Feeds TWO CodeBuild jobs:
+#   - CertIssuerBuildProject         -> builds the shared cert-issuer image
+#   - BrokerCertProvisionerProject   -> runs in that image to mint broker certs
+echo "        - cert-issuer source -> s3://${BROKER_SOURCE_BUCKET}/cert-issuer/"
+aws s3 cp "$PROJECT_ROOT/shared/cert-issuer/" \
+    "s3://${BROKER_SOURCE_BUCKET}/cert-issuer/" --recursive \
+    --exclude "__pycache__/*" --exclude "*.pyc" >/dev/null
+
 # Firmware source context. The FIRMWARE_BUCKET/source/ prefix feeds TWO
 # CodeBuild projects that share it:
 #   - ImageBuilderProject  (BuildSpec: buildspec-image.yml)  -> builds the
@@ -308,6 +317,9 @@ aws s3 cp "$PROJECT_ROOT/aws_iot_pqc_esp32_v1_classical/aws_iot_pqc_esp32_v1_cla
     "s3://${FIRMWARE_BUCKET}/source/aws_iot_pqc_esp32_v1_classical.ino" >/dev/null
 aws s3 cp "$PROJECT_ROOT/aws_iot_pqc_esp32/aws_iot_pqc_esp32.ino" \
     "s3://${FIRMWARE_BUCKET}/source/aws_iot_pqc_esp32.ino" >/dev/null
+# pqc-mldsa variant (Step 2): ML-KEM key exchange + ML-DSA-44 device cert, 8884.
+aws s3 cp "$PROJECT_ROOT/aws_iot_pqc_esp32_v3_mldsa/aws_iot_pqc_esp32_v3_mldsa.ino" \
+    "s3://${FIRMWARE_BUCKET}/source/aws_iot_pqc_esp32_v3_mldsa.ino" >/dev/null
 # The two extra firmware-image context files live in known repo locations. Use a
 # plain function (no associative array, whose dotted keys break under zsh) with
 # a fallback repo search that only skips the arduino-cli/data/ board cache.
@@ -323,6 +335,10 @@ stage_extra() {
 }
 stage_extra wolfssl_user_settings_arduino.h "$PROJECT_ROOT/raw_device_builder/codebuild/wolfssl_user_settings_arduino.h"
 stage_extra partitions_pqc_workshop.csv     "$PROJECT_ROOT/esp32-flash/partitions_pqc_workshop.csv"
+# Shared cert-issuer script — baked into the firmware-builder image (Dockerfile
+# COPYs it) so the per-device firmware build mints its device cert via the SAME
+# issuance code path as the broker cert-issuer container.
+stage_extra issue_cert.py "$PROJECT_ROOT/shared/cert-issuer/issue_cert.py"
 
 # ─── Verify the firmware source/ prefix is complete (fail fast) ──────────────
 # The per-device firmware build (FirmwareBuildProject) and the one-time image
@@ -338,8 +354,10 @@ REQUIRED_FW_SOURCE=(
     Dockerfile                             # builder image
     aws_iot_pqc_esp32_v1_classical.ino     # classical sketch variant
     aws_iot_pqc_esp32.ino                  # pqc sketch variant
+    aws_iot_pqc_esp32_v3_mldsa.ino         # pqc-mldsa sketch variant (Step 2)
     wolfssl_user_settings_arduino.h        # wolfSSL PQC config
     partitions_pqc_workshop.csv            # partition table
+    issue_cert.py                          # shared cert-issuer (baked into image)
 )
 _missing_fw=0
 for obj in "${REQUIRED_FW_SOURCE[@]}"; do
@@ -423,6 +441,39 @@ while true; do
         *) sleep 15 ;;
     esac
 done
+
+# ─── Shared cert-issuer image + broker certificate provisioning ──────────────
+# The cert-issuer image (OpenSSL 3.5 + issue_cert.py) is the ONE image that mints
+# every TLS cert. It must be built BEFORE the broker-cert provisioner job runs in
+# it. Both CAs are already ACTIVE (created by the stack in step 2). Ordering:
+#   1. build cert-issuer image        (CertIssuerImageBuildProject)
+#   2. run broker cert provisioner    (BrokerCertProvisionerProject, in that image)
+# This mirrors the broker image flow and keeps the whole deploy one-shot.
+run_build() {
+    # $1 = human label, $2 = CodeBuild project name
+    local label="$1" project="$2" id st
+    echo "        - starting $label ($project)..."
+    id=$(aws codebuild start-build --project-name "$project" \
+        --query 'build.id' --output text) || { echo "[ERROR] could not start $label"; exit 1; }
+    echo "          build: $id (waiting for completion)"
+    while true; do
+        st=$(aws codebuild batch-get-builds --ids "$id" \
+            --query 'builds[0].buildStatus' --output text)
+        case "$st" in
+            SUCCEEDED) echo "          $label SUCCEEDED"; break ;;
+            FAILED|FAULT|TIMED_OUT|STOPPED) echo "[ERROR] $label $st ($id)"; exit 1 ;;
+            *) sleep 15 ;;
+        esac
+    done
+}
+
+CERT_ISSUER_BUILD_PROJECT=$(get_out CertIssuerImageBuildProject 2>/dev/null || true)
+[[ -z "$CERT_ISSUER_BUILD_PROJECT" || "$CERT_ISSUER_BUILD_PROJECT" == "None" ]] && CERT_ISSUER_BUILD_PROJECT="pqc-workshop-cert-issuer-image-build"
+run_build "cert-issuer image build" "$CERT_ISSUER_BUILD_PROJECT"
+
+BROKER_CERT_PROJECT=$(get_out BrokerCertProvisionerProjectName 2>/dev/null || true)
+[[ -z "$BROKER_CERT_PROJECT" || "$BROKER_CERT_PROJECT" == "None" ]] && BROKER_CERT_PROJECT="pqc-workshop-broker-cert-provisioner"
+run_build "broker cert provisioning (classical + ML-DSA-44)" "$BROKER_CERT_PROJECT"
 
 # Scale the broker ECS service up (it ships at DesiredCount 0). Now that an image
 # exists, one task can start and register with the NLB. The cluster and service

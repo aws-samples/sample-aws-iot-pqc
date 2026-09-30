@@ -83,7 +83,21 @@ static const char* TAG_OTA     = "ota";
 #define MQTT_TASK_CORE          1       // Run MQTT on core 1 (if available)
 
 // ─── Firmware Version ───────────────────────────────────────────────────────
-#define FIRMWARE_VERSION "1.0.0"
+// Single canonical version per variant. CodeBuild injects FIRMWARE_VERSION into
+// secrets.h (from prepare-build's VARIANT_CONFIG), so the value the device
+// reports in telemetry is identical to the S3 artifact dir and the OTA job
+// version — the dashboard, firmware bucket, and device all agree. This #define
+// is only a fallback for a local/desktop build where secrets.h did not set it.
+#ifndef FIRMWARE_VERSION
+#define FIRMWARE_VERSION "1.0.0-classical"
+#endif
+
+// ─── Certificate Signature Algorithm ────────────────────────────────────────
+// The signature algorithm of the X.509 client certificate this firmware
+// presents during the TLS handshake. Fixed per firmware variant: the classical
+// firmware presents an ECDSA P-256 signed certificate. Reported in live
+// telemetry so the dashboard can show which certificate type is in use.
+#define CERT_SIGNATURE_ALG "ECDSA-P256"
 
 // ─── LED Configuration ──────────────────────────────────────────────────────
 // XIAO ESP32-S3 built-in LED is on GPIO 21
@@ -276,13 +290,26 @@ static int wolfssl_send_cb(WOLFSSL* ssl, char* buf, int sz, void* ctx) {
 
 static int wolfssl_recv_cb(WOLFSSL* ssl, char* buf, int sz, void* ctx) {
     wolfssl_io_ctx_t* io = (wolfssl_io_ctx_t*)ctx;
-    if (!io || !io->client || !io->client->connected()) {
-        ESP_LOGD(TAG_TLS, "recv_cb: connection closed");
+    if (!io || !io->client) {
+        ESP_LOGD(TAG_TLS, "recv_cb: no client");
         return WOLFSSL_CBIO_ERR_CONN_CLOSE;
     }
 
-    // Non-blocking: if no data available, signal WANT_READ
-    if (io->client->available() == 0) {
+    // IMPORTANT: drain buffered bytes BEFORE honouring connected()==false.
+    // When the peer (e.g. S3 serving the OTA firmware) half-closes the TCP
+    // connection right after sending the final TLS record, WiFiClient::
+    // connected() can report false while available() still has the last bytes
+    // buffered. If we returned CONN_CLOSE here we would drop those bytes and the
+    // OTA download would fail a few hundred bytes short of EOF (observed:
+    // "Download error at 1199644/1200416"). So: if there is buffered data, read
+    // it regardless of connected(); only report CONN_CLOSE once the socket is
+    // BOTH closed AND fully drained.
+    int avail = io->client->available();
+    if (avail == 0) {
+        if (!io->client->connected()) {
+            ESP_LOGD(TAG_TLS, "recv_cb: connection closed and drained");
+            return WOLFSSL_CBIO_ERR_CONN_CLOSE;
+        }
         ESP_LOGV(TAG_TLS, "recv_cb: no data available, WANT_READ");
         return WOLFSSL_CBIO_ERR_WANT_READ;
     }
@@ -752,6 +779,74 @@ static long jsonGetNumber(const String &json, const char *key) {
     return json.substring(i).toInt();
 }
 
+// ─── Slot-content-aware partition swap ──────────────────────────────────────
+// The two OTA slots (ota_0/ota_1) can hold ANY two of the firmware variants
+// (classical / pqc / pqc-mldsa) depending on migration history, so we must NOT
+// assume "classical=ota_0, pqc=ota_1". Instead, inspect what firmware actually
+// lives in each OTA slot (esp_ota_get_partition_description -> project_name) and
+// boot the slot whose project_name contains the requested marker. This makes a
+// revert/swap work for any 2-of-3 combination resident on the device.
+//   marker examples: "classical" (v1 sketch), "v3_mldsa" (ML-DSA sketch),
+//   or the plain pqc sketch project name "aws_iot_pqc_esp32".
+// Returns true if a matching slot was found and set as the boot partition.
+static bool bootSlotMatchingProject(const char* marker) {
+    const esp_partition_subtype_t subtypes[2] = {
+        ESP_PARTITION_SUBTYPE_APP_OTA_0, ESP_PARTITION_SUBTYPE_APP_OTA_1
+    };
+    for (int i = 0; i < 2; i++) {
+        const esp_partition_t* part = esp_partition_find_first(
+            ESP_PARTITION_TYPE_APP, subtypes[i], NULL);
+        if (!part) continue;
+        esp_app_desc_t appDesc;
+        if (esp_ota_get_partition_description(part, &appDesc) != ESP_OK) continue;
+        ESP_LOGI(TAG_MQTT, "Slot '%s' holds project '%s' v%s",
+                 part->label, appDesc.project_name, appDesc.version);
+        if (strstr(appDesc.project_name, marker) != NULL) {
+            ESP_LOGI(TAG_MQTT, "Match for marker '%s' in slot '%s' — setting boot partition",
+                     marker, part->label);
+            esp_err_t err = esp_ota_set_boot_partition(part);
+            if (err != ESP_OK) {
+                ESP_LOGE(TAG_MQTT, "Failed to set boot partition: %s", esp_err_to_name(err));
+                return false;
+            }
+            return true;
+        }
+    }
+    ESP_LOGE(TAG_MQTT, "No OTA slot holds a firmware matching marker '%s'", marker);
+    return false;
+}
+
+// Exact-match variant of bootSlotMatchingProject. Needed for the plain pqc
+// sketch, whose project_name "aws_iot_pqc_esp32" is a SUBSTRING of both
+// "aws_iot_pqc_esp32_v1_classical" and "aws_iot_pqc_esp32_v3_mldsa", so a naive
+// strstr would mis-match. Boots the slot whose project_name is EXACTLY name.
+static bool bootSlotExactProject(const char* name) {
+    const esp_partition_subtype_t subtypes[2] = {
+        ESP_PARTITION_SUBTYPE_APP_OTA_0, ESP_PARTITION_SUBTYPE_APP_OTA_1
+    };
+    for (int i = 0; i < 2; i++) {
+        const esp_partition_t* part = esp_partition_find_first(
+            ESP_PARTITION_TYPE_APP, subtypes[i], NULL);
+        if (!part) continue;
+        esp_app_desc_t appDesc;
+        if (esp_ota_get_partition_description(part, &appDesc) != ESP_OK) continue;
+        ESP_LOGI(TAG_MQTT, "Slot '%s' holds project '%s' v%s",
+                 part->label, appDesc.project_name, appDesc.version);
+        if (strcmp(appDesc.project_name, name) == 0) {
+            ESP_LOGI(TAG_MQTT, "Exact match for '%s' in slot '%s' — setting boot partition",
+                     name, part->label);
+            esp_err_t err = esp_ota_set_boot_partition(part);
+            if (err != ESP_OK) {
+                ESP_LOGE(TAG_MQTT, "Failed to set boot partition: %s", esp_err_to_name(err));
+                return false;
+            }
+            return true;
+        }
+    }
+    ESP_LOGE(TAG_MQTT, "No OTA slot holds a firmware exactly named '%s'", name);
+    return false;
+}
+
 // MQTTClient message handler (wraps mqttCallback)
 void mqttMessageHandler(String &topic, String &payload) {
     ESP_LOGI(TAG_MQTT, "Message received on topic '%s' (%d bytes)", topic.c_str(), payload.length());
@@ -799,31 +894,30 @@ void mqttMessageHandler(String &topic, String &payload) {
         return;
     }
 
-    // OTA migration (partition-swap fallback): {"action":"migrate-pqc"} on
-    // cmd/<thing>/ota. Only works if PQC firmware is already present in ota_1.
-    if (topic.indexOf("/ota") >= 0 && payload.indexOf("migrate-pqc") >= 0) {
-        ESP_LOGI(TAG_MQTT, "PQC migration command received!");
-        // Classical firmware runs on app0 — find app1 (PQC) explicitly
-        const esp_partition_t* pqcPartition = esp_partition_find_first(
-            ESP_PARTITION_TYPE_APP, ESP_PARTITION_SUBTYPE_APP_OTA_1, NULL);
-        if (!pqcPartition) {
-            ESP_LOGE(TAG_MQTT, "No OTA_1 (PQC) partition found");
+    // OTA migration (partition-swap): boot whichever variant is already
+    // resident in the other OTA slot. Slot-content-aware, so it works for any
+    // 2-of-3 combination of {classical, pqc, mldsa} on the device.
+    if (topic.indexOf("/ota") >= 0) {
+        bool swapped = false;
+        if (payload.indexOf("migrate-classical") >= 0) {
+            ESP_LOGI(TAG_MQTT, "Classical migration command received!");
+            swapped = bootSlotMatchingProject("classical");
+        } else if (payload.indexOf("migrate-mldsa") >= 0) {
+            ESP_LOGI(TAG_MQTT, "ML-DSA migration command received!");
+            swapped = bootSlotMatchingProject("v3_mldsa");
+        } else if (payload.indexOf("migrate-pqc") >= 0) {
+            ESP_LOGI(TAG_MQTT, "PQC migration command received!");
+            swapped = bootSlotExactProject("aws_iot_pqc_esp32");
+        } else {
             return;
         }
-        esp_app_desc_t appDesc;
-        if (esp_ota_get_partition_description(pqcPartition, &appDesc) != ESP_OK) {
-            ESP_LOGE(TAG_MQTT, "No firmware in '%s'", pqcPartition->label);
-            return;
+
+        if (swapped) {
+            ESP_LOGI(TAG_MQTT, "Boot partition updated, restarting...");
+            vTaskDelay(pdMS_TO_TICKS(2000));
+            esp_restart();
         }
-        ESP_LOGI(TAG_MQTT, "Switching to %s v%s (PQC)", appDesc.project_name, appDesc.version);
-        esp_err_t err = esp_ota_set_boot_partition(pqcPartition);
-        if (err != ESP_OK) {
-            ESP_LOGE(TAG_MQTT, "Failed to set boot partition: %s", esp_err_to_name(err));
-            return;
-        }
-        ESP_LOGI(TAG_MQTT, "Boot partition set to '%s', restarting...", pqcPartition->label);
-        vTaskDelay(pdMS_TO_TICKS(2000));
-        esp_restart();
+        return;
     }
 }
 
@@ -1021,20 +1115,34 @@ void otaTask(void* pvParameters) {
         int lastProgress = 0;
         bool downloadOk = true;
 
+        // Bounded WANT_READ retry: near EOF the last TLS record can be briefly
+        // in flight (socket momentarily empty), so a WANT_READ is normal and we
+        // wait for it rather than aborting. Cap the wait so a genuinely stalled
+        // transfer still fails instead of hanging forever: 500 * 10ms = ~5s of
+        // no progress. The counter resets on every successful read.
+        const int OTA_MAX_WANT_READ_RETRIES = 500;
+        int wantReadRetries = 0;
+
         while (totalRead < contentLength) {
             int toRead = min((int)sizeof(buf), contentLength - totalRead);
             int bytesRead = wolfSSL_read(otaSsl, buf, toRead);
 
             if (bytesRead <= 0) {
                 int sslErr = wolfSSL_get_error(otaSsl, bytesRead);
-                if (sslErr == WOLFSSL_ERROR_WANT_READ) {
+                if (sslErr == WOLFSSL_ERROR_WANT_READ || sslErr == WOLFSSL_ERROR_WANT_WRITE) {
+                    if (++wantReadRetries > OTA_MAX_WANT_READ_RETRIES) {
+                        ESP_LOGE(TAG_OTA, "Download stalled at %d/%d bytes (WANT_READ timeout)", totalRead, contentLength);
+                        downloadOk = false;
+                        break;
+                    }
                     vTaskDelay(pdMS_TO_TICKS(10));
                     continue;
                 }
-                ESP_LOGE(TAG_OTA, "Download error at %d/%d bytes", totalRead, contentLength);
+                ESP_LOGE(TAG_OTA, "Download error at %d/%d bytes (sslErr=%d)", totalRead, contentLength, sslErr);
                 downloadOk = false;
                 break;
             }
+            wantReadRetries = 0;
 
             err = esp_ota_write(otaHandle, buf, bytesRead);
             if (err != ESP_OK) {
@@ -1185,7 +1293,7 @@ void mqttTask(void* pvParameters) {
                 // Announce that the device is online. This is the counterpart
                 // to the LWT offline message. Retained so new subscribers
                 // immediately know the device state.
-                char onlinePayload[256];
+                char onlinePayload[320];
                 snprintf(onlinePayload, sizeof(onlinePayload),
                          "{"
                          "\"status\":\"online\","
@@ -1193,6 +1301,7 @@ void mqttTask(void* pvParameters) {
                          "\"firmware_version\":\"%s\","
                          "\"pqc_algorithm\":\"%s\","
                          "\"tls_version\":\"%s\","
+                         "\"cert_sig_alg\":\"%s\","
                          "\"ip\":\"%s\","
                          "\"uptime_sec\":%lu"
                          "}",
@@ -1200,6 +1309,7 @@ void mqttTask(void* pvParameters) {
                          FIRMWARE_VERSION,
                          g_tlsKeyExchange,
                          g_tlsVersion,
+                         CERT_SIGNATURE_ALG,
                          WiFi.localIP().toString().c_str(),
                          millis() / 1000);
 
@@ -1237,31 +1347,47 @@ void mqttTask(void* pvParameters) {
 
             // Build a JSON telemetry message
             float chipTempC = temperatureRead(); // Internal die temperature (°C)
-            char payload[512];
+            char payload[704];
             snprintf(payload, sizeof(payload),
                      "{"
                      "\"device\":\"%s\","
+                     "\"firmware_version\":\"%s\","
                      "\"message_id\":%lu,"
                      "\"timestamp\":%lu,"
                      "\"uptime_sec\":%lu,"
                      "\"wifi_rssi\":%d,"
                      "\"free_heap\":%u,"
+                     "\"heap_total\":%u,"
                      "\"min_heap\":%u,"
+                     "\"max_alloc_heap\":%u,"
+                     "\"sketch_size\":%u,"
+                     "\"free_sketch_space\":%u,"
+                     "\"psram_size\":%u,"
+                     "\"psram_free\":%u,"
                      "\"chip_temp_c\":%.1f,"
                      "\"pqc_algorithm\":\"%s\","
                      "\"tls_version\":\"%s\","
+                     "\"cert_sig_alg\":\"%s\","
                      "\"broker_endpoint\":\"%s:%d\""
                      "}",
                      g_thingName,
+                     FIRMWARE_VERSION,
                      messageCount,
                      (unsigned long)(millis() / 1000), // Approximate epoch placeholder
                      millis() / 1000,
                      WiFi.RSSI(),
                      ESP.getFreeHeap(),
+                     ESP.getHeapSize(),
                      ESP.getMinFreeHeap(),
+                     ESP.getMaxAllocHeap(),
+                     ESP.getSketchSize(),
+                     ESP.getFreeSketchSpace(),
+                     ESP.getPsramSize(),
+                     ESP.getFreePsram(),
                      chipTempC,
                      g_tlsKeyExchange,
                      g_tlsVersion,
+                     CERT_SIGNATURE_ALG,
                      MQTT_BROKER_ENDPOINT, MQTT_BROKER_PORT);
 
             if (mqttClient.publish(g_topicTelemetry, payload)) {

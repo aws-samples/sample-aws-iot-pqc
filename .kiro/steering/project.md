@@ -83,6 +83,31 @@ the teardown/rebuild. Handle these to keep a from-scratch deploy clean:
   a ~5-min deprecation wait. Detach principals + delete any `esp32-*` device
   Things first. (Leave `pqc-workshop-broker-bridge` to the broker stack's
   BridgeProvisioner custom resource.)
+- **[BUG — FleetCleanup does NOT reliably beat the ThingType delete; teardown
+  ordering race] The FleetCleanup custom resource (added to auto-delete esp32-*
+  Things on teardown) lives in `DeviceBuilderStack`, but the `esp32-pqc-device`
+  ThingType (`DeviceThingType`) lives in `DeviceStack`. There is NO cross-stack
+  dependency forcing DeviceBuilderStack (FleetCleanup) to finish before
+  DeviceStack deletes the ThingType, so on a nested-stack teardown they race.**
+  OBSERVED on the pqc-a rebuild (2026-09-30): master `delete-stack` failed with
+  `DeviceStack ... DELETE_FAILED: Can not delete thing type esp32-pqc-device with
+  things associated with it` — the two esp32-* Things were still present (certs
+  already detached, principals empty) when DeviceStack tried to drop the
+  ThingType. Manual recovery: `aws iot delete-thing` for each esp32-* Thing,
+  `aws iot deprecate-thing-type esp32-pqc-device` (starts the ~5-min cooldown),
+  wait out the cooldown, then re-run `delete-stack` (it then completed). So
+  FleetCleanup alone is NOT sufficient — it either didn't run before the
+  ThingType delete or ran in a stack that CFN tore down in parallel with
+  DeviceStack. Also note the ThingType's own ~5-min deprecation timer: even with
+  zero Things, an immediate retry can still fail until the cooldown elapses.
+  FIX OPTIONS (pick when addressed): (a) move the ThingType into the SAME stack
+  as FleetCleanup (or add an explicit DependsOn so FleetCleanup's Thing deletion
+  is ordered before the ThingType delete); (b) have FleetCleanup ALSO deprecate
+  the ThingType (best-effort) so the cooldown starts at teardown; (c) make
+  FleetCleanup delete the ThingType itself after clearing the Things. Until
+  fixed, a clean teardown may need the manual delete-thing + deprecate + wait +
+  retry dance above. This is a teardown-only reliability gap (does not affect a
+  fresh deploy), but it breaks the "one command clean teardown" goal.
 - **Stale SSM managed instances (builder-Pi).** Each `bundle-for-builder-pi.sh`
   run mints a NEW SSM managed-instance id; the physical Pi re-registers under a
   new `mi-...` id and the old ones linger as `ConnectionLost`. After registering
@@ -96,6 +121,106 @@ the teardown/rebuild. Handle these to keep a from-scratch deploy clean:
   is reused across rebuilds (fine, just don't expect the stack to own it).
 
 Backlog candidates surfaced during rebuilds (not yet fixed):
+- **[TOP PRIORITY — ABSOLUTE WORKSHOP REQUIREMENT] [FEATURE — OTA firmware
+  signing + on-device verification via wolfTPM software TPM] Sign firmware and
+  have the device verify the signature before applying an OTA update.**
+  This is now the #1 backlog item and will be built on its OWN feature branch
+  (after the ML-DSA cert-migration branch merges to main). It MUST be
+  spec-driven: update the design doc (`.kiro/specs/...`) FIRST so the whole
+  feature is specified before implementation.
+
+  **Why:** today OTA firmware is delivered unsigned (presigned S3 URL -> device
+  flashes whatever it downloads). For a security workshop about post-quantum
+  integrity, the device must VERIFY that firmware came from a trusted signer
+  before applying it. The trust story is split by environment:
+  - **Builder-Pi (initial flash) = TRUSTED environment** (like a customer's
+    factory). No signature verification needed there — the operator physically
+    controls the board and flashes over USB. So the INITIAL classical flash
+    (1.0.0-classical) does NOT need to be signed/verified.
+  - **OTA (device in the field) = UNTRUSTED delivery path.** Every OTA update
+    MUST be signed, and the device MUST verify the signature before applying it.
+
+  **wolfTPM software TPM (the mechanism):** implement wolfTPM's software TPM
+  (wolfTPM built against a simulator / software backend, NOT a physical TPM chip
+  — the ESP32-S3 has no discrete TPM) INSIDE the device firmware. The software
+  TPM performs the signature verification of incoming OTA firmware. Goal: the
+  software TPM is configured to run on ALL firmware versions (it is part of the
+  base firmware from here on), so every variant carries the verifier even though
+  the SIGNATURE ALGORITHM it checks changes as the migration progresses.
+  Research task before design: confirm wolfTPM-software builds/links in the
+  Arduino/ESP32-S3 wolfSSL setup we already use (wolfSSL is present for TLS), its
+  flash/heap/PSRAM cost on top of the existing ML-KEM/ML-DSA footprint (min-heap
+  is already the tight metric — fw3 dropped to ~82K), and whether wolfTPM's
+  verify path can consume the ACM PCA-issued signer cert/key material. wolfTPM
+  may be heavier than strictly needed for "verify a signature" — evaluate
+  wolfTPM-software vs. using wolfSSL's signature-verify primitives directly under
+  a "software TPM" framing; pick based on the workshop's teaching goal + memory
+  budget. (User explicitly wants wolfTPM software TPM — treat that as the
+  intended mechanism unless the memory/build research shows it is infeasible on
+  the S3, in which case surface the tradeoff.)
+
+  **Signature-algorithm progression (mirrors the crypto-migration narrative):**
+  - `2.0.0-pqc` and `3.0.0-mldsa` firmware: signed with a **CLASSICAL** signature,
+    generated by the **classical TLS ACM PCA** (the existing EC_prime256v1 CA).
+    (i.e. the first signed OTAs still use a classical signer — the signing
+    migration lags the transport/cert migration by design.)
+  - `4.0.0-signer` firmware: the transition point — signed with an **ML-DSA-44**
+    signature from the **ML-DSA-44 ACM PCA** (the Step-2 CA). This is the "we are
+    now signing with PQC" milestone.
+  - Thereafter (>= 4.0.0) ALL firmware updates use **ML-DSA-44 signatures**.
+  - `5.0.0-verified` firmware: signed by ML-DSA-44, and its SUCCESSFUL OTA
+    deployment is the PROOF that on-device ML-DSA signature verification works —
+    this is the acceptance test for the whole feature (a device that rejects a
+    bad/again-classical signature and accepts the valid ML-DSA one).
+
+  **Signer public certificate on the device (open design Q — think about it at
+  design time):** to verify an OTA signature the device needs the signer's
+  PUBLIC certificate (from the relevant ACM PCA). That cert must be provisioned
+  to the device AND survive reboots. User's guess: put it in **PSRAM** — but
+  PSRAM is volatile (does not survive a power cycle), so a durable store is
+  needed: candidates are NVS / a dedicated flash partition / the SPIFFS-or-LittleFS
+  data partition, possibly cached into PSRAM at boot for the verify path. When we
+  do this: decide the durable store, how the signer cert is delivered/rotated
+  (baked into firmware? OTA'd separately? provisioned at registration like the
+  device cert?), and the classical->ML-DSA signer-cert cutover (the device needs
+  the ML-DSA signer public cert IN PLACE before it can verify a 4.0.0+ update —
+  chicken-and-egg: the signer cert update must ship on/with the LAST
+  classically-signed update, or be provisioned ahead of the cutover). This is the
+  trickiest sequencing problem in the feature — spec it explicitly.
+
+  **Where the signing happens (cloud side):** the per-device firmware build
+  (buildspec.yml) already issues device certs from the two ACM PCAs; extend the
+  build (or the publish-ota path) to SIGN the built firmware artifact with the
+  appropriate CA's key per variant (classical CA for 2.0.0/3.0.0, ML-DSA CA for
+  4.0.0+), and publish the signature alongside the firmware in S3
+  (`<serial>/<version>/firmware.bin` + `.sig`). The OTA command payload
+  (publish-ota) then carries the signature (or its S3 location) so the device can
+  fetch + verify before flashing. NOTE: ACM PCA issues CERTIFICATES, not a generic
+  signing oracle — signing an arbitrary firmware blob may need the CA's
+  key/cert used via the shared cert-issuer container (OpenSSL 3.5 + oqs-provider
+  for ML-DSA), i.e. sign with a key whose cert chains to the PCA, rather than
+  asking PCA to sign the blob directly. Resolve this in the spec (how to produce
+  an ML-DSA-44 signature over the firmware that the device can verify against the
+  PCA-issued signer public cert).
+
+  **Firmware version map after this feature (extends the current
+  classical/pqc/pqc-mldsa set in prepare-build VARIANT_CONFIG):**
+  1.0.0-classical (unsigned, USB-flashed, trusted) ->
+  2.0.0-pqc (ML-KEM, classical cert, **classically-signed OTA**) ->
+  3.0.0-mldsa (ML-KEM + ML-DSA cert, **classically-signed OTA**) ->
+  4.0.0-signer (**ML-DSA-44-signed OTA**, signer cutover) ->
+  5.0.0-verified (ML-DSA-44-signed; proves on-device verification works).
+  The software TPM verifier ships in ALL of them; only the signature it checks
+  changes.
+
+  **Definition of done:** spec doc updated first; wolfTPM-software verifier in the
+  base firmware across all variants; cloud build signs artifacts per the variant
+  progression (classical CA then ML-DSA CA); signer public cert durably
+  provisioned on-device (survives reboot) with a defined cutover; OTA path carries
+  + the device verifies the signature before applying; and a clean run of the full
+  chain culminating in 5.0.0-verified deploying successfully (and a
+  bad-signature update being REJECTED) on a real device. Clean from-scratch
+  deploy of both accounts still holds.
 - **[FEATURE — Step 2 of the migration path: migrate the CERTIFICATES to PQC
   signatures (ML-DSA-44)] Build the certificate-migration flow.** The workshop
   today performs Step 1 only — migrating the key EXCHANGE to hybrid ML-KEM
@@ -160,6 +285,38 @@ Backlog candidates surfaced during rebuilds (not yet fixed):
   a flag-day cutover. Lower urgency than Step 1 (cert forgery needs a quantum
   computer that does not yet exist), and gated on the CA feasibility question in
   part 1.
+- **[Cloud dashboard — Step 2 device-state display: 3 fixes] Surface the real
+  firmware version + running variant, and make the picker offer only the OTHER
+  variants.** Observed on pqc-a (Sep 25) during the first full migration test,
+  on the cloud dashboard (`raw_device_builder/dashboard-v2/frontend`), device
+  card for esp32-C69E18 running fw1 classical. Three related defects, all rooted
+  in the same gap — the device telemetry / `pqc-workshop-devices` record does not
+  carry the firmware version or the variant, so the card can't show them:
+  1. **Firmware version shows `-`.** The card's "Firmware" metric renders
+     `device.firmwareVersion`, but the record's `firmwareVersion` is null (the
+     device telemetry doesn't report it, and `detectVariant` only *reads* it).
+     Fix: have the ESP32 firmware publish its `FIRMWARE_VERSION` in telemetry and
+     the telemetry-processor Lambda write it to `firmwareVersion`, so the card
+     shows e.g. `1.0.0` / `2.0.0` / `3.0.0` instead of `-`.
+  2. **"Running:" shows `unknown`.** `detectVariant(device)` (App.jsx) infers the
+     variant from `firmwareVersion` (1.x/2.x/3.x) with a `pqcAlgorithm` fallback;
+     with `firmwareVersion` null and only `ECDHE-P256` in `pqcAlgorithm` it
+     returns null → "unknown". Fixing (1) makes detectVariant resolve correctly;
+     alternatively have telemetry carry an explicit `variant`/`firmwareType`
+     field and key off that (more robust than string-matching the version).
+  3. **Picker lists the CURRENT variant too.** The `<select>` renders all of
+     VARIANTS (with the current one tagged "(current)"). It should offer only the
+     variants you can switch TO — exclude `currentVariant` from the options (and
+     drop the now-unnecessary "(current)" suffix). Keep a sensible default when
+     the current variant is unknown (fall back to showing all, or default to pqc).
+  Note the fix order: (1) is the enabler — once `firmwareVersion` is real
+  telemetry, (2) and (3) mostly fall out (detectVariant works → the picker can
+  exclude the known current). User decision (Sep 25): DEFER until the initial
+  full migration path (fw1→2→3 + rollback) is proven on pqc-a; then adjust the
+  GUI + registry/telemetry together and re-test. Touches: the ESP32 sketches
+  (publish version/variant in telemetry), dashboard/lambda/telemetry-processor
+  (persist firmwareVersion/variant), and App.jsx (detectVariant + picker option
+  filtering).
 - **[GUI — double-click causes a duplicate registration/build] Disable the
   "Register & Flash" button once clicked.** Observed on pqc-b (Sep 18): during a
   parallel-flash test a double-click on one device's button fired TWO
@@ -272,8 +429,46 @@ Backlog candidates surfaced during rebuilds (not yet fixed):
   LAST and gate on that. Recommend (a)+(b). This is exactly the "assumed
   synchronous but actually eventually-consistent" class of bug seen elsewhere in
   this project; intermittent — will bite workshop attendees randomly.
-- **[BUG — migrationStatus never reconciled to "migrated" after PQC confirmed]
-  Close the migration loop when the device reports it is actually on ML-KEM.**
+- **[RESOLVED — Sep 28, telemetry-processor now self-reconciles] migrationStatus
+  never reconciled to a terminal state after a migration finished; it BLOCKED the
+  next migration.**
+  FIX SHIPPED: `dashboard/lambda/telemetry-processor/index.py` now does a
+  conditional `REMOVE migrationStatus, migrationError` whenever a device sends a
+  live report (a `message_id` telemetry message OR an `online` lifecycle event)
+  while `migrationStatus == 'rebooting'`. That is exactly the "device is back on
+  the new firmware" signal, so the reboot is complete and the picker returns on
+  its own — no manual DynamoDB surgery. It ONLY clears `rebooting`: `building` /
+  `pushing-ota` are left alone (the device is still on the OLD firmware and
+  legitimately publishing then), and the write is conditional so it is safe under
+  concurrency. Tests added in `test_index.py`
+  (test_reconciles_rebooting_migration_on_telemetry,
+  test_reconciles_rebooting_on_online_lifecycle,
+  test_does_not_reconcile_building_or_pushing); 57 pytest pass. Deployed to pqc-b
+  and confirmed live during the pqc-b rebuild's fw1->fw2 test (device
+  esp32-C69DE0). Chosen approach = the steering's recommended option (a): the
+  signal (device reporting in) and the writer (telemetry-processor) already
+  existed; it just needed the conditional clear. NOTE we clear the field rather
+  than set `migrationStatus=migrated`, because the dashboard's only check is
+  membership in MIGRATION_IN_PROGRESS (building/pushing-ota/rebooting) — any
+  value NOT in that set (including absent) returns the picker, and "what variant
+  is running" is derived from live telemetry (firmwareVersion/pqcAlgorithm), not
+  from migrationStatus. Original write-up retained below for history.
+  UPGRADED from cosmetic to BLOCKER on pqc-a (Sep 25) during the full
+  fw1->fw2->fw3 migration test: after fw1->fw2 succeeded and the device
+  reconnected reporting `SECP256R1_MLKEM768`, the card stayed on the disabled
+  "Rebooting into PQC…" spinner and **the firmware picker + Flash button
+  disappeared**, so fw2->fw3 could NOT be started at all. Root cause in App.jsx:
+  `migrating = MIGRATION_IN_PROGRESS.includes(device.migrationStatus)` (building/
+  pushing-ota/rebooting) → when migrating, the card renders the disabled spinner
+  INSTEAD of the picker+Flash. Because migrationStatus is stuck at `rebooting`
+  forever (never reconciled), a device that finished one migration is
+  permanently locked out of the next one. Manual unblock used during the test:
+  `aws dynamodb update-item ... REMOVE migrationStatus, migrationError` on the
+  device record — attendees obviously can't do that, so this MUST be fixed
+  before pqc-b (the workshop's whole point is chaining migrations
+  classical->pqc->pqc-mldsa). The reconcile fix below also fixes the earlier
+  "Running: unknown" / firmware-version display items (they share the telemetry
+  gap). Prior observation retained:
   Observed on pqc-b (Sep 18): both devices (esp32-C69E44, esp32-C69DE0)
   successfully migrated — Step Function SUCCEEDED, PQC firmware built + OTA'd,
   devices rebooted and reconnected to the broker with the hybrid handshake
@@ -562,12 +757,22 @@ Backlog candidates surfaced during rebuilds (not yet fixed):
   Studio run. (Note: the AP lives in an SSM document run by the remote
   orchestrator, not in an on-Pi `setup-all.sh` — the on-Pi provisioning was moved
   to SSM documents; the outcome is the same: no manual `nmcli`.)
-- **Dashboard LED button not working (low priority, later fix).** On the device
+- **[BLOCKER for pqc-b push] Dashboard LED on/off button not working.**
+  Re-confirmed on pqc-a (Sep 25) during the full migration test: the LED on/off
+  control on the device card does not actuate the device. On the device
   dashboard, the LED (command) button does not actuate the device. Likely the
   cmd/<thing>/+ command path (dashboard -> AppSync/API -> IoT -> broker bridge
   inbound topic -> device) or the firmware's command handler. Device DOES
   subscribe to cmd/esp32-<serial>/+ (seen in broker logs), so the downlink wiring
-  is the place to check. Defer — not blocking device connect/telemetry/migration.
+  is the place to check. In the v2 frontend the LED toggle calls
+  `onCommand(thingName, 'led-on'|'led-off', 'control')` -> the `sendCommand`
+  AppSync mutation -> command-publisher Lambda -> IoT publish; audit that whole
+  chain (topic suffix 'control' vs the firmware's expected `cmd/<thing>/+`
+  subscription, the command-publisher topic construction, and the firmware
+  command handler). User decision (Sep 25): this MUST be fixed before we push to
+  pqc-b (no longer "low priority / defer"). Not blocking the current
+  connect/telemetry/migration validation, but a required GUI fix for the pqc-b
+  gate. Relates to the "dashboard v2 command/mutation wiring audit" note above.
 - **Registrar partial-failure cleanup (near-term, low effort).** The
   `device-registrar` Lambda does cert -> create thing -> create policy ->
   DynamoDB -> start CodeBuild sequentially; if a later step fails the earlier
@@ -576,20 +781,108 @@ Backlog candidates surfaced during rebuilds (not yet fixed):
   missing builder image). Add best-effort rollback on failure so a failed
   registration doesn't accumulate orphans. Small change to the existing Lambda,
   no Step Function required.
-- **Initial register+flash as a Step Function (optional, deferred — decide later).**
+- **Initial register+flash as a Step Function (SEPARATE post-ML-DSA branch —
+  decided, do NOT bundle into the cert-migration feature).**
   The classical migration already runs on the `pqc-workshop-pqc-migration` Step
   Function; the INITIAL register+build+flash does NOT (it's a synchronous
   registrar Lambda + the Pi polling CodeBuild). Migrating the cloud half
-  (cert/thing/policy/ddb/start-build) to a Step Function would give consistent
+  (thing/policy/ddb/start-build) to a Step Function would give consistent
   pipeline-style observability + per-step retries + rollback, symmetric with the
-  migration flow. Caveats: the flash/USB/serial half MUST stay on the Pi
-  (hardware), so end-to-end visibility is still split; adds deploy surface; the
-  registrar isn't where current failures are. Interesting idea worth exploring:
-  make the Pi a WORKER that polls the SFN (task token / SFN activity) for "certs
-  + firmware ready, your turn to flash" and reports flash status back — this could
-  actually improve the Pi-side reliability/structure too. User's lean: not clearly
-  worth the effort, but likes the consistent observability + rollback; PARK and
-  revisit. Do NOT implement without an explicit go.
+  migration flow.
+  - **The ML-DSA WS2 refactor (commit 122e0c0) removed the biggest blocker:**
+    cert issuance moved OUT of the registrar Lambda into the shared cert-issuer
+    CodeBuild job, so `device-registrar` is now pure orchestration (create Thing
+    → create policy → write registry → start build). That decomposes into SFN
+    states cleanly, and the shared cert-issuer image already drops into an SFN via
+    `codebuild:startBuild.sync`. So most of the strategic groundwork is already
+    laid by WS2.
+  - **Why it is NOT part of the cert-migration feature branch:** different
+    concern (initial-flash operability, not PQC certs); bundling enlarges the
+    branch + slows the definition-of-done clean rebuild of both accounts. Also the
+    natural forcing function is WS3 — once the migration SFN input + dashboard
+    picker are variant-aware and BOTH entry points (dashboard migrate + Pi
+    register) flow through variant-aware build logic, that is the right moment to
+    look at unifying them. Refactoring registration to SFN before WS3 designs
+    against a moving target.
+  - **Preferred design when it IS done:** the Pi-as-WORKER (SFN task token /
+    activity) shape — the SFN owns cert/thing/policy/build, then hands the Pi a
+    task token ("certs + firmware ready, your turn to flash") and the Pi reports
+    flash status back. This gains real resumability/observability (not just a
+    state machine wrapping the same synchronous flow) and improves Pi-side
+    structure. Caveat: the flash/USB/serial half MUST stay on the Pi (hardware),
+    so end-to-end visibility is inherently split no matter what.
+  - **DETAILED DESIGN (grounded in the current code — do in a later feature
+    branch, phased). Recommendation: Phase 1 first, keep `/register`, new
+    branch `feature/registration-step-function`.**
+
+    Current shape (what we're replacing): Pi "Register & Flash" -> API Gateway
+    `/register` (SigV4, AWS_IAM) -> `device-registrar` Lambda does it all
+    sequentially (create Thing -> create per-device policy -> write registry ->
+    seed dashboard row -> `codebuild.start_build`) -> returns `buildId` -> the Pi
+    polls CodeBuild directly (`batch_get_builds`, ~600s) -> Pi S3-downloads
+    `<serial>/<version>/firmware.merged.bin` (+ companions) -> `esptool` flash ->
+    `verify_boot`. The migration path is ALREADY the target pattern:
+    AppSync -> `start-migration` -> `pqc-workshop-pqc-migration` SFN
+    (SetStatusBuilding -> PrepareBuild -> BuildNeeded? -> WaitForBuild via
+    `codebuild:startBuild.sync` -> SetStatusPushing -> PublishOta ->
+    SetStatusRebooting, Catch -> SetStatusFailed), writing live `migrationStatus`
+    to `pqc-workshop-devices`. BOTH paths drive the SAME `FirmwareBuildProject` +
+    `buildspec.yml`, differing only in `FIRMWARE_VARIANT`/version and delivery
+    (USB flash vs OTA).
+
+    **Phase 1 — decompose the cloud half into a Step Function; keep the Pi's
+    top-down polling (small, safe Pi change).**
+    - New `pqc-workshop-device-registration` STANDARD state machine mirroring the
+      migration ASL: `SetStatusRegistering` -> `CreateThingAndPolicy` ->
+      `PrepareBuild` (REUSE the existing `prepare-build` Lambda — it already
+      handles the `classical` variant via VARIANT_CONFIG and resolves buildEnv,
+      so the registrar's duplicated inline logic is deleted) -> `BuildNeeded?` ->
+      `WaitForBuild` (`codebuild:startBuild.sync`, `FIRMWARE_VARIANT=classical`)
+      -> `SetStatusReady`, with `Catch -> SetStatusFailed`. Thing/policy creation
+      can be a small Lambda (reuse device-registrar's IoT logic) or SDK service
+      integrations; keep the registry-write + dashboard-seed as states.
+    - Write a live `registrationStatus` (registering/building/ready/failed) to
+      the dashboard row in `pqc-workshop-devices`, EXACTLY like `migrationStatus`.
+      This is what makes "build failed" a visible, retryable state (folds in the
+      "registered but not flashed" dead-end fix — see next bullet) and lets BOTH
+      the dashboard and the Pi observe progress.
+    - `/register` now backs onto a tiny `start-registration` Lambda (twin of
+      `start-migration`) that `states:StartExecution` and returns immediately
+      (`{executionArn, thingName}`). KEEP the API Gateway `/register` entry +
+      SigV4 so the Pi change is minimal and the auth path is unchanged.
+    - Pi change (minimal): instead of polling CodeBuild by `buildId`, poll the
+      device row's `registrationStatus` (or `DescribeExecution`) until `ready`,
+      then run the EXISTING download + `esptool` flash + verify unchanged. The
+      hardware half stays exactly as-is.
+    - Net Phase-1 win: cloud side is now symmetric with migration (same SFN
+      idioms, `.sync` build wait, DynamoDB status writes), shares `prepare-build`,
+      is debuggable per-state with retries/rollback — with only a small Pi poll
+      change and no task-token inversion yet.
+
+    **Phase 2 — invert to task-token (Pi-as-worker), once Phase 1 is proven.**
+    - After `WaitForBuild`, add a `.waitForTaskToken` state: the SFN hands the Pi
+      a task token ("firmware ready, flash it"), the Pi flashes and calls back
+      `SendTaskSuccess`/`SendTaskFailure`. This is the steering's end-state
+      (true resumability + a single execution spanning cloud+Pi), but it is a
+      LARGER Pi-app change (the Pi becomes a callback worker — long-poll an SFN
+      activity, or receive the token in the register response and call back)
+      rather than a top-down driver. Decoupling it from Phase 1 de-risks both.
+    - Inherent limit (accept it): the flash/USB/serial half stays on the Pi, so
+      end-to-end visibility is split no matter what; task-token just gives one
+      execution that MODELS the split rather than two disjoint halves.
+
+    **Scope guardrails:** own branch (not the cert-migration/ML-DSA work); WS3 is
+    the natural forcing function (unify once both entry points are variant-aware);
+    definition-of-done stays a clean from-scratch deploy in BOTH pqc-b and pqc-a.
+    Open design Qs recorded: (1) Phase 1 vs straight-to-task-token — Phase 1
+    first; (2) keep `/register` API GW entry vs Pi calling StartExecution direct
+    — keep `/register`; (3) cut `feature/registration-step-function`.
+  - **Fold in the "registered but not flashed" GUI dead-end item** (below) — a
+    resumable/observable pipeline makes "build failed" a visible retryable state
+    rather than a stuck card, so that item is the proper fix that this refactor
+    enables. Do them together.
+  - Do NOT implement in the cert-migration branch. New branch, after the ML-DSA
+    feature reaches its definition of done.
 - **GUI state gap: "registered but not flashed" is a dead-end.** When a device is
   registered but its firmware build failed (no firmware in S3), the builder-Pi
   GUI card only offers Reflash/Serial/Deregister — and Reflash only DOWNLOADS
@@ -617,6 +910,188 @@ Backlog candidates surfaced during rebuilds (not yet fixed):
 - Broker image build depends on `apt-get` from the Ubuntu mirror in the builder
   stage; hardened with retries/timeouts + 60-min CodeBuild timeout, but a fully
   offline/pinned base or pre-baked deps would be more robust for Workshop Studio.
+- **[SECURITY REVIEW BLOCKER — scoped IAM policy for the Cloud IDE deployment
+  role] Produce a service-scoped (not least-privilege) IAM policy that grants the
+  Workshop Studio Code Editor role exactly the services the deployment needs, and
+  nothing more.** HIGH IMPORTANCE — the workshop cannot pass its security review
+  with the current policy.
+
+  Context / where this lives: the workshop content repo is at
+  `/Volumes/workplace/studio.us-east-1.prod.workshops.aws/pqc-migration-for-iot`.
+  Its `contentspec.yaml` wires a `participantRole` whose policy is
+  `static/iam-policy.json`, and a `static/infrastructure/code-editor.yaml`
+  CloudFormation template that stands up the operator IDE (AWS Code Editor / VS
+  Code-in-browser on EC2 behind CloudFront). In this workshop the PARTICIPANT is
+  the OPERATOR, who runs the ENTIRE deployment (`deploy-workshop.sh` + the manual
+  firmware-image build + builder-Pi bundle/provisioning) from that Code Editor.
+  So the participant role IS the deployment role, and it must carry every
+  permission the deploy exercises. The repo already flags this: contentspec has a
+  `TODO: tighten for an attendee-facing event` and the policy is currently
+  effectively `service:*` on `*`.
+
+  Current state of `static/iam-policy.json` (the thing to replace): one
+  `Allow` statement with `Action` = `*:*`-style wildcards across ~25 services
+  (cloudformation, ec2, ecs, ecr, elasticloadbalancing, codebuild, lambda,
+  states, iot, iotanalytics, acm-pca, s3, dynamodb, appsync, cloudfront,
+  cognito-idp, cognito-identity, ssm, ssmmessages, ec2messages, secretsmanager,
+  kms, logs, cloudwatch, plus sts:GetCallerIdentity/AssumeRole) on `Resource:*`,
+  a blanket `iam:PassRole` on `*`, and a broad `iam:Create/Delete/...Role/Policy/
+  InstanceProfile` block. Functional, but a security review will reject the
+  open-ended `*` service actions and unscoped PassRole.
+
+  The ask (per user, 2026-09-30): NOT least-privilege — a **service-level**
+  policy that ONLY allows the services the deployment actually uses for
+  provisioning, scoped tighter than `*:*` where it is cheap to do so, but
+  pragmatic (broad within a service is acceptable; whole unused services are
+  not). The goal is "this role can only touch the services this workshop
+  provisions," which is what the reviewer needs to see.
+
+  What the deployment ACTUALLY uses (grounded in the deploy scripts + all the
+  stacks/CFN we rebuilt — use this as the authoritative service surface; verify
+  against the templates when writing the policy):
+  - **cloudformation** — deploy/delete the master `pqc-workshop` stack + nested
+    stacks (`aws cloudformation package/deploy`, CAPABILITY_NAMED_IAM +
+    CAPABILITY_AUTO_EXPAND).
+  - **iam** — the nested stacks create NAMED roles/policies (device-registrar,
+    codebuild-firmware, state-machine, dashboard roles, builder-pi-ssm, etc.),
+    instance profiles, and service-linked roles; plus `iam:PassRole` for
+    Lambda/CodeBuild/States/ECS/EC2 assuming them. This is the hardest to scope —
+    the review will care most here. Named-role ARNs are mostly known
+    (`pqc-workshop-*`), so PassRole + role management can be scoped to
+    `arn:aws:iam::<acct>:role/pqc-workshop-*` (and the CFN-generated
+    `pqc-workshop-*` auto-named roles). Confirm every role name/prefix.
+  - **s3** — create/read/write/delete + versioned-object cleanup on the workshop
+    buckets (`pqc-workshop-cfn-*`, `-broker-source-*`, `-dashboard-source-*`,
+    `-firmware-*`, dashboard hosting bucket), incl. `s3api` version ops used at
+    teardown.
+  - **ecr** — create repos, get-login/auth, push/pull, batch-delete-image
+    (mosquitto-broker, cert-issuer, firmware-builder).
+  - **codebuild** — create projects + start-build + batch-get-builds (broker
+    image, cert-issuer image, broker-cert-provisioner, dashboard build, firmware
+    image, per-device firmware build).
+  - **ecs / elasticloadbalancing** — Fargate broker service + task defs; the NLB
+    + target groups (8883 classical, 8884 ML-DSA).
+  - **ec2** — VPC create path (VPC, subnets, IGW, NAT, route tables, SGs,
+    endpoints, the VPC BPA exclusion) + the Code Editor EC2 instance.
+  - **acm-pca** — create/activate/delete the two Private CAs (classical
+    EC_prime256v1 + ML_DSA_44), issue certs. Also `acm` if used.
+  - **iot** — Things, thing types, policies, rules, endpoints, the broker-bridge
+    provisioning; `iotanalytics` only if actually referenced (verify — may be
+    droppable).
+  - **lambda** — all the workshop Lambdas (registrar, deregistrar, prepare-build,
+    publish-ota, start-migration, telemetry-processor, command-publisher,
+    message-logger, broker-log-reader, fleet-cleanup, build-trigger, ssm-
+    activation, dashboard build-trigger).
+  - **states** — the pqc-migration state machine (and the future registration
+    one).
+  - **dynamodb** — the 3 tables (devices, device-registry, message-log).
+  - **appsync** — the dashboard GraphQL API + resolvers + data sources.
+  - **cloudfront** — dashboard distribution + invalidations.
+  - **cognito-idp / cognito-identity** — dashboard identity pool.
+  - **ssm / ssmmessages / ec2messages** — `/pqc-workshop/*` params
+    (incl. SecureString WiFi pw), the SSM hybrid activation + documents that
+    provision the builder-Pi, Session Manager for the Code Editor EC2, and
+    `ssm:SendCommand`/`GetCommandInvocation` for remote Pi provisioning.
+  - **secretsmanager** — broker cert/bridge secrets.
+  - **kms** — decrypt for the SSM SecureString + any SSE.
+  - **logs / cloudwatch** — Lambda/CodeBuild/broker log groups, dashboard metrics,
+    the broker-log-reader Logs Insights queries.
+  - **sts** — GetCallerIdentity (every script) + AssumeRole (ada/profile).
+  - **events** — REQUIRED and currently MISSING from the policy: the
+    `codebuild:startBuild.sync` Step Functions integration needs
+    `events:PutRule/PutTargets/DescribeRule` on the managed
+    `StepFunctionsGetEvent*ForCodeBuildStartBuildRule`. The STATE-MACHINE role has
+    it, but if the OPERATOR ever runs a build sync directly it'd need it too —
+    audit whether the operator role needs `events:*`. (Likely yes for
+    completeness; confirm.)
+
+  Deliverables when this is done:
+  1. A rewritten `static/iam-policy.json` scoped to the service list above (drop
+    any service the deploy never calls — e.g. confirm/drop `iotanalytics`), with
+    `iam:PassRole` and IAM role/policy management scoped to `pqc-workshop-*` ARNs
+    where feasible, and the `events` permissions ADDED.
+  2. A short rationale doc mapping each allowed service -> what in the deploy
+    uses it (the reviewer will want this trace; the list above is the seed).
+  3. Re-validate by running a full clean deploy in a fresh account using ONLY the
+    scoped policy on the operator role — the definition-of-done is that
+    `deploy-workshop.sh` + firmware image + builder-Pi provisioning ALL succeed
+    with the tightened policy (a permission gap must fail the deploy, not pass
+    silently). Iterate: run, catch the AccessDenied, add the specific
+    service/action, re-run, until a clean deploy passes.
+  Caveat: verify the exact action/resource surface against the CFN templates and
+  the deploy/teardown scripts rather than trusting the list above verbatim — it
+  is the grounded starting point, not the final word. Keep it broad-within-service
+  (not least-privilege) per the user's explicit instruction; the reviewer's bar
+  is "no unused services + no unscoped PassRole/`*` service actions," not
+  per-action minimization.
+- **[Builder-Pi — automate the Pi build with a custom-image pipeline] Replace
+  the register + SSM-document provisioning flow with a pre-baked Raspberry Pi OS
+  image built by a pipeline, so a workshop Pi comes ready with all software and
+  the ONLY per-event config is the built-in WiFi credentials.** Today standing up
+  a builder-Pi is a multi-step live-provisioning dance: `bundle-for-builder-pi.sh`
+  mints an SSM activation + zip, the operator unzips and runs `setup-ssm.sh` on
+  the Pi, then `setup-builder-pi-remote.sh` runs 5 SSM documents (install-awscli,
+  install-toolchain [the slow ~5GB arduino-cli + ESP32 core], deploy-app,
+  configure-service, configure-wifi-ap) against the running Pi. That is slow,
+  online-dependent, and a known source of flakiness (the `set -e`/`$HOME`-unset
+  abort that drove the "bundle = SSM bootstrap only" refactor; the AP PSK-typo
+  4-way-handshake timeout that drove the SSM-document AP automation). A baked
+  image collapses all of it to "flash SD card, set WiFi creds, boot."
+
+  Model to follow — the AWS sample that builds custom Raspberry Pi OS images in
+  CodeBuild and ships them via CodePipeline:
+  - Blog: https://aws.amazon.com/blogs/devops/automating-deployments-to-raspberry-pi-devices-using-aws-codepipeline/
+  - Repo: https://github.com/aws-samples/aws-codebuild-custom-raspbian-builder
+  The sample uses CodeBuild (with QEMU/`binfmt` + `chroot`, or the Raspberry Pi
+  image-gen tooling) to customize a Raspbian/Raspberry Pi OS image inside the
+  build, then publishes the artifact. Use it as the reference for a
+  `pqc-workshop-builder-pi-image` pipeline in THIS repo.
+
+  What the baked image must contain (i.e. everything the 5 SSM documents install
+  today — audit `setup-builder-pi-remote.sh` + the `*Document` resources in
+  `cloudformation/ssm-hybrid-activation-stack.yaml` for the authoritative list):
+  - AWS CLI + the SSM agent (still register as a managed instance for OTA/logs)
+  - arduino-cli + the pinned ESP32 Arduino core + the wolfSSL PQC user_settings
+    header + `partitions_pqc_workshop.csv` (the slow install-toolchain step —
+    baking this in is the single biggest time saver)
+  - the builder-Pi Flask GUI app (`raw_device_builder/builder-pi/`) + its
+    `pqc-builder-gui.service` systemd unit, enabled
+  - the CloudWatch agent config
+  - NetworkManager set up for the dual role the Pi plays: bridge a **2.4GHz WiFi
+    AP** (what the ESP32 boards join — they are 2.4GHz-only) to the **event WiFi
+    at 5GHz** (uplink). The AP radio is detected today by its `mt76*` driver (see
+    `configure-wifi-ap` SSM doc); bake that detection + the `workshop-ap`
+    connection profile into the image.
+
+  The ONLY runtime configuration left to the operator is the WiFi credentials:
+  - the **event/uplink 5GHz** SSID + password (the Pi's WAN side), and
+  - the **2.4GHz AP** SSID + password the boards join (today `/pqc-workshop/wifi/*`
+    in SSM = `reinvent-pqc-iot-wifi` / `@reinvent2026`).
+  Provide these via a first-boot mechanism (e.g. a `userconf`/`wpa_supplicant`
+  drop file on the boot partition, or a tiny first-boot service reading a config
+  file the operator edits on the SD card) so NO SSH/SSM step is needed to make
+  the Pi functional.
+
+  Design questions to resolve when building it:
+  - **SSM activation identity.** The image can't bake a per-event activation
+    code (they expire in 7 days and are account-specific). Either (a) keep a
+    minimal first-boot SSM-register step fed by the operator (closest to today),
+    or (b) decide the baked image is self-sufficient and drop SSM for the Pi
+    entirely (loses remote logs/OTA of the Pi app). Lean (a): first-boot
+    registration, everything else baked.
+  - **Pi model / arch.** Confirm the target Pi (arm64 Raspberry Pi OS) and that
+    the ESP32 core + esptool + USB serial work on that image; the sample is
+    Raspbian-based — validate the core install under `chroot`/QEMU actually
+    produces a working toolchain when booted on real hardware.
+  - **App/version freshness.** A baked image snapshots the builder-Pi app; wire
+    the pipeline to rebuild the image on app changes (source = this repo) so the
+    image doesn't drift from `raw_device_builder/builder-pi/`.
+  - **Workshop Studio fit.** Same internal-network caveat as the other WS items —
+    the image pipeline builds in the workshop account; the published image
+    artifact must be reachable from where the operator flashes the SD card.
+  End state: hand an operator an SD card image + a one-line WiFi config; they
+  flash, set creds, boot, and the Pi is a working 2.4GHz-AP↔5GHz-uplink bridge
+  running the builder GUI — no bundle script, no SSM-document provisioning run.
 
 ## Overview
 

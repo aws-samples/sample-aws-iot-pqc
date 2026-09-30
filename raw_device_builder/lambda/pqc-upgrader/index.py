@@ -44,7 +44,7 @@ iot_data = boto3.client('iot-data', endpoint_url=f"https://{os.environ['IOT_ENDP
 TABLE_NAME = os.environ['REGISTRY_TABLE']
 FIRMWARE_BUCKET = os.environ['FIRMWARE_BUCKET']
 BUILD_PROJECT = os.environ['BUILD_PROJECT']
-PQC_VERSION = '1.0.0-pqc'
+PQC_VERSION = '2.0.0-pqc'  # canonical pqc version (retired lambda; kept in sync)
 PRESIGNED_URL_EXPIRY = 300  # 5 minutes
 
 table = dynamodb.Table(TABLE_NAME)

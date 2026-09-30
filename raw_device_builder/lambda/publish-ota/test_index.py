@@ -28,7 +28,7 @@ from conftest import load_handler_module  # noqa: E402
 
 REGISTRY_TABLE = "pqc-workshop-device-registry"
 FIRMWARE_BUCKET = "pqc-workshop-firmware-087195661091"
-PQC_VERSION = "1.0.0-pqc"
+PQC_VERSION = "2.0.0-pqc"
 
 
 def _env():

@@ -71,6 +71,20 @@
 #define WOLFSSL_WC_MLKEM            // Use wolfSSL's native ML-KEM implementation (5.8.x)
 #define WOLFSSL_SHA3                // Required by ML-KEM
 
+// ─── Post-Quantum Authentication (ML-DSA / FIPS 204) — Step 2 ──────────────
+// ML-DSA (Dilithium) is the post-quantum SIGNATURE scheme. It is used for TLS
+// 1.3 AUTHENTICATION: the ML-DSA firmware variant presents an ML-DSA-44 client
+// certificate and verifies the broker's ML-DSA-44 server certificate (both ends
+// are wolfSSL, so interop is guaranteed). This is separate from ML-KEM (key
+// exchange) above — Step 2 migrates the CERTIFICATE signature to post-quantum.
+// Enabled for ALL firmware variants (the classical/pqc sketches simply do not
+// present an ML-DSA cert); keeping one wolfSSL config keeps the build uniform.
+#define HAVE_DILITHIUM              // Enable ML-DSA (FIPS 204) signatures
+#define WOLFSSL_WC_DILITHIUM        // wolfSSL native ML-DSA implementation
+#define WOLFSSL_DILITHIUM_VERIFY    // Verify an ML-DSA peer certificate (broker cert)
+#define WOLFSSL_DILITHIUM_SIGN      // Sign the CertificateVerify with the ML-DSA key
+// ML-DSA uses SHAKE128/256 (already enabled below for ML-KEM) and SHA3.
+
 // ─── ECC (for hybrid PQC key exchange) ──────────────────────────────────────
 #define HAVE_ECC
 #define ECC_TIMING_RESISTANT
@@ -112,9 +126,25 @@
 #define WOLFSSL_SMALL_STACK
 #define WOLFSSL_SMALL_STACK_CACHE
 
-// Increase max handshake message size for PQC (Kyber keys are larger)
-#define MAX_CERTIFICATE_SZ   8192
-#define LARGE_STATIC_BUFFERS
+// Max handshake message size for PQC. ML-KEM keys are larger than classical,
+// but ML-DSA-44 CERTIFICATES are much larger again: a single ML-DSA-44 cert is
+// ~3.8 KB, and the broker sends a CHAIN (server cert + issuing CA cert), so the
+// TLS Certificate message is ~8 KB+ — over the old 8192 cap. With the cap too
+// small the device aborted the handshake right after "Starting TLS 1.3 PQC
+// handshake" with wolfSSL BUFFER_E / "Handshake message too large" (code=-404)
+// when receiving the broker's ML-DSA-44 cert on 8884 (observed on the pqc-a
+// fw2->fw3 migration).
+//
+// 16 KB comfortably covers the ~8 KB inbound ML-DSA chain AND the device's own
+// outbound ML-DSA cert + CertificateVerify, with headroom, while keeping RAM use
+// modest — the ESP32-S3 min-heap during the handshake was ~44-90 KB, so we must
+// not over-reserve. We deliberately do NOT define LARGE_STATIC_BUFFERS: that
+// forces wolfSSL to reserve the record/cert buffers at their MAX size for the
+// whole session, which would waste ~tens of KB of heap. Without it wolfSSL grows
+// the input buffer dynamically only when the large cert actually arrives (peak
+// memory ~ one message), which is how wolfSSL intends large PQC certs to be
+// handled and is far safer on a constrained device.
+#define MAX_CERTIFICATE_SZ   16384
 
 // ─── Disable Unused Features (save flash/RAM) ──────────────────────────────
 #define NO_DSA

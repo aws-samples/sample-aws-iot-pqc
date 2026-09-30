@@ -90,14 +90,56 @@ const MIGRATION_LABELS = {
 };
 const MIGRATION_IN_PROGRESS = ['building', 'pushing-ota', 'rebooting'];
 
-function DeviceCard({ device, onCommand, onShowLog, onBuildPqc }) {
+// The three firmware variants the operator can flash, in migration order. The
+// value is what start-migration expects; the label is what the picker shows.
+const VARIANTS = ['classical', 'pqc', 'pqc-mldsa'];
+const VARIANT_LABELS = {
+  classical: 'Classical (ECDSA)',
+  pqc: 'PQC key exchange (ML-KEM)',
+  'pqc-mldsa': 'PQC + ML-DSA-44 cert',
+};
+
+// Best-effort "what is the device running now" from live telemetry. The device
+// reports firmwareVersion via telemetry. The version is the single canonical
+// per-variant string (matches the S3 artifact dir + OTA job): the variant is
+// the suffix — 1.0.0-classical / 2.0.0-pqc / 3.0.0-mldsa. Match on the suffix
+// (robust to future major-number changes). Used only to pre-select the picker's
+// next logical step — the operator can always override, so an unknown/missing
+// reading just defaults to "pqc".
+function detectVariant(device) {
+  const v = (device.firmwareVersion || '').trim().toLowerCase();
+  if (v.endsWith('-mldsa')) return 'pqc-mldsa';
+  if (v.endsWith('-pqc')) return 'pqc';
+  if (v.endsWith('-classical')) return 'classical';
+  // No firmwareVersion reading yet: fall back to the key-exchange signal.
+  const alg = device.pqcAlgorithm || '';
+  if (alg.includes('MLKEM') || alg.includes('Kyber') || alg.includes('PQC')) return 'pqc';
+  return null;
+}
+
+// Pre-select the next step up the migration path from the current variant, so
+// the common "advance this device" action is one click.
+function nextVariant(current) {
+  const idx = VARIANTS.indexOf(current);
+  if (idx === -1) return 'pqc';
+  return VARIANTS[Math.min(idx + 1, VARIANTS.length - 1)];
+}
+
+function DeviceCard({ device, onCommand, onShowLog, onFlash }) {
   const [ledOn, setLedOn] = useState(true);
   const isPqc = device.pqcAlgorithm &&
     (device.pqcAlgorithm.includes('MLKEM') || device.pqcAlgorithm.includes('Kyber') || device.pqcAlgorithm.includes('PQC'));
+  // The certificate signer is post-quantum only once it is an ML-DSA cert
+  // (v3). PQC key exchange (v2) still uses a classical ECDSA certificate.
+  const isPqcCert = device.certSigAlg &&
+    (device.certSigAlg.includes('ML-DSA') || device.certSigAlg.includes('MLDSA') || device.certSigAlg.includes('Dilithium'));
   const lastSeenDate = device.lastSeen ? new Date(device.lastSeen) : null;
   const isStale = lastSeenDate ? (Date.now() - lastSeenDate.getTime() > 90000) : true;
   const isOnline = device.status === 'online' && !isStale;
   const migrating = MIGRATION_IN_PROGRESS.includes(device.migrationStatus);
+
+  const currentVariant = detectVariant(device);
+  const [selectedVariant, setSelectedVariant] = useState(() => nextVariant(currentVariant));
 
   return (
     <div className={`device-card ${isPqc ? 'pqc' : 'classical'} ${isOnline ? 'online' : 'offline'}`}>
@@ -114,6 +156,10 @@ function DeviceCard({ device, onCommand, onShowLog, onBuildPqc }) {
           <span className={isPqc ? 'pqc-text' : 'classical-text'}>{device.pqcAlgorithm || '—'}</span>
         </div>
         <div className="metric">
+          <label>Cert Signature</label>
+          <span className={isPqcCert ? 'pqc-text' : 'classical-text'}>{device.certSigAlg || '—'}</span>
+        </div>
+        <div className="metric">
           <label>TLS Version</label>
           <span>{device.tlsVersion || '—'}</span>
         </div>
@@ -126,8 +172,40 @@ function DeviceCard({ device, onCommand, onShowLog, onBuildPqc }) {
           <span>{device.wifiRssi ? `${device.wifiRssi} dBm` : '—'}</span>
         </div>
         <div className="metric">
-          <label>Heap</label>
-          <span>{device.freeHeap ? `${Math.round(device.freeHeap / 1024)}KB` : '—'}</span>
+          <label>Heap free / used / total</label>
+          <span>
+            {device.freeHeap != null && device.heapTotal != null
+              ? `${formatKB(device.freeHeap)} / ${formatKB(device.heapTotal - device.freeHeap)} / ${formatKB(device.heapTotal)}`
+              : device.freeHeap != null
+                ? `${formatKB(device.freeHeap)} free`
+                : '—'}
+          </span>
+        </div>
+        <div className="metric">
+          <label>Min heap (low-water)</label>
+          <span>{device.minHeap != null ? formatKB(device.minHeap) : '—'}</span>
+        </div>
+        <div className="metric">
+          <label>Max contiguous block</label>
+          <span>{device.maxAllocHeap != null ? formatKB(device.maxAllocHeap) : '—'}</span>
+        </div>
+        <div className="metric">
+          <label>Flash free (OTA headroom)</label>
+          <span>{device.freeSketchSpace != null ? formatKB(device.freeSketchSpace) : '—'}</span>
+        </div>
+        <div className="metric">
+          <label>App size</label>
+          <span>{device.sketchSize != null ? formatKB(device.sketchSize) : '—'}</span>
+        </div>
+        <div className="metric">
+          <label>PSRAM free / total</label>
+          <span>
+            {device.psramSize != null
+              ? (device.psramSize === 0
+                  ? 'disabled'
+                  : `${formatKB(device.psramFree)} / ${formatKB(device.psramSize)}`)
+              : '—'}
+          </span>
         </div>
         <div className="metric">
           <label>Temp</label>
@@ -148,20 +226,40 @@ function DeviceCard({ device, onCommand, onShowLog, onBuildPqc }) {
         <button onClick={() => { const cmd = ledOn ? 'led-off' : 'led-on'; onCommand(device.thingName, cmd, 'control'); setLedOn(!ledOn); }} title="Toggle LED">
           💡 {ledOn ? 'LED Off' : 'LED On'}
         </button>
-        {!isPqc && isOnline && migrating && (
+      </div>
+
+      <div className="device-flash">
+        <div className="flash-current">
+          Running: <strong>{currentVariant ? VARIANT_LABELS[currentVariant] : 'unknown'}</strong>
+        </div>
+        {isOnline && migrating ? (
           <button className="migrate-btn migrating" disabled title="Migration in progress">
-            <span className="spinner" aria-hidden="true"></span> {MIGRATION_LABELS[device.migrationStatus]}
+            <span className="spinner" aria-hidden="true"></span> {MIGRATION_LABELS[device.migrationStatus] || 'Working…'}
           </button>
-        )}
-        {!isPqc && isOnline && !migrating && (
-          <button className="migrate-btn" onClick={() => onBuildPqc(device.thingName)} title="Build and push PQC firmware">
-            🚀 Upgrade to PQC
-          </button>
-        )}
-        {isPqc && isOnline && (
-          <button className="revert-btn" onClick={() => onCommand(device.thingName, 'migrate-classical', 'ota')} title="Revert to classical">
-            ↩️ Revert
-          </button>
+        ) : (
+          <div className="flash-controls">
+            <select
+              className="variant-picker"
+              value={selectedVariant}
+              onChange={(e) => setSelectedVariant(e.target.value)}
+              disabled={!isOnline}
+              title="Select firmware variant to flash"
+            >
+              {VARIANTS.map(v => (
+                <option key={v} value={v}>
+                  {VARIANT_LABELS[v]}{v === currentVariant ? ' (current)' : ''}
+                </option>
+              ))}
+            </select>
+            <button
+              className="migrate-btn"
+              onClick={() => onFlash(device.thingName, selectedVariant)}
+              disabled={!isOnline}
+              title="Build (if needed) and push the selected firmware via OTA"
+            >
+              🚀 Flash
+            </button>
+          </div>
         )}
       </div>
       {device.migrationStatus === 'failed' && device.migrationError && (
@@ -255,20 +353,24 @@ function App() {
     }
   };
 
-  const handleBuildPqc = async (thingName) => {
+  const handleFlash = async (thingName, variant) => {
+    const label = VARIANT_LABELS[variant] || variant;
     const confirmed = window.confirm(
-      `Build PQC firmware for ${thingName} and push via OTA?\n\n` +
-      `The device will download the new firmware and reboot with PQC TLS.`
+      `Build "${label}" firmware for ${thingName} and push via OTA?\n\n` +
+      `If it isn't already built it will be built first, then the device ` +
+      `downloads it and reboots into the selected variant.`
     );
     if (!confirmed) return;
 
-    // Starts the async Step Functions migration; returns immediately. Live
-    // progress then appears on the device card (migrationStatus) via the poll.
-    const data = await appSyncQuery(MIGRATE_FIRMWARE, { thingName });
+    // Starts the async Step Functions migration for the chosen variant; returns
+    // immediately. Live progress then appears on the device card
+    // (migrationStatus) via the poll.
+    const data = await appSyncQuery(MIGRATE_FIRMWARE, { thingName, variant });
     if (data && data.migrateFirmware && data.migrateFirmware.success) {
-      showMessage(`PQC migration started for ${thingName}. Watch the card for progress.`);
+      showMessage(`Flash to "${label}" started for ${thingName}. Watch the card for progress.`);
     } else {
-      showMessage(`Failed to start PQC migration for ${thingName}`);
+      const msg = data && data.migrateFirmware && data.migrateFirmware.message;
+      showMessage(msg || `Failed to start flash for ${thingName}`);
     }
   };
 
@@ -327,7 +429,7 @@ function App() {
                 device={device}
                 onCommand={handleCommand}
                 onShowLog={setLogDevice}
-                onBuildPqc={handleBuildPqc}
+                onFlash={handleFlash}
               />
             ))}
           </div>
@@ -349,6 +451,13 @@ function formatUptime(seconds) {
   if (seconds < 60) return `${seconds}s`;
   if (seconds < 3600) return `${Math.floor(seconds / 60)}m`;
   return `${Math.floor(seconds / 3600)}h ${Math.floor((seconds % 3600) / 60)}m`;
+}
+
+// Render a byte count in KB (device memory/flash numbers), or an em dash when
+// the value is missing. 0 is a real value (e.g. PSRAM disabled) so it is kept.
+function formatKB(bytes) {
+  if (bytes === undefined || bytes === null) return '—';
+  return `${Math.round(bytes / 1024)}KB`;
 }
 
 function truncate(str, maxLen) {

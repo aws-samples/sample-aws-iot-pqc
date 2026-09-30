@@ -10,6 +10,9 @@ phases:
       - aws s3 cp "s3://$FIRMWARE_BUCKET/source/Dockerfile" /tmp/docker-context/Dockerfile
       - aws s3 cp "s3://$FIRMWARE_BUCKET/source/wolfssl_user_settings_arduino.h" /tmp/docker-context/wolfssl_user_settings_arduino.h
       - aws s3 cp "s3://$FIRMWARE_BUCKET/source/partitions_pqc_workshop.csv" /tmp/docker-context/partitions_pqc_workshop.csv
+      # Shared cert-issuer script — baked into the image so the per-device build
+      # mints its device cert via the same code path as the broker cert-issuer.
+      - aws s3 cp "s3://$FIRMWARE_BUCKET/source/issue_cert.py" /tmp/docker-context/issue_cert.py
   build:
     commands:
       - echo "Building firmware-builder Docker image..."

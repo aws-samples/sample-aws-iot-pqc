@@ -13,7 +13,7 @@ Parameters:
     Type: List<AWS::EC2::Subnet::Id>
     Description: >
       Public subnets (>=2 AZs) for the internet-facing NLB. Devices connect to
-      the NLB here on 8883.
+      the NLB here on 8883 (classical) and 8884 (ML-DSA-44).
 
   TaskSubnetIds:
     Type: List<AWS::EC2::Subnet::Id>
@@ -328,6 +328,46 @@ Resources:
       Certificate: !GetAtt PrivateCACertificate.Certificate
       Status: ACTIVE
 
+  # ═══════════════════════════════════════════════════════════════════════════
+  # AWS Private CA — Post-Quantum ML-DSA-44 Certificate Authority (Step 2)
+  # ═══════════════════════════════════════════════════════════════════════════
+  # Runs in PARALLEL with the classical CA above. ML-DSA-44 (FIPS 204, NIST
+  # Level 2) is a post-quantum signature algorithm. ACM PCA added ML-DSA support
+  # in Nov 2025. Same ROOT type + RootCACertificate/V1 template as the classical
+  # CA — only KeyAlgorithm / SigningAlgorithm change (ML-DSA has no hash suffix).
+
+  MlDsaPrivateCA:
+    Type: AWS::ACMPCA::CertificateAuthority
+    Properties:
+      Type: ROOT
+      KeyAlgorithm: ML_DSA_44
+      SigningAlgorithm: ML_DSA_44
+      Subject:
+        CommonName: PQC Workshop ML-DSA-44 Private CA
+        Organization: AWS PQC Workshop
+        Country: US
+      RevocationConfiguration:
+        CrlConfiguration:
+          Enabled: false
+
+  MlDsaPrivateCACertificate:
+    Type: AWS::ACMPCA::Certificate
+    Properties:
+      CertificateAuthorityArn: !Ref MlDsaPrivateCA
+      CertificateSigningRequest: !GetAtt MlDsaPrivateCA.CertificateSigningRequest
+      SigningAlgorithm: ML_DSA_44
+      TemplateArn: arn:aws:acm-pca:::template/RootCACertificate/V1
+      Validity:
+        Type: YEARS
+        Value: 10
+
+  MlDsaPrivateCAActivation:
+    Type: AWS::ACMPCA::CertificateAuthorityActivation
+    Properties:
+      CertificateAuthorityArn: !Ref MlDsaPrivateCA
+      Certificate: !GetAtt MlDsaPrivateCACertificate.Certificate
+      Status: ACTIVE
+
   # ─── Broker Certificate (issued by Private CA via Lambda custom resource) ──
   # The CertProvisionerFunction generates a key, CSR, issues the cert from
   # Private CA, and stores everything in Secrets Manager automatically.
@@ -353,6 +393,25 @@ Resources:
     Properties:
       Name: pqc-broker/broker-key
       Description: Broker TLS private key
+
+  # ─── ML-DSA-44 broker cert secrets (Step 2, for the 8884 listener) ──────────
+  MlDsaBrokerCACertSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: pqc-broker/mldsa-ca-cert
+      Description: ML-DSA-44 Private CA certificate (device trust root for 8884)
+
+  MlDsaBrokerCertSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: pqc-broker/mldsa-broker-cert
+      Description: ML-DSA-44 broker TLS certificate (issued by ML-DSA-44 Private CA)
+
+  MlDsaBrokerKeySecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: pqc-broker/mldsa-broker-key
+      Description: ML-DSA-44 broker TLS private key
 
   # ═══════════════════════════════════════════════════════════════════════════
   # ECS — Cluster, Task Definition, Service
@@ -392,6 +451,10 @@ Resources:
                   - !Ref BridgeCertSecret
                   - !Ref BridgeKeySecret
                   - !Ref BridgeRootCASecret
+                  # ML-DSA-44 broker cert secrets for the 8884 listener (Step 2)
+                  - !Ref MlDsaBrokerCACertSecret
+                  - !Ref MlDsaBrokerCertSecret
+                  - !Ref MlDsaBrokerKeySecret
               - Effect: Allow
                 Action:
                   - logs:CreateLogStream
@@ -451,6 +514,9 @@ Resources:
           PortMappings:
             - ContainerPort: 8883
               Protocol: tcp
+            # ML-DSA-44 device listener (Step 2)
+            - ContainerPort: 8884
+              Protocol: tcp
           Environment:
             - Name: AWS_REGION
               Value: !Ref AWS::Region
@@ -460,6 +526,13 @@ Resources:
               Value: !Ref BrokerCertSecret
             - Name: BROKER_KEY_SECRET
               Value: !Ref BrokerKeySecret
+            # ML-DSA-44 broker cert secrets for the 8884 listener (Step 2)
+            - Name: MLDSA_CA_CERT_SECRET
+              Value: !Ref MlDsaBrokerCACertSecret
+            - Name: MLDSA_BROKER_CERT_SECRET
+              Value: !Ref MlDsaBrokerCertSecret
+            - Name: MLDSA_BROKER_KEY_SECRET
+              Value: !Ref MlDsaBrokerKeySecret
             - Name: IOT_ENDPOINT
               Value: !Ref IoTEndpoint
             - Name: BROKER_NAME
@@ -484,12 +557,17 @@ Resources:
   BrokerSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
-      GroupDescription: PQC MQTT Broker - allow port 8883
+      GroupDescription: PQC MQTT Broker - allow ports 8883 (classical) and 8884 (ML-DSA-44)
       VpcId: !Ref VpcId
       SecurityGroupIngress:
         - IpProtocol: tcp
           FromPort: 8883
           ToPort: 8883
+          CidrIp: 0.0.0.0/0
+        # ML-DSA-44 device listener (Step 2). Same public reachability as 8883.
+        - IpProtocol: tcp
+          FromPort: 8884
+          ToPort: 8884
           CidrIp: 0.0.0.0/0
 
   # ═══════════════════════════════════════════════════════════════════════════
@@ -598,11 +676,39 @@ Resources:
         - Type: forward
           TargetGroupArn: !Ref BrokerTargetGroup
 
+  # ─── ML-DSA-44 target group + listener on 8884 (Step 2) ─────────────────────
+  # Same NLB, TCP passthrough (preserves the PQC TLS handshake end to end to the
+  # broker). Health-checks the 8884 listener directly.
+  MlDsaBrokerTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: pqc-broker-mldsa-tg
+      Port: 8884
+      Protocol: TCP
+      TargetType: ip
+      VpcId: !Ref VpcId
+      HealthCheckProtocol: TCP
+      HealthCheckPort: '8884'
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 2
+
+  MlDsaBrokerListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref BrokerNLB
+      Port: 8884
+      Protocol: TCP
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref MlDsaBrokerTargetGroup
+
   # ─── ECS Service ───────────────────────────────────────────────────────────
 
   BrokerService:
     Type: AWS::ECS::Service
-    DependsOn: BrokerListener
+    DependsOn:
+      - BrokerListener
+      - MlDsaBrokerListener
     Properties:
       ServiceName: pqc-workshop-broker
       Cluster: !Ref BrokerCluster
@@ -622,15 +728,118 @@ Resources:
         - ContainerName: mosquitto-pqc
           ContainerPort: 8883
           TargetGroupArn: !Ref BrokerTargetGroup
+        # ML-DSA-44 device listener (Step 2)
+        - ContainerName: mosquitto-pqc
+          ContainerPort: 8884
+          TargetGroupArn: !Ref MlDsaBrokerTargetGroup
 
   # ═══════════════════════════════════════════════════════════════════════════
   # Lambda — Certificate Provisioner (generates broker CSR + stores certs)
   # ═══════════════════════════════════════════════════════════════════════════
 
-  CertProvisionerRole:
+  # ─── Shared cert-issuer container image (OpenSSL 3.5 + ACM PCA) ─────────────
+  # The ONE image that mints every workshop TLS cert. Here it backs the broker
+  # cert provisioner (container-image Lambda below); the firmware CodeBuild bakes
+  # the same issue_cert.py script into its own image. Built in-stack by CodeBuild
+  # (mirrors the broker image build) so a from-scratch deploy needs no manual step.
+  CertIssuerEcrRepository:
+    Type: AWS::ECR::Repository
+    DeletionPolicy: Delete
+    Properties:
+      RepositoryName: pqc-workshop-cert-issuer
+      ImageScanningConfiguration:
+        ScanOnPush: true
+
+  CertIssuerBuildRole:
     Type: AWS::IAM::Role
     Properties:
-      RoleName: pqc-workshop-cert-provisioner
+      RoleName: pqc-workshop-cert-issuer-build
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codebuild.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: CertIssuerBuildPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - ecr:GetAuthorizationToken
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - ecr:BatchCheckLayerAvailability
+                  - ecr:InitiateLayerUpload
+                  - ecr:UploadLayerPart
+                  - ecr:CompleteLayerUpload
+                  - ecr:PutImage
+                  - ecr:BatchGetImage
+                  - ecr:GetDownloadUrlForLayer
+                Resource: !GetAtt CertIssuerEcrRepository.Arn
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:GetBucketLocation
+                  - s3:ListBucket
+                Resource:
+                  - !GetAtt BrokerSourceBucket.Arn
+                  - !Sub '${BrokerSourceBucket.Arn}/*'
+
+  CertIssuerBuildProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: pqc-workshop-cert-issuer-image-build
+      Description: Builds the shared cert-issuer container image (OpenSSL 3.5 + ACM PCA)
+      ServiceRole: !GetAtt CertIssuerBuildRole.Arn
+      # Compiles OpenSSL 3.5 from source (~3-5 min) on top of the Lambda base.
+      TimeoutInMinutes: 30
+      Source:
+        Type: S3
+        Location: !Sub '${BrokerSourceBucket}/cert-issuer/'
+      Artifacts:
+        Type: NO_ARTIFACTS
+      Environment:
+        Type: LINUX_CONTAINER
+        ComputeType: BUILD_GENERAL1_MEDIUM
+        Image: aws/codebuild/standard:7.0
+        PrivilegedMode: true
+        EnvironmentVariables:
+          - Name: ACCOUNT_ID
+            Value: !Ref AWS::AccountId
+          - Name: AWS_DEFAULT_REGION
+            Value: !Ref AWS::Region
+          - Name: ECR_REPO_NAME
+            Value: pqc-workshop-cert-issuer
+      LogsConfig:
+        CloudWatchLogs:
+          Status: ENABLED
+          GroupName: !Sub '/aws/codebuild/pqc-workshop-cert-issuer-image-build'
+
+  # Reuses the shared BuildTriggerFunction pattern via its own custom resource.
+  TriggerCertIssuerBuild:
+    Type: Custom::TriggerBuild
+    Condition: ShouldTriggerBuild
+    DependsOn:
+      - CertIssuerBuildProject
+      - CertIssuerEcrRepository
+    Properties:
+      ServiceToken: !GetAtt CertIssuerBuildTriggerFunction.Arn
+      BuildVersion: '1'
+
+  CertIssuerBuildTriggerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: pqc-workshop-cert-issuer-build-trigger
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:
@@ -641,16 +850,112 @@ Resources:
       ManagedPolicyArns:
         - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
       Policies:
+        - PolicyName: TriggerBuild
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - codebuild:StartBuild
+                  - codebuild:BatchGetBuilds
+                Resource: !GetAtt CertIssuerBuildProject.Arn
+
+  CertIssuerBuildTriggerFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: pqc-workshop-cert-issuer-build-trigger
+      Runtime: python3.12
+      Handler: index.handler
+      Timeout: 900
+      Role: !GetAtt CertIssuerBuildTriggerRole.Arn
+      Environment:
+        Variables:
+          PROJECT_NAME: !Ref CertIssuerBuildProject
+      Code:
+        ZipFile: |
+          """Triggers the cert-issuer image CodeBuild and waits for completion."""
+          import boto3
+          import os
+          import time
+          import cfnresponse
+
+          codebuild = boto3.client('codebuild')
+
+          def handler(event, context):
+              try:
+                  if event['RequestType'] == 'Delete':
+                      cfnresponse.send(event, context, cfnresponse.SUCCESS, {})
+                      return
+
+                  project = os.environ['PROJECT_NAME']
+                  resp = codebuild.start_build(projectName=project)
+                  build_id = resp['build']['id']
+                  print(f"Cert-issuer image build started: {build_id}")
+
+                  for _ in range(170):
+                      time.sleep(5)
+                      builds = codebuild.batch_get_builds(ids=[build_id])
+                      status = builds['builds'][0]['buildStatus']
+                      print(f"  Status: {status}")
+                      if status == 'SUCCEEDED':
+                          cfnresponse.send(event, context, cfnresponse.SUCCESS, {'BuildId': build_id})
+                          return
+                      if status in ('FAILED', 'FAULT', 'TIMED_OUT', 'STOPPED'):
+                          cfnresponse.send(event, context, cfnresponse.FAILED, {'Error': f'Build {status}: {build_id}'})
+                          return
+                  cfnresponse.send(event, context, cfnresponse.FAILED, {'Error': f'Build timed out: {build_id}'})
+              except Exception as e:
+                  print(f"Error: {e}")
+                  cfnresponse.send(event, context, cfnresponse.FAILED, {'Error': str(e)})
+
+  # ─── Broker Certificate Provisioner (CodeBuild job) ─────────────────────────
+  # Mints BOTH broker server certs (classical + ML-DSA-44) via the shared
+  # cert-issuer image (issue_broker_certs.py) and stores them in Secrets Manager.
+  # Runs as a CodeBuild job — NOT a container-image Lambda — so it fits the deploy
+  # model (stack created first with no images; images built + values filled in
+  # post-stack). The deploy script triggers this AFTER the cert-issuer image is
+  # built and BOTH CAs are ACTIVE. The same shape drops into the future
+  # registration Step Function via codebuild:startBuild.sync.
+  CertProvisionerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: pqc-workshop-cert-provisioner
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codebuild.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
         - PolicyName: CertProvisionerPolicy
           PolicyDocument:
             Version: '2012-10-17'
             Statement:
               - Effect: Allow
                 Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - ecr:GetAuthorizationToken
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - ecr:BatchCheckLayerAvailability
+                  - ecr:GetDownloadUrlForLayer
+                  - ecr:BatchGetImage
+                Resource: !GetAtt CertIssuerEcrRepository.Arn
+              - Effect: Allow
+                Action:
                   - acm-pca:IssueCertificate
                   - acm-pca:GetCertificate
                   - acm-pca:GetCertificateAuthorityCertificate
-                Resource: '*'
+                Resource:
+                  - !Ref PrivateCA
+                  - !Ref MlDsaPrivateCA
               - Effect: Allow
                 Action:
                   - secretsmanager:PutSecretValue
@@ -659,116 +964,64 @@ Resources:
                   - !Ref BrokerCACertSecret
                   - !Ref BrokerCertSecret
                   - !Ref BrokerKeySecret
+                  - !Ref MlDsaBrokerCACertSecret
+                  - !Ref MlDsaBrokerCertSecret
+                  - !Ref MlDsaBrokerKeySecret
+              # CodeBuild reads its build source from S3, so it needs both
+              # GetObject (on the objects) and ListBucket (on the bucket) — the
+              # same grant CertIssuerBuildRole has. Without ListBucket the
+              # provisioner fails DOWNLOAD_SOURCE with AccessDenied.
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:GetBucketLocation
+                  - s3:ListBucket
+                Resource:
+                  - !GetAtt BrokerSourceBucket.Arn
+                  - !Sub '${BrokerSourceBucket.Arn}/*'
 
-  CertProvisionerFunction:
-    Type: AWS::Lambda::Function
+  BrokerCertProvisionerProject:
+    Type: AWS::CodeBuild::Project
     Properties:
-      FunctionName: pqc-workshop-cert-provisioner
-      Runtime: python3.12
-      Handler: index.handler
-      Timeout: 60
-      Role: !GetAtt CertProvisionerRole.Arn
+      Name: pqc-workshop-broker-cert-provisioner
+      Description: Mints both broker server certs (classical + ML-DSA-44) into Secrets Manager
+      ServiceRole: !GetAtt CertProvisionerRole.Arn
+      TimeoutInMinutes: 15
+      Source:
+        Type: S3
+        Location: !Sub '${BrokerSourceBucket}/cert-issuer/'
+        BuildSpec: buildspec-broker-certs.yml
+      Artifacts:
+        Type: NO_ARTIFACTS
       Environment:
-        Variables:
-          CA_ARN: !Ref PrivateCA
-          CA_CERT_SECRET: !Ref BrokerCACertSecret
-          BROKER_CERT_SECRET: !Ref BrokerCertSecret
-          BROKER_KEY_SECRET: !Ref BrokerKeySecret
-      Code:
-        ZipFile: |
-          """
-          Provisions broker certificate from Private CA and stores in Secrets Manager.
-          Triggered as a CloudFormation Custom Resource.
-          Uses subprocess to call openssl for CSR generation (avoids pip dependencies).
-          """
-          import boto3
-          import subprocess
-          import tempfile
-          import time
-          import os
-          import cfnresponse
-
-          acm_pca = boto3.client('acm-pca')
-          secrets = boto3.client('secretsmanager')
-
-          def handler(event, context):
-              try:
-                  if event['RequestType'] == 'Delete':
-                      cfnresponse.send(event, context, cfnresponse.SUCCESS, {})
-                      return
-
-                  ca_arn = os.environ['CA_ARN']
-
-                  # Generate EC P-256 key and CSR using openssl CLI
-                  with tempfile.TemporaryDirectory() as tmp:
-                      key_file = f'{tmp}/broker.key'
-                      csr_file = f'{tmp}/broker.csr'
-
-                      subprocess.run([
-                          'openssl', 'ecparam', '-genkey', '-name', 'prime256v1',
-                          '-noout', '-out', key_file
-                      ], check=True, capture_output=True)
-
-                      subprocess.run([
-                          'openssl', 'req', '-new', '-key', key_file,
-                          '-out', csr_file, '-subj',
-                          '/CN=pqc-mqtt-broker/O=AWS PQC Workshop/C=US'
-                      ], check=True, capture_output=True)
-
-                      with open(key_file) as f:
-                          key_pem = f.read()
-                      with open(csr_file) as f:
-                          csr_pem = f.read()
-
-                  # Issue certificate from Private CA
-                  issue_resp = acm_pca.issue_certificate(
-                      CertificateAuthorityArn=ca_arn,
-                      Csr=csr_pem.encode(),
-                      SigningAlgorithm='SHA256WITHECDSA',
-                      Validity={'Type': 'DAYS', 'Value': 365}
-                  )
-                  cert_arn = issue_resp['CertificateArn']
-
-                  # Wait for certificate issuance
-                  time.sleep(5)
-                  for _ in range(10):
-                      try:
-                          cert_resp = acm_pca.get_certificate(
-                              CertificateAuthorityArn=ca_arn,
-                              CertificateArn=cert_arn
-                          )
-                          break
-                      except acm_pca.exceptions.RequestInProgressException:
-                          time.sleep(2)
-                  else:
-                      raise Exception('Certificate issuance timed out')
-
-                  broker_cert = cert_resp['Certificate']
-
-                  # Get CA certificate
-                  ca_resp = acm_pca.get_certificate_authority_certificate(
-                      CertificateAuthorityArn=ca_arn
-                  )
-                  ca_cert = ca_resp['Certificate']
-
-                  # Store in Secrets Manager
-                  secrets.put_secret_value(SecretId=os.environ['CA_CERT_SECRET'], SecretString=ca_cert)
-                  secrets.put_secret_value(SecretId=os.environ['BROKER_CERT_SECRET'], SecretString=broker_cert)
-                  secrets.put_secret_value(SecretId=os.environ['BROKER_KEY_SECRET'], SecretString=key_pem)
-
-                  cfnresponse.send(event, context, cfnresponse.SUCCESS, {
-                      'CertificateArn': cert_arn
-                  })
-              except Exception as e:
-                  print(f"Error: {e}")
-                  cfnresponse.send(event, context, cfnresponse.FAILED, {'Error': str(e)})
-
-  # Trigger cert provisioning on stack creation
-  ProvisionCerts:
-    Type: Custom::ProvisionCerts
-    DependsOn: PrivateCAActivation
-    Properties:
-      ServiceToken: !GetAtt CertProvisionerFunction.Arn
+        Type: LINUX_CONTAINER
+        ComputeType: BUILD_GENERAL1_SMALL
+        # Runs INSIDE the shared cert-issuer image (has OpenSSL 3.5 + issuer code).
+        Image: !Sub '${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/pqc-workshop-cert-issuer:latest'
+        ImagePullCredentialsType: SERVICE_ROLE
+        EnvironmentVariables:
+          - Name: CLASSICAL_CA_ARN
+            Value: !Ref PrivateCA
+          - Name: MLDSA_CA_ARN
+            Value: !Ref MlDsaPrivateCA
+          - Name: BROKER_CA_CERT_SECRET
+            Value: !Ref BrokerCACertSecret
+          - Name: BROKER_CERT_SECRET
+            Value: !Ref BrokerCertSecret
+          - Name: BROKER_KEY_SECRET
+            Value: !Ref BrokerKeySecret
+          - Name: MLDSA_CA_CERT_SECRET
+            Value: !Ref MlDsaBrokerCACertSecret
+          - Name: MLDSA_BROKER_CERT_SECRET
+            Value: !Ref MlDsaBrokerCertSecret
+          - Name: MLDSA_BROKER_KEY_SECRET
+            Value: !Ref MlDsaBrokerKeySecret
+          - Name: BROKER_CN
+            Value: pqc-mqtt-broker
+      LogsConfig:
+        CloudWatchLogs:
+          Status: ENABLED
+          GroupName: !Sub '/aws/codebuild/pqc-workshop-broker-cert-provisioner'
 
   # ═══════════════════════════════════════════════════════════════════════════
   # IoT Core Bridge — Thing, Certificate, Policy for Mosquitto→IoT Core bridge
@@ -1023,12 +1276,20 @@ Outputs:
     Value: !GetAtt BrokerNLB.DNSName
 
   BrokerPort:
-    Description: MQTT TLS port
+    Description: MQTT TLS port (classical / ECDSA)
     Value: '8883'
+
+  BrokerMlDsaPort:
+    Description: MQTT TLS port for the ML-DSA-44 listener (Step 2)
+    Value: '8884'
 
   PrivateCAArn:
     Description: Private CA ARN (for issuing device certificates)
     Value: !Ref PrivateCA
+
+  MlDsaPrivateCAArn:
+    Description: ML-DSA-44 Private CA ARN (for issuing post-quantum device certificates)
+    Value: !Ref MlDsaPrivateCA
 
   ECRRepositoryUri:
     Description: ECR repository for broker image
@@ -1045,3 +1306,11 @@ Outputs:
   CodeBuildProjectName:
     Description: CodeBuild project for building broker image
     Value: !Ref BrokerBuildProject
+
+  CertIssuerImageBuildProject:
+    Description: CodeBuild project that builds the shared cert-issuer image
+    Value: !Ref CertIssuerBuildProject
+
+  BrokerCertProvisionerProjectName:
+    Description: CodeBuild project that mints both broker server certs into Secrets Manager
+    Value: !Ref BrokerCertProvisionerProject

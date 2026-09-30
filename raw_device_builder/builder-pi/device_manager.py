@@ -22,7 +22,7 @@ from typing import Optional, Dict, List
 
 
 # ─── Constants ───────────────────────────────────────────────────────────────
-FQBN = "esp32:esp32:XIAO_ESP32S3:USBMode=hwcdc,CDCOnBoot=default,DebugLevel=info,PartitionScheme=default_8MB"
+FQBN = "esp32:esp32:XIAO_ESP32S3:USBMode=hwcdc,CDCOnBoot=cdc,DebugLevel=info,PartitionScheme=default_8MB"
 ARDUINO_CLI = "arduino-cli"
 FIRMWARE_DIR = "/opt/pqc-workshop/firmware"
 
@@ -220,7 +220,7 @@ class DeviceManager:
         slot.status = 'downloading'
         slot.log('Downloading firmware from S3...')
 
-        firmware_version = self.config.get('firmware_version', '0.1.0')
+        firmware_version = self.config.get('firmware_version', '1.0.0-classical')
         s3_prefix = f'{slot.serial_number}/{firmware_version}'
         local_dir = os.path.join(FIRMWARE_DIR, slot.serial_number, firmware_version)
         os.makedirs(local_dir, exist_ok=True)
