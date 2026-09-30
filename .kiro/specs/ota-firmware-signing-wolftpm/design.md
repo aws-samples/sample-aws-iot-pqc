@@ -145,14 +145,19 @@
   never fully in RAM; re-reading the partition is the fallback); (c) verify the
   signature with the era's signer public cert; (d) only on success
   `esp_ota_set_boot_partition`; on failure `esp_ota_abort` + report.
-- **Durable signer cert (requirement 3):** decide among (i) bake-into-firmware
-  (simplest; rotation = rebuild — acceptable for the workshop, one signer per
-  era), (ii) NVS (fits the 20 KB partition but tight next to nvs_key/coredump),
-  (iii) new/enlarged data partition (shrinks the 3.5 MB app slots — risky). Lean
-  **bake-into-firmware for the classical-era cert** (it ships in 1.0.0/2.0.0/3.0.0
-  anyway) and deliver the **ML-DSA signer cert on/with the last classically-signed
-  update** so it is present before the 4.0.0 cutover (requirement 3.4). Confirm in
-  design detailing.
+- **Durable signer cert (requirement 3) — MUST be in flash, NOT PSRAM.** PSRAM on
+  the ESP32-S3 is volatile external RAM and is wiped by the `esp_restart()` the
+  OTA flow performs, so it cannot hold the signer cert across the very reboot the
+  verify protects; it may only serve as a boot-time working cache loaded FROM
+  flash. Decide among (i) bake-into-firmware (simplest; in flash as part of the
+  app; rotation = rebuild — acceptable, one signer per era), (ii) NVS (survives
+  reboots AND is writable at runtime, so a fielded device can RECEIVE the ML-DSA
+  signer cert over the air; fits the 20 KB partition but tight next to
+  nvs_key/coredump), (iii) new/enlarged data partition (shrinks the 3.5 MB app
+  slots — risky, avoid). Lean **bake-into-firmware for the classical-era cert**
+  (it ships in 1.0.0/2.0.0/3.0.0 anyway) and store the **ML-DSA signer cert in NVS,
+  delivered on/with the last classically-signed update** so it is present before
+  the 4.0.0 cutover (requirement 3.4). Confirm in design detailing.
 - **Cutover sequencing (requirement 3.4):** 3.0.0-mldsa (classically-signed OTA,
   verified with the classical signer cert baked in) ALSO carries/receives the
   ML-DSA-44 signer public cert and stores it durably; THEN 4.0.0-signer arrives
@@ -193,7 +198,8 @@
   verify primitives.
 - ML-DSA-44 signature size (~2.4 KB) vs MQTT buffer — likely deliver by presigned
   URL, not inline.
-- Durable signer-cert storage vs the tight 20 KB nvs / 3.5 MB slot budget.
+- Durable signer-cert storage vs the tight 20 KB nvs / 3.5 MB slot budget
+  (flash only — PSRAM is volatile and ruled out as the store; cache-only).
 - Classical→ML-DSA signer-cert cutover ordering (the trickiest bit).
 - Incremental hashing of the streamed-to-flash image without holding it in RAM.
 - Signer key lifecycle (stable per-era in Secrets Manager vs per-build).

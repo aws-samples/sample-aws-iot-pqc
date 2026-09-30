@@ -131,13 +131,24 @@ available and surviving reboots, so I can verify OTA signatures offline.
 
 Acceptance criteria:
 1. The device SHALL have the signer public certificate available to the verifier
-   at OTA time, and it SHALL **survive a power cycle / reboot** (PSRAM alone is
-   volatile and insufficient).
-2. The system SHALL define how the signer cert is delivered and stored durably
-   (candidates: baked into firmware at build, stored in NVS, a dedicated flash
-   region; possibly cached into PSRAM at boot for the verify path). The design
-   SHALL choose one and justify it against the 20 KB `nvs` partition / partition
-   layout constraints.
+   at OTA time, and it SHALL **survive a power cycle / reboot**.
+   - **PSRAM is NOT a durable store.** The XIAO ESP32-S3's PSRAM is external
+     *volatile* RAM (DRAM): it is larger than internal SRAM but loses all
+     contents on any reset. `esp_restart()` — which the OTA flow calls right
+     after flashing — is a full CPU reset that does NOT preserve PSRAM (unlike
+     light/deep sleep, which is irrelevant here). RTC slow memory survives deep
+     sleep but not a hard reset and is far too small (~KB) for an ML-DSA-44 cert
+     (~3.8 KB). Therefore the durable store MUST be **flash**. PSRAM MAY be used
+     only as a volatile working cache (load the cert from flash into PSRAM at
+     boot for the verify path).
+2. The system SHALL store the signer cert in **flash**. Candidates: baked into
+   the firmware image at build (in flash as part of the app — survives reboots
+   for free; rotation = rebuild), or written to the **NVS** partition (survives
+   reboots, writable at runtime so a fielded device can RECEIVE a new signer cert
+   over the air without a reflash). The design SHALL choose per era and justify
+   it against the 20 KB `nvs` partition / 3.5 MB app-slot constraints. A new/
+   enlarged data partition is discouraged (it shrinks the already-tight app
+   slots).
 3. The device SHALL verify that the signer certificate **chains to an ACM Private
    CA it trusts** (the classical CA for 2.0.0/3.0.0, the ML-DSA-44 CA from 4.0.0),
    not merely trust a bare public key.
