@@ -124,38 +124,60 @@ Acceptance criteria:
    short-lived presigned-URL mechanism as the firmware, with a lifetime covering
    a device reconnect + download.
 
-### 3. Signer public certificate provisioned & durable on-device
+### 3. Trust anchor on-device; signer leaf cert travels with the OTA
 
-**User story:** As a fielded device, I need the signer's public certificate
-available and surviving reboots, so I can verify OTA signatures offline.
+**User story:** As a fielded device, I need a trusted anchor stored locally so I
+can validate the signer of an OTA and verify its signature offline, without an
+attacker being able to substitute their own signing key.
+
+**Why the device needs an anchor (not merely "the signer cert"):** signing is
+asymmetric — the cloud signs with a PRIVATE key, so the device needs the matching
+PUBLIC key to verify. But a bare public key pinned on the device gives no way to
+reason about trust or rotate keys. Instead the device stores the **CA trust
+anchor** (the ACM Private CA root cert/public key). The signer's LEAF certificate
+(issued by that CA, carrying the signing public key) can then travel WITH each
+OTA. The device verifies: (a) the firmware signature against the signer leaf's
+public key, AND (b) the signer leaf chains to the CA root it trusts. Without a
+locally-stored anchor, an attacker who can feed a fake firmware URL could also
+feed a fake signer cert and the device would "verify" malicious firmware against
+the attacker's key — so the anchor MUST be on-device and un-substitutable.
 
 Acceptance criteria:
-1. The device SHALL have the signer public certificate available to the verifier
-   at OTA time, and it SHALL **survive a power cycle / reboot**.
+1. The device SHALL store the **CA trust anchor** (the issuing ACM Private CA root
+   certificate / public key) locally, and it SHALL **survive a power cycle /
+   reboot**. This anchor — not the signer leaf — is the mandatory durable item.
    - **PSRAM is NOT a durable store.** The XIAO ESP32-S3's PSRAM is external
-     *volatile* RAM (DRAM): it is larger than internal SRAM but loses all
-     contents on any reset. `esp_restart()` — which the OTA flow calls right
-     after flashing — is a full CPU reset that does NOT preserve PSRAM (unlike
-     light/deep sleep, which is irrelevant here). RTC slow memory survives deep
-     sleep but not a hard reset and is far too small (~KB) for an ML-DSA-44 cert
-     (~3.8 KB). Therefore the durable store MUST be **flash**. PSRAM MAY be used
-     only as a volatile working cache (load the cert from flash into PSRAM at
-     boot for the verify path).
-2. The system SHALL store the signer cert in **flash**. Candidates: baked into
-   the firmware image at build (in flash as part of the app — survives reboots
-   for free; rotation = rebuild), or written to the **NVS** partition (survives
-   reboots, writable at runtime so a fielded device can RECEIVE a new signer cert
-   over the air without a reflash). The design SHALL choose per era and justify
-   it against the 20 KB `nvs` partition / 3.5 MB app-slot constraints. A new/
-   enlarged data partition is discouraged (it shrinks the already-tight app
-   slots).
-3. The device SHALL verify that the signer certificate **chains to an ACM Private
-   CA it trusts** (the classical CA for 2.0.0/3.0.0, the ML-DSA-44 CA from 4.0.0),
-   not merely trust a bare public key.
-4. WHEN the signer algorithm cuts over classical → ML-DSA-44 at `4.0.0-signer`
-   THEN the ML-DSA-44 signer public cert SHALL be in place on the device BEFORE it
-   must verify a 4.0.0+ update. The design SHALL specify the cutover sequencing so
-   there is no chicken-and-egg (e.g. the ML-DSA signer cert is delivered on/with
+     *volatile* RAM (DRAM): it loses all contents on any reset. `esp_restart()` —
+     which the OTA flow calls right after flashing — is a full CPU reset that does
+     NOT preserve PSRAM (unlike light/deep sleep, irrelevant here). RTC slow
+     memory survives deep sleep but not a hard reset and is far too small.
+     Therefore the anchor MUST live in **flash**. PSRAM MAY be used only as a
+     volatile working cache (loaded from flash at boot for the verify path).
+2. The CA root anchors are **known at deploy time** (both PCAs already exist), so
+   the anchor SHALL be **baked into the firmware image** (in flash as part of the
+   app — survives reboots for free, un-substitutable, no runtime provisioning).
+   The classical CA root ships in the variants that verify classical-signed OTAs;
+   the ML-DSA-44 CA root ships from the variant that must begin verifying
+   ML-DSA-signed OTAs (see 3.4). This removes the need for NVS/runtime cert
+   delivery in the common case.
+3. The signer **leaf certificate** (signing public key, issued by the CA) SHALL be
+   delivered WITH the OTA (in/alongside the `cmd/<thing>/ota` payload or the
+   signature bundle) rather than pre-stored — the device validates it against the
+   baked-in CA root at verify time. (Storing the leaf durably in NVS is an
+   OPTIONAL optimization, not required.)
+4. The device SHALL verify that the signer leaf certificate **chains to a baked-in
+   CA root it trusts** (the classical CA for 2.0.0/3.0.0, the ML-DSA-44 CA from
+   4.0.0), not merely trust a bare public key.
+5. WHEN the signature algorithm cuts over classical → ML-DSA-44 at `4.0.0-signer`
+   THEN the **ML-DSA-44 CA root anchor** SHALL already be on the device before it
+   must verify a 4.0.0+ update. Because the anchor is baked into firmware, the
+   design SHALL ensure the variant delivered JUST BEFORE the cutover
+   (`3.0.0-mldsa`, itself classically-signed and verifiable with the baked-in
+   classical root) already carries the ML-DSA-44 CA root — so once the device is
+   on 3.0.0 it can verify the ML-DSA-signed 4.0.0 update. This removes the
+   chicken-and-egg without any runtime cert push. (Equivalent phrasing of the
+   earlier requirement, corrected: it is the CA ROOT that must pre-exist, not a
+   per-signer leaf.)
    the last classically-signed update, or provisioned ahead of the cutover).
 
 ### 4. On-device signature verification before apply (wolfTPM software TPM)

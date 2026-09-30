@@ -137,32 +137,36 @@
   or inlines the signature if small enough for the 4 KB MQTT buffer (ML-DSA sig
   ~2.4 KB — borderline; prefer a presigned URL). Keep the existing `sha256`.
 
-## Workstream 3 — Device verifier + durable signer cert
+## Workstream 3 — Device verifier + baked-in CA trust anchor
 
 - **Verifier (G1 outcome):** wolfTPM-software or wolfSSL verify primitives. In
   `otaTask`, after `esp_ota_end`: (a) check `sha256`; (b) obtain the image hash
   (incremental hash during the `esp_ota_write` loop is preferred — the image is
   never fully in RAM; re-reading the partition is the fallback); (c) verify the
-  signature with the era's signer public cert; (d) only on success
+  signature using the signer LEAF cert delivered WITH the OTA, and validate that
+  leaf chains to the **baked-in CA root** for this era; (d) only on success
   `esp_ota_set_boot_partition`; on failure `esp_ota_abort` + report.
-- **Durable signer cert (requirement 3) — MUST be in flash, NOT PSRAM.** PSRAM on
-  the ESP32-S3 is volatile external RAM and is wiped by the `esp_restart()` the
-  OTA flow performs, so it cannot hold the signer cert across the very reboot the
-  verify protects; it may only serve as a boot-time working cache loaded FROM
-  flash. Decide among (i) bake-into-firmware (simplest; in flash as part of the
-  app; rotation = rebuild — acceptable, one signer per era), (ii) NVS (survives
-  reboots AND is writable at runtime, so a fielded device can RECEIVE the ML-DSA
-  signer cert over the air; fits the 20 KB partition but tight next to
-  nvs_key/coredump), (iii) new/enlarged data partition (shrinks the 3.5 MB app
-  slots — risky, avoid). Lean **bake-into-firmware for the classical-era cert**
-  (it ships in 1.0.0/2.0.0/3.0.0 anyway) and store the **ML-DSA signer cert in NVS,
-  delivered on/with the last classically-signed update** so it is present before
-  the 4.0.0 cutover (requirement 3.4). Confirm in design detailing.
-- **Cutover sequencing (requirement 3.4):** 3.0.0-mldsa (classically-signed OTA,
-  verified with the classical signer cert baked in) ALSO carries/receives the
-  ML-DSA-44 signer public cert and stores it durably; THEN 4.0.0-signer arrives
-  ML-DSA-signed and is verified with that now-present ML-DSA signer cert. No
-  chicken-and-egg.
+- **Trust anchor on device, signer leaf with the OTA (requirement 3).** What the
+  device MUST hold durably is the **CA trust anchor** (the ACM Private CA root),
+  not the per-signer leaf. The signer's private key signs the firmware; the device
+  verifies with the signer leaf's public key AND checks that leaf chains to the CA
+  root it trusts. Because the CA roots are known at deploy time and never change,
+  **bake the CA root(s) into the firmware image** — in flash, un-substitutable, no
+  runtime provisioning. The signer **leaf cert travels WITH the OTA** (in the
+  signature bundle), validated against the baked-in root at verify time.
+  - **MUST be flash, NOT PSRAM.** PSRAM is volatile external RAM, wiped by the
+    `esp_restart()` the OTA performs; it may only be a boot-time cache loaded from
+    flash. Baking the root into the app image satisfies this for free.
+  - Storing the leaf in NVS is an OPTIONAL optimization; not required since the
+    root is the anchor and the leaf ships per-OTA.
+- **Cutover sequencing (requirement 3.5) — solved by baking the ROOT ahead.**
+  Because the anchor is a baked-in CA root (not a runtime-pushed leaf), the
+  chicken-and-egg dissolves: ship the **ML-DSA-44 CA root** baked into
+  `3.0.0-mldsa` (which is itself classically-signed and verifiable with the
+  baked-in CLASSICAL root). Once a device is on 3.0.0 it already trusts the ML-DSA
+  root, so the ML-DSA-signed `4.0.0-signer` update verifies with no runtime cert
+  push. (Both CA roots can simply be baked into every variant from 3.0.0 onward —
+  they are ~1–4 KB each and known at build time.)
 
 ## Workstream 4 — New variants 4.0.0-signer & 5.0.0-verified
 
@@ -188,7 +192,7 @@
    blob verifies on a device) — these gate the rest.
 2. Workstream 1 (cloud signing + signer certs) — foundational.
 3. Workstream 2 (OTA command + publish-ota) — needs the signature artifact.
-4. Workstream 3 (device verifier + durable signer cert + SHA-256 check) — the core.
+4. Workstream 3 (device verifier + baked-in CA anchor + SHA-256 check) — the core.
 5. Workstream 4 (4.0.0-signer, 5.0.0-verified, negative test) — the proof.
 6. Cross-cutting (dashboard, validation, docs) — last.
 
@@ -198,8 +202,9 @@
   verify primitives.
 - ML-DSA-44 signature size (~2.4 KB) vs MQTT buffer — likely deliver by presigned
   URL, not inline.
-- Durable signer-cert storage vs the tight 20 KB nvs / 3.5 MB slot budget
-  (flash only — PSRAM is volatile and ruled out as the store; cache-only).
-- Classical→ML-DSA signer-cert cutover ordering (the trickiest bit).
+- Trust anchor = CA root baked into firmware (flash); PSRAM ruled out (volatile).
+  Signer leaf travels with the OTA — no durable leaf storage needed.
+- Classical→ML-DSA cutover: bake the ML-DSA CA root into 3.0.0-mldsa so it is
+  present before the 4.0.0 ML-DSA-signed update arrives.
 - Incremental hashing of the streamed-to-flash image without holding it in RAM.
 - Signer key lifecycle (stable per-era in Secrets Manager vs per-build).

@@ -58,13 +58,14 @@ follows design.md "Sequencing".
       `esp_ota_set_boot_partition`: on success set boot + reboot; on failure
       `esp_ota_abort`, keep running firmware, report the failure (telemetry/log).
       Apply to ALL three sketches (identical handlers).
-- [ ] 3.4 Durable signer-cert storage decision + impl (lean: bake classical signer
-      cert into firmware; deliver+store the ML-DSA signer cert before the 4.0.0
-      cutover). If NVS is chosen, add the first NVS/Preferences usage; if a
-      partition change is needed, update `partitions_pqc_workshop.csv` (guarding
-      the 3.5 MB slot size).
-- [ ] 3.5 Parse `sigUrl`/`sigAlg` in `mqttMessageHandler` (currently ignores
-      `sha256` too) and fetch the `.sig` in `otaTask`.
+- [ ] 3.4 Bake the CA trust ANCHOR (root cert) into the firmware image: classical
+      CA root in the classical-verifying variants; ML-DSA-44 CA root baked into
+      3.0.0-mldsa onward so it is present before the 4.0.0 cutover. (The signer
+      LEAF cert is NOT stored on-device — it travels with the OTA.) No NVS or
+      partition change required for the anchor; NVS storage of a leaf is an
+      optional later optimization only.
+- [ ] 3.5 Parse `sigUrl`/`sigAlg` + the signer leaf cert in `mqttMessageHandler`
+      (currently ignores `sha256` too) and fetch the `.sig`/leaf in `otaTask`.
 
 ## Workstream 4 — New variants + proof
 
