@@ -231,6 +231,20 @@ Resources:
                   - dynamodb:GetItem
                   - dynamodb:UpdateItem
                 Resource: !GetAtt DeviceRegistryTable.Arn
+              # The registrar also SEEDS the dashboard device table
+              # (pqc-workshop-devices) at registration so the device appears on
+              # the dashboard immediately AND carries serialNumber — which the
+              # telemetry-processor's registered-only guard
+              # (attribute_exists(serialNumber)) requires before it will accept
+              # telemetry. Without this seed, a registered device could never
+              # surface (the dashboard table is otherwise only telemetry-written,
+              # and the guard would reject the very first telemetry).
+              - Effect: Allow
+                Action:
+                  - dynamodb:PutItem
+                  - dynamodb:GetItem
+                  - dynamodb:UpdateItem
+                Resource: !Sub 'arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/pqc-workshop-devices'
               - Effect: Allow
                 Action:
                   - codebuild:StartBuild
@@ -281,6 +295,11 @@ Resources:
       Environment:
         Variables:
           REGISTRY_TABLE: !Ref DeviceRegistryTable
+          # Dashboard device table (created by the dashboard stack). The
+          # registrar seeds a row here at registration so the device shows on
+          # the dashboard immediately and satisfies the telemetry-processor's
+          # registered-only guard (attribute_exists(serialNumber)).
+          DEVICE_TABLE: pqc-workshop-devices
           FIRMWARE_BUCKET: !Sub '${FirmwareBucketName}-${AWS::AccountId}'
           BUILD_PROJECT: !Ref FirmwareBuildProject
           IOT_ENDPOINT: !Ref IoTEndpoint

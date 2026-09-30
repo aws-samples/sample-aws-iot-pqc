@@ -34,6 +34,15 @@ codebuild = boto3.client('codebuild')
 ssm = boto3.client('ssm')
 
 TABLE_NAME = os.environ['REGISTRY_TABLE']
+# Dashboard device table (pqc-workshop-devices), keyed by thingName. The
+# registrar SEEDS a row here at registration so (a) the device appears on the
+# dashboard immediately, before its first telemetry, and (b) the row carries
+# serialNumber, which the telemetry-processor's registered-only guard
+# (ConditionExpression attribute_exists(serialNumber)) requires before it will
+# accept telemetry. The dashboard table is otherwise only ever written by
+# telemetry, so without this seed a genuinely-registered device could never
+# surface (its first telemetry would be rejected by the guard).
+DEVICE_TABLE_NAME = os.environ.get('DEVICE_TABLE', 'pqc-workshop-devices')
 FIRMWARE_BUCKET = os.environ['FIRMWARE_BUCKET']
 BUILD_PROJECT = os.environ['BUILD_PROJECT']
 IOT_ENDPOINT = os.environ['IOT_ENDPOINT']
@@ -51,6 +60,7 @@ WIFI_SSM_PREFIX = os.environ.get('WIFI_SSM_PREFIX', '/pqc-workshop/wifi')
 BROKER_SSM_PARAM = os.environ.get('BROKER_SSM_PARAM', '/pqc-workshop/broker/endpoint')
 
 table = dynamodb.Table(TABLE_NAME)
+device_table = dynamodb.Table(DEVICE_TABLE_NAME)
 
 
 def _get_ssm(name):
@@ -201,6 +211,37 @@ def handler(event, context):
             'wifiPassword': wifi_password,
             'brokerEndpoint': broker_endpoint
         })
+
+        # ─── Step 4b: Seed the dashboard device table ─────────────────────
+        # The dashboard reads pqc-workshop-devices (keyed by thingName), which is
+        # otherwise only ever written by the telemetry-processor. Seed the row
+        # here so the device shows on the dashboard the moment it is registered
+        # (before any telemetry), and — critically — so the row carries
+        # serialNumber, which the telemetry-processor's registered-only guard
+        # requires before it will accept the device's telemetry. Use UpdateItem
+        # with SET (an upsert that only sets these fields) so we never clobber
+        # telemetry fields if a row somehow already exists (e.g. a re-register of
+        # a device that has since reported in).
+        try:
+            device_table.update_item(
+                Key={'thingName': thing_name},
+                UpdateExpression=(
+                    'SET serialNumber = :sn, registeredAt = :ra, '
+                    '#st = :st, firmwareVersion = :fw'
+                ),
+                ExpressionAttributeNames={'#st': 'status'},
+                ExpressionAttributeValues={
+                    ':sn': serial_number,
+                    ':ra': datetime.now(timezone.utc).isoformat(),
+                    ':st': 'registered',
+                    ':fw': firmware_version,
+                },
+            )
+            print(f"Seeded dashboard row for {thing_name}")
+        except Exception as e:
+            # Non-fatal: registration + build still succeed; the device will
+            # appear once seeded. Log loudly so this is visible.
+            print(f"WARNING: failed to seed dashboard row for {thing_name}: {e}")
 
         # ─── Step 5: Trigger CodeBuild (classical firmware) ───────────────
         # The build issues the classical device cert itself (FIRMWARE_VARIANT
