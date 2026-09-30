@@ -1,10 +1,11 @@
-# Design — OTA Firmware Signing + On-Device Verification (wolfTPM software TPM)
+# Design — OTA Firmware Signing + On-Device Verification (wolfSSL)
 
 > Status: **draft design** for review. Grounded in the current OTA/build/cert
-> code (see "Current-state anchors"). Two items are explicit **feasibility gates**
-> resolved before implementation locks: (G1) wolfTPM-software on ESP32-S3, and
-> (G2) producing a PCA-chained firmware signature the device can verify. The
-> firmware version progression and the trusted-vs-untrusted split are locked.
+> code (see "Current-state anchors"). One remaining **feasibility gate** before
+> implementation locks: (G2) producing a PCA-chained firmware signature the device
+> can verify. (G1 — wolfTPM — is CLOSED BY DECISION: no TPM, verify with wolfSSL;
+> see below.) The firmware version progression and the trusted-vs-untrusted split
+> are locked.
 
 ## Locked design decisions
 
@@ -30,26 +31,25 @@
    `sha256` field (sent today, currently ignored) as a cheap pre-check before the
    signature verify.
 
-## Feasibility gate G1 — wolfTPM software TPM on ESP32-S3 (spike task 1.x)
+## Decision — no TPM; verify with wolfSSL (was feasibility gate G1)
 
-- **wolfTPM is NOT in the repo today.** wolfSSL IS, and already has
-  `WOLFSSL_DILITHIUM_VERIFY` (ML-DSA-44 verify) and `HAVE_ECC_VERIFY`+`HAVE_ECC256`
-  (ECDSA-P256 verify) + SHA-256 compiled in (`wolfssl_user_settings_arduino.h`).
-  So the raw verify capability already exists on-device.
-- **Spike must answer:** does wolfTPM's software/simulator backend
-  (`WOLFTPM2_*`, TPM software mode / `--enable-swtpm`, or the `wolfTPM` Arduino
-  library) build and link in the arduino-cli / ESP32-S3 wolfSSL setup, and what is
-  its incremental flash + heap cost on top of ML-KEM + ML-DSA (fw3 min-heap was
-  already ~82 KB)? Must stay under the 0x380000 (3.5 MB) per-slot ceiling and keep
-  a safe handshake+verify min-heap.
-- **Decision rule (records the user's intent + the fallback):** the intended
-  mechanism is the wolfTPM software TPM. IF the spike shows it links and fits with
-  acceptable headroom, implement the verifier through wolfTPM. IF it is infeasible
-  or costs too much memory on the S3, fall back to wolfSSL's already-compiled
-  verify primitives (`wc_ecc_verify_hash` / `wc_dilithium_verify_msg`) under a
-  documented "software TPM" framing, and record the tradeoff in this doc. Either
-  way the on-device behaviour (verify signature against PCA-chained signer cert
-  before boot) is identical.
+- **wolfTPM is dropped from the design.** A TPM's purpose is to hold and operate a
+  *private key* without exposing it. This feature keeps NO private key on the
+  device: the signing key lives in the cloud, and the device only performs
+  **public-key verification** (against the baked-in CA root + the signer leaf that
+  arrives with the OTA). With no secret to protect, a TPM (hardware or software /
+  wolfTPM) adds no security — only flash/heap cost on the constrained ESP32-S3, and
+  the memory-feasibility risk that G1 existed to probe. So G1 is closed by
+  decision, not by a spike.
+- **The verifier is plain wolfSSL, already compiled in.** The firmware's
+  `wolfssl_user_settings_arduino.h` already enables `WOLFSSL_DILITHIUM_VERIFY`
+  (ML-DSA-44 verify), `HAVE_ECC_VERIFY`+`HAVE_ECC256` (ECDSA-P256 verify), and
+  SHA-256. Verification uses `wc_dilithium_verify_msg` / `wc_ecc_verify_hash`
+  plus wolfSSL X.509 chain validation against the baked-in CA root — no new
+  library, no toolchain change.
+- **Security is unchanged by dropping the TPM:** the integrity/authenticity
+  guarantee comes from the signature + the CA trust chain; whether wolfSSL or a
+  TPM does the arithmetic is irrelevant when there is no private key to guard.
 
 ## Feasibility gate G2 — PCA-chained firmware signature (spike task 1.x)
 
@@ -61,7 +61,7 @@
   detached signature + the signer public cert.
 - **Spike must answer / confirm:**
   - Signature encoding the device verifier can parse (raw vs DER for ECDSA;
-    ML-DSA-44 signature is ~2.4 KB — confirm wolfSSL/wolfTPM verify input format).
+    ML-DSA-44 signature is ~2.4 KB — confirm wolfSSL verify input format).
   - Whether the device verifies against the signer LEAF cert's public key and
     separately validates the leaf chains to the trusted PCA root, or verifies the
     chain in one step. (wolfSSL cert-chain verify exists; ML-DSA leaf under a root
@@ -139,7 +139,8 @@
 
 ## Workstream 3 — Device verifier + baked-in CA trust anchor
 
-- **Verifier (G1 outcome):** wolfTPM-software or wolfSSL verify primitives. In
+- **Verifier (wolfSSL, no TPM):** use the already-compiled wolfSSL primitives
+  (`wc_ecc_verify_hash` / `wc_dilithium_verify_msg`) + X.509 chain validation. In
   `otaTask`, after `esp_ota_end`: (a) check `sha256`; (b) obtain the image hash
   (incremental hash during the `esp_ota_write` loop is preferred — the image is
   never fully in RAM; re-reading the partition is the fallback); (c) verify the
@@ -187,9 +188,9 @@
 
 ## Sequencing (proposed)
 
-1. **Spikes first (G1 + G2):** wolfTPM-software feasibility on ESP32-S3, and the
-   PCA-signer-cert + local-signing + on-device-verify round trip (prove one signed
-   blob verifies on a device) — these gate the rest.
+1. **Spike first (G2 only):** the PCA-signer-cert + local-signing +
+   on-device-verify round trip (prove one signed blob verifies on a device with
+   wolfSSL) — gates the rest. (G1/wolfTPM removed — no TPM.)
 2. Workstream 1 (cloud signing + signer certs) — foundational.
 3. Workstream 2 (OTA command + publish-ota) — needs the signature artifact.
 4. Workstream 3 (device verifier + baked-in CA anchor + SHA-256 check) — the core.
@@ -198,8 +199,6 @@
 
 ## Risks / to confirm in detailing
 
-- wolfTPM-software build/link + memory on ESP32-S3 (G1) — may fall back to wolfSSL
-  verify primitives.
 - ML-DSA-44 signature size (~2.4 KB) vs MQTT buffer — likely deliver by presigned
   URL, not inline.
 - Trust anchor = CA root baked into firmware (flash); PSRAM ruled out (volatile).

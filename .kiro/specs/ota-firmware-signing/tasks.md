@@ -1,17 +1,15 @@
-# Tasks — OTA Firmware Signing + On-Device Verification (wolfTPM software TPM)
+# Tasks — OTA Firmware Signing + On-Device Verification (wolfSSL)
 
 Implementation plan. **Spikes (Workstream 0) gate everything** — do not lock the
-verifier mechanism or the signing mechanism until G1 and G2 are resolved. Order
+signing mechanism until G2 is resolved. Order
 follows design.md "Sequencing".
 
-## Workstream 0 — Feasibility spikes (GATING)
+## Workstream 0 — Feasibility spike (GATING)
 
-- [ ] 0.1 **G1 — wolfTPM software TPM on ESP32-S3.** Determine whether wolfTPM's
-      software/simulator backend builds + links under arduino-cli for the XIAO
-      ESP32-S3 alongside the existing wolfSSL (ML-KEM + ML-DSA) config. Measure
-      incremental flash (must fit 0x380000 slot) and heap (keep safe min-heap;
-      fw3 already ~82 KB). Record: link? fits? cost? DECISION: wolfTPM-software or
-      wolfSSL verify-primitive fallback. Update design.md G1 with the outcome.
+> Note: the former G1 (wolfTPM-software feasibility) is REMOVED — the design uses
+> no TPM (the device holds no private key; verify with wolfSSL primitives already
+> compiled in). Only G2 remains.
+
 - [ ] 0.2 **G2 — PCA-chained firmware signature round trip.** Using
       `shared/cert-issuer/issue_cert.py`, mint a signer cert (ec-p256 from
       classical CA; mldsa44 from ML-DSA CA). Sign a sample `firmware.bin` locally
@@ -51,9 +49,9 @@ follows design.md "Sequencing".
       `esp_ota_write` loop (preferred) so the image is never fully in RAM; fallback
       re-read the written partition. Enforce the transmitted `sha256` as a
       pre-check (close the current latent gap).
-- [ ] 3.2 Implement signature verification (per G1 outcome: wolfTPM-software or
-      wolfSSL `wc_ecc_verify_hash` / `wc_dilithium_verify_msg`) against the era's
-      signer public cert; validate the signer cert chains to the trusted PCA root.
+- [ ] 3.2 Implement signature verification with wolfSSL
+      (`wc_ecc_verify_hash` / `wc_dilithium_verify_msg`) against the signer leaf's
+      public key; validate the signer leaf chains to the baked-in CA root anchor.
 - [ ] 3.3 Wire verify INTO `otaTask` between `esp_ota_end` and
       `esp_ota_set_boot_partition`: on success set boot + reboot; on failure
       `esp_ota_abort`, keep running firmware, report the failure (telemetry/log).
@@ -90,6 +88,6 @@ follows design.md "Sequencing".
 ## Notes
 
 - Spec-driven: this tasks list follows requirements.md + design.md. Update the
-  design's G1/G2 sections with spike outcomes BEFORE starting Workstream 1+.
+  design's G2 section with the spike outcome BEFORE starting Workstream 1+.
 - Reuse over rebuild: `issue_cert.py`, `publish-ota`, the migration Step Function,
   the per-device CodeBuild, and the shared `otaTask` are extended, not replaced.

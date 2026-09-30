@@ -1,4 +1,4 @@
-# Requirements — OTA Firmware Signing + On-Device Verification (wolfTPM software TPM)
+# Requirements — OTA Firmware Signing + On-Device Verification (wolfSSL)
 
 ## Overview
 
@@ -36,9 +36,15 @@ The trust model is split by delivery environment:
   (`HAVE_DILITHIUM`, `WOLFSSL_DILITHIUM_VERIFY`) AND **ECDSA-P256 verify**
   (`HAVE_ECC_VERIFY`, `HAVE_ECC256`), plus SHA-256. So both signature algorithms
   in the progression can be verified on-device today with wolfSSL.
-- **wolfTPM is NOT in the codebase** (only referenced in the backlog). It is a
-  proposed *framing/mechanism* for the verifier, to be evaluated against the
-  ESP32-S3 memory budget vs. using wolfSSL's verify primitives directly.
+- **wolfTPM is NOT needed and is out of scope (decision).** A TPM's value is
+  protecting a *private key* and performing operations with it without exposing
+  it. This feature holds NO private key on the device: signing happens in the
+  cloud, and the device only does PUBLIC-key VERIFICATION (against the baked-in CA
+  root + the signer leaf that arrives with the OTA). With no secret to guard, a
+  TPM (hardware or software) adds no security here — only flash/heap cost on the
+  constrained ESP32-S3. The verifier is therefore plain **wolfSSL**, which already
+  ships the needed primitives. (wolfTPM was the original backlog framing; recorded
+  here as considered-and-rejected.)
 - **ACM PCA signs CSRs (issues certificates), not arbitrary blobs.** Both CAs
   exist: classical `EC_prime256v1` (`CA_ARN`) and `ML_DSA_44` (`MLDSA_CA_ARN`).
   Firmware signing therefore means: issue a *signer certificate* from the PCA for
@@ -178,9 +184,8 @@ Acceptance criteria:
    chicken-and-egg without any runtime cert push. (Equivalent phrasing of the
    earlier requirement, corrected: it is the CA ROOT that must pre-exist, not a
    per-signer leaf.)
-   the last classically-signed update, or provisioned ahead of the cutover).
 
-### 4. On-device signature verification before apply (wolfTPM software TPM)
+### 4. On-device signature verification before apply (wolfSSL)
 
 **User story:** As a fielded device, I want to verify the firmware signature
 before I boot it, so a tampered or untrusted image is rejected.
@@ -196,12 +201,12 @@ Acceptance criteria:
 3. The verifier SHALL support the classical signature (for 2.0.0/3.0.0) AND the
    ML-DSA-44 signature (for 4.0.0+), selecting the algorithm per the OTA command /
    signer cert.
-4. The verifier SHALL be implemented via the **wolfTPM software TPM** where
-   feasible on the ESP32-S3; IF the memory/build research shows wolfTPM-software
-   is infeasible within the per-slot / heap budget THEN the design SHALL fall back
-   to wolfSSL's already-compiled verify primitives under a documented "software
-   TPM" framing, and record the tradeoff. (The user's intended mechanism is the
-   wolfTPM software TPM; feasibility is an explicit design gate.)
+4. The verifier SHALL be implemented with **wolfSSL's already-compiled verify
+   primitives** (`wc_ecc_verify_hash` for ECDSA-P256, `wc_dilithium_verify_msg`
+   for ML-DSA-44) plus wolfSSL X.509 chain validation against the baked-in CA
+   root. NO TPM (hardware or software / wolfTPM) SHALL be required: the device
+   holds no private key, so there is no secret for a TPM to protect and it would
+   add only flash/heap cost.
 5. The verifier SHALL ship in ALL firmware variants (uniform base capability).
 6. WHERE the firmware is streamed directly to flash during download (current
    behaviour), the design SHALL specify how the image is hashed for verification
@@ -255,13 +260,18 @@ Acceptance criteria:
   application-level OTA signature verification, not chip secure-boot).
 - Signing the USB/builder-Pi initial flash (trusted environment, out of scope by
   design).
-- A physical/discrete TPM (the ESP32-S3 has none; this is a software TPM).
+- Any TPM — hardware, or software/wolfTPM. The device holds no private key, so a
+  TPM would protect nothing and only cost flash/heap. Verification is done with
+  wolfSSL's already-compiled primitives.
 
 ## Open questions (to resolve in design)
 
-- **wolfTPM-software feasibility on ESP32-S3:** does wolfTPM's software/simulator
+- ~~wolfTPM-software feasibility~~ **RESOLVED: wolfTPM dropped.** No private key
+  on the device → nothing for a TPM to protect. Verify with wolfSSL primitives
+  already compiled in. (Original text kept below struck-through for history.)
+  <s>does wolfTPM's software/simulator
   backend build + link in the Arduino/ESP32 wolfSSL setup, and what is its flash/
-  heap cost on top of ML-KEM+ML-DSA? If too heavy, fall back to wolfSSL verify
+  heap cost on top of ML-KEM+ML-DSA? If too heavy, fall back to wolfSSL verify</s>
   primitives (already compiled) under a software-TPM framing — decide in design.
 - **Producing a PCA-verifiable firmware signature:** exact mechanism — issue a
   signer cert from the PCA (reusing `issue_cert.py` keygen+issue), sign the blob
@@ -277,7 +287,7 @@ Acceptance criteria:
   explicitly.
 - **Hashing streamed-to-flash firmware:** incremental hash during
   `esp_ota_write` vs re-read the partition after `esp_ota_end`. Pick based on RAM
-  budget and wolfSSL/wolfTPM API shape.
+  budget and the wolfSSL verify API shape.
 - **Where signing runs:** in the per-device `buildspec.yml` post_build (has the
   artifact + OpenSSL 3.5) vs a separate signing step in the Step Function. Confirm
   the signer key lifecycle (per-build ephemeral vs a stable per-era signer).
