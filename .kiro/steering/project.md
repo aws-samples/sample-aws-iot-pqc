@@ -686,6 +686,72 @@ Backlog candidates surfaced during rebuilds (not yet fixed):
     state machine wrapping the same synchronous flow) and improves Pi-side
     structure. Caveat: the flash/USB/serial half MUST stay on the Pi (hardware),
     so end-to-end visibility is inherently split no matter what.
+  - **DETAILED DESIGN (grounded in the current code — do in a later feature
+    branch, phased). Recommendation: Phase 1 first, keep `/register`, new
+    branch `feature/registration-step-function`.**
+
+    Current shape (what we're replacing): Pi "Register & Flash" -> API Gateway
+    `/register` (SigV4, AWS_IAM) -> `device-registrar` Lambda does it all
+    sequentially (create Thing -> create per-device policy -> write registry ->
+    seed dashboard row -> `codebuild.start_build`) -> returns `buildId` -> the Pi
+    polls CodeBuild directly (`batch_get_builds`, ~600s) -> Pi S3-downloads
+    `<serial>/<version>/firmware.merged.bin` (+ companions) -> `esptool` flash ->
+    `verify_boot`. The migration path is ALREADY the target pattern:
+    AppSync -> `start-migration` -> `pqc-workshop-pqc-migration` SFN
+    (SetStatusBuilding -> PrepareBuild -> BuildNeeded? -> WaitForBuild via
+    `codebuild:startBuild.sync` -> SetStatusPushing -> PublishOta ->
+    SetStatusRebooting, Catch -> SetStatusFailed), writing live `migrationStatus`
+    to `pqc-workshop-devices`. BOTH paths drive the SAME `FirmwareBuildProject` +
+    `buildspec.yml`, differing only in `FIRMWARE_VARIANT`/version and delivery
+    (USB flash vs OTA).
+
+    **Phase 1 — decompose the cloud half into a Step Function; keep the Pi's
+    top-down polling (small, safe Pi change).**
+    - New `pqc-workshop-device-registration` STANDARD state machine mirroring the
+      migration ASL: `SetStatusRegistering` -> `CreateThingAndPolicy` ->
+      `PrepareBuild` (REUSE the existing `prepare-build` Lambda — it already
+      handles the `classical` variant via VARIANT_CONFIG and resolves buildEnv,
+      so the registrar's duplicated inline logic is deleted) -> `BuildNeeded?` ->
+      `WaitForBuild` (`codebuild:startBuild.sync`, `FIRMWARE_VARIANT=classical`)
+      -> `SetStatusReady`, with `Catch -> SetStatusFailed`. Thing/policy creation
+      can be a small Lambda (reuse device-registrar's IoT logic) or SDK service
+      integrations; keep the registry-write + dashboard-seed as states.
+    - Write a live `registrationStatus` (registering/building/ready/failed) to
+      the dashboard row in `pqc-workshop-devices`, EXACTLY like `migrationStatus`.
+      This is what makes "build failed" a visible, retryable state (folds in the
+      "registered but not flashed" dead-end fix — see next bullet) and lets BOTH
+      the dashboard and the Pi observe progress.
+    - `/register` now backs onto a tiny `start-registration` Lambda (twin of
+      `start-migration`) that `states:StartExecution` and returns immediately
+      (`{executionArn, thingName}`). KEEP the API Gateway `/register` entry +
+      SigV4 so the Pi change is minimal and the auth path is unchanged.
+    - Pi change (minimal): instead of polling CodeBuild by `buildId`, poll the
+      device row's `registrationStatus` (or `DescribeExecution`) until `ready`,
+      then run the EXISTING download + `esptool` flash + verify unchanged. The
+      hardware half stays exactly as-is.
+    - Net Phase-1 win: cloud side is now symmetric with migration (same SFN
+      idioms, `.sync` build wait, DynamoDB status writes), shares `prepare-build`,
+      is debuggable per-state with retries/rollback — with only a small Pi poll
+      change and no task-token inversion yet.
+
+    **Phase 2 — invert to task-token (Pi-as-worker), once Phase 1 is proven.**
+    - After `WaitForBuild`, add a `.waitForTaskToken` state: the SFN hands the Pi
+      a task token ("firmware ready, flash it"), the Pi flashes and calls back
+      `SendTaskSuccess`/`SendTaskFailure`. This is the steering's end-state
+      (true resumability + a single execution spanning cloud+Pi), but it is a
+      LARGER Pi-app change (the Pi becomes a callback worker — long-poll an SFN
+      activity, or receive the token in the register response and call back)
+      rather than a top-down driver. Decoupling it from Phase 1 de-risks both.
+    - Inherent limit (accept it): the flash/USB/serial half stays on the Pi, so
+      end-to-end visibility is split no matter what; task-token just gives one
+      execution that MODELS the split rather than two disjoint halves.
+
+    **Scope guardrails:** own branch (not the cert-migration/ML-DSA work); WS3 is
+    the natural forcing function (unify once both entry points are variant-aware);
+    definition-of-done stays a clean from-scratch deploy in BOTH pqc-b and pqc-a.
+    Open design Qs recorded: (1) Phase 1 vs straight-to-task-token — Phase 1
+    first; (2) keep `/register` API GW entry vs Pi calling StartExecution direct
+    — keep `/register`; (3) cut `feature/registration-step-function`.
   - **Fold in the "registered but not flashed" GUI dead-end item** (below) — a
     resumable/observable pipeline makes "build failed" a visible retryable state
     rather than a stuck card, so that item is the proper fix that this refactor
@@ -719,6 +785,74 @@ Backlog candidates surfaced during rebuilds (not yet fixed):
 - Broker image build depends on `apt-get` from the Ubuntu mirror in the builder
   stage; hardened with retries/timeouts + 60-min CodeBuild timeout, but a fully
   offline/pinned base or pre-baked deps would be more robust for Workshop Studio.
+- **[Builder-Pi — automate the Pi build with a custom-image pipeline] Replace
+  the register + SSM-document provisioning flow with a pre-baked Raspberry Pi OS
+  image built by a pipeline, so a workshop Pi comes ready with all software and
+  the ONLY per-event config is the built-in WiFi credentials.** Today standing up
+  a builder-Pi is a multi-step live-provisioning dance: `bundle-for-builder-pi.sh`
+  mints an SSM activation + zip, the operator unzips and runs `setup-ssm.sh` on
+  the Pi, then `setup-builder-pi-remote.sh` runs 5 SSM documents (install-awscli,
+  install-toolchain [the slow ~5GB arduino-cli + ESP32 core], deploy-app,
+  configure-service, configure-wifi-ap) against the running Pi. That is slow,
+  online-dependent, and a known source of flakiness (the `set -e`/`$HOME`-unset
+  abort that drove the "bundle = SSM bootstrap only" refactor; the AP PSK-typo
+  4-way-handshake timeout that drove the SSM-document AP automation). A baked
+  image collapses all of it to "flash SD card, set WiFi creds, boot."
+
+  Model to follow — the AWS sample that builds custom Raspberry Pi OS images in
+  CodeBuild and ships them via CodePipeline:
+  - Blog: https://aws.amazon.com/blogs/devops/automating-deployments-to-raspberry-pi-devices-using-aws-codepipeline/
+  - Repo: https://github.com/aws-samples/aws-codebuild-custom-raspbian-builder
+  The sample uses CodeBuild (with QEMU/`binfmt` + `chroot`, or the Raspberry Pi
+  image-gen tooling) to customize a Raspbian/Raspberry Pi OS image inside the
+  build, then publishes the artifact. Use it as the reference for a
+  `pqc-workshop-builder-pi-image` pipeline in THIS repo.
+
+  What the baked image must contain (i.e. everything the 5 SSM documents install
+  today — audit `setup-builder-pi-remote.sh` + the `*Document` resources in
+  `cloudformation/ssm-hybrid-activation-stack.yaml` for the authoritative list):
+  - AWS CLI + the SSM agent (still register as a managed instance for OTA/logs)
+  - arduino-cli + the pinned ESP32 Arduino core + the wolfSSL PQC user_settings
+    header + `partitions_pqc_workshop.csv` (the slow install-toolchain step —
+    baking this in is the single biggest time saver)
+  - the builder-Pi Flask GUI app (`raw_device_builder/builder-pi/`) + its
+    `pqc-builder-gui.service` systemd unit, enabled
+  - the CloudWatch agent config
+  - NetworkManager set up for the dual role the Pi plays: bridge a **2.4GHz WiFi
+    AP** (what the ESP32 boards join — they are 2.4GHz-only) to the **event WiFi
+    at 5GHz** (uplink). The AP radio is detected today by its `mt76*` driver (see
+    `configure-wifi-ap` SSM doc); bake that detection + the `workshop-ap`
+    connection profile into the image.
+
+  The ONLY runtime configuration left to the operator is the WiFi credentials:
+  - the **event/uplink 5GHz** SSID + password (the Pi's WAN side), and
+  - the **2.4GHz AP** SSID + password the boards join (today `/pqc-workshop/wifi/*`
+    in SSM = `reinvent-pqc-iot-wifi` / `@reinvent2026`).
+  Provide these via a first-boot mechanism (e.g. a `userconf`/`wpa_supplicant`
+  drop file on the boot partition, or a tiny first-boot service reading a config
+  file the operator edits on the SD card) so NO SSH/SSM step is needed to make
+  the Pi functional.
+
+  Design questions to resolve when building it:
+  - **SSM activation identity.** The image can't bake a per-event activation
+    code (they expire in 7 days and are account-specific). Either (a) keep a
+    minimal first-boot SSM-register step fed by the operator (closest to today),
+    or (b) decide the baked image is self-sufficient and drop SSM for the Pi
+    entirely (loses remote logs/OTA of the Pi app). Lean (a): first-boot
+    registration, everything else baked.
+  - **Pi model / arch.** Confirm the target Pi (arm64 Raspberry Pi OS) and that
+    the ESP32 core + esptool + USB serial work on that image; the sample is
+    Raspbian-based — validate the core install under `chroot`/QEMU actually
+    produces a working toolchain when booted on real hardware.
+  - **App/version freshness.** A baked image snapshots the builder-Pi app; wire
+    the pipeline to rebuild the image on app changes (source = this repo) so the
+    image doesn't drift from `raw_device_builder/builder-pi/`.
+  - **Workshop Studio fit.** Same internal-network caveat as the other WS items —
+    the image pipeline builds in the workshop account; the published image
+    artifact must be reachable from where the operator flashes the SD card.
+  End state: hand an operator an SD card image + a one-line WiFi config; they
+  flash, set creds, boot, and the Pi is a working 2.4GHz-AP↔5GHz-uplink bridge
+  running the builder GUI — no bundle script, no SSM-document provisioning run.
 
 ## Overview
 
