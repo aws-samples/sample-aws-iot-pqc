@@ -10,14 +10,16 @@ follows design.md "Sequencing".
 > no TPM (the device holds no private key; verify with wolfSSL primitives already
 > compiled in). Only G2 remains.
 
-- [ ] 0.2 **G2 — PCA-chained firmware signature round trip.** Using
-      `shared/cert-issuer/issue_cert.py`, mint a signer cert (ec-p256 from
-      classical CA; mldsa44 from ML-DSA CA). Sign a sample `firmware.bin` locally
-      (OpenSSL stock ECDSA; OpenSSL 3.5 ML-DSA). Verify it on-device (or in a
-      wolfSSL test harness) against the signer public cert, and confirm the leaf
-      chains to the PCA root. Nail down: signature encoding (raw/DER; ML-DSA ~2.4 KB),
-      verify input format, and signer-key lifecycle (stable per-era vs per-build).
-      Update design.md G2 with the outcome.
+- [x] 0.2 **G2 — PCA-chained firmware signature round trip. CLEARED (pqc-a,
+      2026-10-02).** Minted signer certs from both live PCAs (classical ECDSA-P256,
+      ML-DSA-44), signed a 256 KB sample blob, and verified signature + chain-to-root
+      for BOTH eras — all passed. Findings recorded in design.md "G2 spike RESULTS":
+      ECDSA sig = DER `SEQUENCE{r,s}` ~71 B over a SHA-256 digest, no raw-r‖s
+      conversion needed; ML-DSA-44 sig = fixed 2420 B over the RAW image (pure
+      scheme, hashes internally) → deliver via presigned URL, verifier streams the
+      full image. CA roots to bake: classical 696 B, ML-DSA 5592 B. Default PCA
+      template stamps TLS EKUs not code-signing (acceptable; chain+sig is the
+      property). Signer lifecycle = stable per-era, key in Secrets Manager.
 
 ## Workstream 1 — Cloud signing (build + signer cert)
 

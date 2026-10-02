@@ -72,6 +72,50 @@
     durably stored. Confirm where the signer key lives between builds (e.g.
     Secrets Manager, like the broker cert) vs regenerated per build.
 
+### G2 spike RESULTS (proven in pqc-a, 2026-10-02 — gate CLEARED)
+
+Both signature eras were proven end-to-end against the live pqc-a PCAs
+(classical `3334d1fc…`, ML-DSA `8823ea83…`): issue signer cert from the PCA →
+sign a 256 KB sample `fw.bin` with the signer private key → verify signature with
+the signer leaf's public key → verify the leaf chains to the baked-in CA root.
+All four checks (sign, sig-verify, chain-verify ×2) passed.
+
+- **Classical era (2.0.0 / 3.0.0 — ECDSA-P256 / SHA-256):**
+  - Sign over the **SHA-256 digest** (`openssl dgst -sha256 -sign`).
+  - Signature is **DER ASN.1 `SEQUENCE { INTEGER r, INTEGER s }`, ~70–72 bytes**
+    (71 B observed). **No DER→raw r‖s conversion needed on-device** — wolfSSL
+    `wc_ecc_verify_hash` accepts the DER signature directly. (Contrast the KMS COSE
+    case, which needs raw r‖s; this PCA/OpenSSL path does not.)
+  - Signer leaf PEM ~814 B; EC public key DER 91 B.
+- **ML-DSA-44 era (4.0.0+ — pure PQC signature):**
+  - Sign over the **raw firmware bytes** (`openssl pkeyutl -sign -rawin`), NOT a
+    pre-hash — ML-DSA is a pure scheme that hashes internally (SHAKE). The device
+    passes the FULL image to `wc_dilithium_verify_msg`, not a SHA-256 digest. This
+    is a real divergence from the ECDSA path: the two eras feed the verifier
+    different inputs (digest vs message). (Image is never fully in RAM on-device,
+    so verify must stream the partition content to the ML-DSA verifier.)
+  - Signature is **fixed 2420 bytes** → too large for the 4 KB MQTT buffer margin;
+    **deliver the signature via a presigned S3 URL**, not inline in the OTA payload.
+  - Signer leaf PEM ~5657 B; ML-DSA public key DER 1334 B.
+- **Device trust-anchor (CA root) sizes to bake into flash:** classical CA root
+  PEM **696 B**; ML-DSA CA root PEM **5592 B** (~5.5 KB). Baking both into every
+  variant from 3.0.0 onward costs ~6.3 KB of app image — trivial.
+- **EKU caveat (flagged open question — resolved for the workshop):** the default
+  ACM PCA `EndEntityCertificate/V1` template stamps **TLS EKUs** (Web Server/Client
+  Auth) + KeyUsage `Digital Signature` (EC cert also `Key Agreement`), NOT
+  `id-kp-codeSigning`. This does **not** block the workshop: the device's manual
+  chain-to-baked-root + signature-verify is the security property that matters, and
+  wolfSSL's raw verify primitives + an opt-in chain check do not enforce EKU. A
+  proper code-signing EKU would require a custom PCA template via `ApiPassthrough`
+  extensions (not a built-in PCA template) — deferred, not required.
+- **OpenSSL availability:** the host/toolchain OpenSSL (3.6.3) has **native
+  ML-DSA-44** support — the dedicated `/opt/openssl-3.5` build used by the
+  cert-issuer image is sufficient but not strictly required for signing; any
+  OpenSSL ≥3.5 works.
+- **Signer lifecycle (confirmed):** stable **per-era** signer (one classical, one
+  ML-DSA-44), key stored in **Secrets Manager** like the broker cert; the per-build
+  step fetches the era-appropriate signer key rather than regenerating per build.
+
 ## Guiding principles
 
 - **Trusted factory vs untrusted field.** USB flash on the builder-Pi is trusted
@@ -133,20 +177,31 @@
 
 - Extend the `cmd/<thing>/ota` payload with `signature` (or `sigUrl`), `sigAlg`
   (`ecdsa-p256` | `mldsa44`), and a signer-cert locator; keep all existing fields.
-- `publish-ota` presigns `firmware.bin.sig` (same mechanism/expiry as the firmware)
-  or inlines the signature if small enough for the 4 KB MQTT buffer (ML-DSA sig
-  ~2.4 KB — borderline; prefer a presigned URL). Keep the existing `sha256`.
+- `publish-ota` presigns `firmware.bin.sig` (same mechanism/expiry as the firmware).
+  **G2 settled this: always use a presigned URL**, not inline — the ML-DSA-44
+  signature is a fixed 2420 B, which does not fit the 4 KB MQTT buffer with headroom
+  (the ECDSA sig is ~71 B and would fit, but use ONE delivery mechanism for both
+  eras). Keep the existing `sha256`.
 
 ## Workstream 3 — Device verifier + baked-in CA trust anchor
 
 - **Verifier (wolfSSL, no TPM):** use the already-compiled wolfSSL primitives
   (`wc_ecc_verify_hash` / `wc_dilithium_verify_msg`) + X.509 chain validation. In
-  `otaTask`, after `esp_ota_end`: (a) check `sha256`; (b) obtain the image hash
-  (incremental hash during the `esp_ota_write` loop is preferred — the image is
-  never fully in RAM; re-reading the partition is the fallback); (c) verify the
-  signature using the signer LEAF cert delivered WITH the OTA, and validate that
-  leaf chains to the **baked-in CA root** for this era; (d) only on success
+  `otaTask`, after `esp_ota_end`: (a) check `sha256`; (b) verify the signature using
+  the signer LEAF cert delivered WITH the OTA, and validate that leaf chains to the
+  **baked-in CA root** for this era; (c) only on success
   `esp_ota_set_boot_partition`; on failure `esp_ota_abort` + report.
+  - **Verifier input differs by era (G2 fact):** the ECDSA path verifies a
+    **SHA-256 digest** of the image (`wc_ecc_verify_hash` over the 32-byte hash) —
+    an incremental SHA-256 during the `esp_ota_write` loop is ideal since the image
+    is never fully in RAM. The ML-DSA-44 path verifies the **full image message**
+    (`wc_dilithium_verify_msg`), because ML-DSA hashes internally; the image must be
+    streamed from the OTA partition into the verifier (re-read the just-written
+    partition), as it cannot be held in RAM. Plan for both input shapes in the
+    verify step.
+  - **ECDSA signature is DER** (`SEQUENCE{r,s}`, ~71 B) — pass it straight to
+    `wc_ecc_verify_hash`, no raw-r‖s conversion. **ML-DSA signature is a fixed
+    2420 B** opaque blob.
 - **Trust anchor on device, signer leaf with the OTA (requirement 3).** What the
   device MUST hold durably is the **CA trust anchor** (the ACM Private CA root),
   not the per-signer leaf. The signer's private key signs the firmware; the device
