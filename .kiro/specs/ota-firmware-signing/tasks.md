@@ -23,18 +23,30 @@ follows design.md "Sequencing".
 
 ## Workstream 1 — Cloud signing (build + signer cert)
 
-- [ ] 1.1 Provision a **stable per-era signer** cert+key: classical signer (classical
+- [x] 1.1 Provision a **stable per-era signer** cert+key: classical signer (classical
       CA) and ML-DSA-44 signer (ML-DSA CA) via `issue_cert.py`, stored in Secrets
-      Manager (pattern: the broker cert). CFN + IAM for issue + read.
-- [ ] 1.2 Add a **local signing step** to `buildspec.yml` post_build for OTA
+      Manager (pattern: the broker cert). CFN + IAM for issue + read. **DONE:**
+      6 secrets `pqc-broker/signer-{classical,mldsa}-{ca,cert,key}` +
+      `_provision_signer_certs()` in `issue_broker_certs.py` (gated on signer env
+      vars; reuses the broker-cert provisioner CodeBuild + `CertProvisionerRole`);
+      signer secret ARNs exported as broker-stack Outputs.
+- [x] 1.2 Add a **local signing step** to `buildspec.yml` post_build for OTA
       variants: fetch the era-appropriate signer key, sign `firmware.bin`
-      (`openssl dgst -sign` / OpenSSL 3.5 ML-DSA), upload `firmware.bin.sig` to
-      `<serial>/<version>/`. Skip signing for `1.0.0-classical` (USB/trusted).
-- [ ] 1.3 Extend `prepare-build` VARIANT_CONFIG + buildspec variant map with the
-      variant → signer-era + sigAlg mapping (2.0.0/3.0.0 → classical; 4.0.0/5.0.0/
-      >=4.0.0 → ML-DSA-44).
-- [ ] 1.4 Publish the signer public cert(s) so the device can obtain them (S3 and/
-      or bake-into-firmware per WS3 decision).
+      (`openssl dgst -sha256 -sign` / OpenSSL 3.5 `pkeyutl -sign -rawin`), upload
+      `firmware.bin.sig` + `signer.crt` to `<serial>/<version>/`. Skips signing
+      for `1.0.0-classical` (USB/trusted). Signer key read from Secrets Manager,
+      scrubbed after signing; `signed`/`sigAlg` recorded in metadata.json. **DONE.**
+- [x] 1.3 Extend `prepare-build` VARIANT_CONFIG + buildspec variant map with the
+      variant → signer-era + sigAlg mapping (2.0.0/3.0.0 → classical;
+      4.0.0+ → ML-DSA-44 in WS4). **DONE:** `signer_era`/`sig_alg` per variant,
+      forwarded as `signerEra`/`sigAlg`; buildspec sets `SIGNER_ERA` per variant;
+      device-builder stack wires signer secret ARNs + `secretsmanager:GetSecretValue`
+      (scoped to `pqc-broker/signer-*`) + env vars; main stack passes the Outputs
+      through. Tests updated.
+- [x] 1.4 Publish the signer public cert(s) so the device can obtain them.
+      **DONE (via WS1 build):** the build uploads `signer.crt` next to
+      `firmware.bin.sig` — the signer LEAF travels with the OTA. Baking the CA
+      ROOT into firmware is Workstream 3 (3.4).
 
 ## Workstream 2 — OTA command + publish-ota
 

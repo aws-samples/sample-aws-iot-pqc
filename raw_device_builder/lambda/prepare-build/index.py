@@ -48,10 +48,35 @@ ssm = boto3.client("ssm")
 #   classical  → the initial flash variant (rarely re-built via migration)
 #   pqc        → hybrid ML-KEM key exchange, classical (ECDSA) device cert
 #   pqc-mldsa  → hybrid ML-KEM key exchange + ML-DSA-44 device cert (Step 2)
+#
+# OTA firmware signing (Workstream 1): each variant also declares which signer
+# ERA signs its firmware image and the signature algorithm, so the build fetches
+# the right signer key and the device knows how to verify.
+#   signer_era: None       → unsigned (classical 1.0.0 is USB/trusted-flash only,
+#                            never delivered OTA, so it carries no signature)
+#   signer_era: "classical"→ ECDSA-P256 signer (classical CA); sig_alg ecdsa-p256
+#   signer_era: "mldsa"    → ML-DSA-44 signer (ML-DSA CA);     sig_alg mldsa44
+# The 2.0.0/3.0.0 OTA era uses the classical signer; the 4.0.0+ era (added in
+# Workstream 4: 4.0.0-signer, 5.0.0-verified) uses the ML-DSA-44 signer.
 VARIANT_CONFIG = {
-    "classical": {"build_variant": "classical", "version": "1.0.0-classical"},
-    "pqc": {"build_variant": "pqc", "version": "2.0.0-pqc"},
-    "pqc-mldsa": {"build_variant": "pqc-mldsa", "version": "3.0.0-mldsa"},
+    "classical": {
+        "build_variant": "classical",
+        "version": "1.0.0-classical",
+        "signer_era": None,
+        "sig_alg": None,
+    },
+    "pqc": {
+        "build_variant": "pqc",
+        "version": "2.0.0-pqc",
+        "signer_era": "classical",
+        "sig_alg": "ecdsa-p256",
+    },
+    "pqc-mldsa": {
+        "build_variant": "pqc-mldsa",
+        "version": "3.0.0-mldsa",
+        "signer_era": "classical",
+        "sig_alg": "ecdsa-p256",
+    },
 }
 DEFAULT_VARIANT = "pqc"  # backward-compatible with the original migrate-to-PQC flow
 
@@ -114,6 +139,8 @@ def handler(event, context):
     variant = resolve_variant(event)
     cfg = VARIANT_CONFIG[variant]
     version = cfg["version"]
+    signer_era = cfg.get("signer_era")
+    sig_alg = cfg.get("sig_alg")
 
     serial_number = (
         thing_name.replace("esp32-", "") if thing_name.startswith("esp32-") else thing_name
@@ -133,6 +160,11 @@ def handler(event, context):
             "serialNumber": serial_number,
             "variant": variant,
             "version": version,
+            # Signer era + algorithm so publish-ota/device know how the image is
+            # signed. Empty string (not None) so the state machine's
+            # EnvironmentVariablesOverride never dereferences a missing/null path.
+            "signerEra": signer_era or "",
+            "sigAlg": sig_alg or "",
             "s3Key": s3_key,
             "buildNeeded": False,
             # buildEnv is unused when buildNeeded is False, but always present so
@@ -151,6 +183,8 @@ def handler(event, context):
         "serialNumber": serial_number,
         "variant": variant,
         "version": version,
+        "signerEra": signer_era or "",
+        "sigAlg": sig_alg or "",
         "s3Key": s3_key,
         "buildNeeded": True,
         "buildEnv": build_env,

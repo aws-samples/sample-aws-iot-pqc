@@ -60,6 +60,28 @@ Parameters:
       ARN of the ML-DSA-44 Private CA (from broker-container stack) used to issue
       post-quantum device certs for the pqc-mldsa firmware variant.
 
+  # ─── OTA firmware signer secret ARNs (from broker-container stack) ──────────
+  # The firmware build reads the era-appropriate signer KEY to sign firmware.bin
+  # and the signer CERT to ship alongside the OTA. Scoped to these four secrets
+  # (classical key+cert, ML-DSA key+cert); the CA-cert secrets are not read by
+  # the build (the CA root is baked into firmware, Workstream 3).
+  SignerClassicalKeySecretArn:
+    Type: String
+    Default: ''
+    Description: ARN of the classical ECDSA-P256 firmware-signer private key secret
+  SignerClassicalCertSecretArn:
+    Type: String
+    Default: ''
+    Description: ARN of the classical ECDSA-P256 firmware-signer leaf cert secret
+  SignerMlDsaKeySecretArn:
+    Type: String
+    Default: ''
+    Description: ARN of the ML-DSA-44 firmware-signer private key secret
+  SignerMlDsaCertSecretArn:
+    Type: String
+    Default: ''
+    Description: ARN of the ML-DSA-44 firmware-signer leaf cert secret
+
   BuilderPiInstanceId:
     Type: String
     Description: >-
@@ -1046,6 +1068,18 @@ Resources:
                 Resource:
                   - !Ref PrivateCAArn
                   - !Ref MlDsaPrivateCAArn
+              # Read the stable per-era OTA firmware SIGNER secrets to sign
+              # firmware.bin in post_build (buildspec.yml). Scoped to the signer
+              # secret name pattern (provisioned in broker-container-stack.yaml as
+              # pqc-broker/signer-*). Name-pattern scoping (rather than the ARN
+              # params) keeps this valid even if the ARN params are left at their
+              # empty default, and Secrets Manager appends a random 6-char suffix
+              # to the ARN so the trailing wildcard is required.
+              - Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                Resource:
+                  - !Sub 'arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:pqc-broker/signer-*'
 
   FirmwareBuildProject:
     Type: AWS::CodeBuild::Project
@@ -1092,6 +1126,18 @@ Resources:
             Value: !Ref PrivateCAArn
           - Name: MLDSA_CA_ARN
             Value: !Ref MlDsaPrivateCAArn
+          # OTA firmware signer secret ids (ARNs). The build reads the
+          # era-appropriate signer key to sign firmware.bin and the signer cert
+          # to ship with the OTA (buildspec.yml post_build). Secrets Manager
+          # accepts the full ARN as --secret-id.
+          - Name: SIGNER_CLASSICAL_KEY_SECRET
+            Value: !Ref SignerClassicalKeySecretArn
+          - Name: SIGNER_CLASSICAL_CERT_SECRET
+            Value: !Ref SignerClassicalCertSecretArn
+          - Name: SIGNER_MLDSA_KEY_SECRET
+            Value: !Ref SignerMlDsaKeySecretArn
+          - Name: SIGNER_MLDSA_CERT_SECRET
+            Value: !Ref SignerMlDsaCertSecretArn
       TimeoutInMinutes: 15
 
   # ═══════════════════════════════════════════════════════════════════════════

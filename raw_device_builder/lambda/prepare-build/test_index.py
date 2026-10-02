@@ -83,6 +83,9 @@ def test_default_variant_is_pqc(monkeypatch):
     assert result["version"] == PQC_VERSION
     assert result["buildNeeded"] is True
     assert result["s3Key"] == f"FC22E0/{PQC_VERSION}/firmware.bin"
+    # 2.0.0-pqc is in the classical signer era (OTA-delivered, ECDSA-signed).
+    assert result["signerEra"] == "classical"
+    assert result["sigAlg"] == "ecdsa-p256"
     # Resolved per-device build env is returned for WaitForBuild to use.
     assert "buildEnv" in result
     assert result["buildEnv"]["brokerEndpoint"] == "broker.example.com"
@@ -105,6 +108,10 @@ def test_mldsa_variant_uses_mldsa_version(monkeypatch):
     assert result["s3Key"] == f"FC22E0/{MLDSA_VERSION}/firmware.bin"
     assert result["buildNeeded"] is True
     assert "buildEnv" in result
+    # 3.0.0-mldsa is still signed by the CLASSICAL signer (the 4.0.0+ era, not
+    # this one, cuts over to the ML-DSA signer).
+    assert result["signerEra"] == "classical"
+    assert result["sigAlg"] == "ecdsa-p256"
 
 
 @mock_aws
@@ -115,6 +122,10 @@ def test_classical_variant(monkeypatch):
     assert result["variant"] == "classical"
     assert result["version"] == CLASSICAL_VERSION
     assert result["buildNeeded"] is True
+    # classical 1.0.0 is USB/trusted-flash only (never OTA) → UNSIGNED. Empty
+    # strings (not None) so the state machine env-override never sees a null.
+    assert result["signerEra"] == ""
+    assert result["sigAlg"] == ""
 
 
 @mock_aws

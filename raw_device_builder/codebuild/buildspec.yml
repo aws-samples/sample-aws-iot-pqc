@@ -24,12 +24,14 @@ phases:
             CERT_CA_ARN="${MLDSA_CA_ARN}"
             CERT_KEY_MODE="mldsa44"
             DEFAULT_BROKER_PORT="8884"
+            SIGNER_ERA="classical"
             ;;
           pqc)
             SKETCH_NAME="aws_iot_pqc_esp32"
             CERT_CA_ARN="${CA_ARN}"
             CERT_KEY_MODE="ec-p256"
             DEFAULT_BROKER_PORT="8883"
+            SIGNER_ERA="classical"
             ;;
           *)
             FIRMWARE_VARIANT="classical"
@@ -37,8 +39,16 @@ phases:
             CERT_CA_ARN="${CA_ARN}"
             CERT_KEY_MODE="ec-p256"
             DEFAULT_BROKER_PORT="8883"
+            SIGNER_ERA=""
             ;;
         esac
+      # OTA firmware-signing ERA (Workstream 1). Mirrors prepare-build
+      # VARIANT_CONFIG[*]["signer_era"]: classical 1.0.0 is USB/trusted-flash
+      # only (never OTA) so it is UNSIGNED; the 2.0.0/3.0.0 OTA era is signed by
+      # the classical ECDSA-P256 signer; the 4.0.0+ era (Workstream 4) by the
+      # ML-DSA-44 signer. SIGNER_ERA picks which Secrets Manager signer key the
+      # post_build signing step reads. SIGNER_ERA empty ⇒ no signature produced.
+      - echo "signer_era=${SIGNER_ERA:-<none/unsigned>}"
       - echo "variant=${FIRMWARE_VARIANT} sketch=${SKETCH_NAME} ca=${CERT_CA_ARN} key=${CERT_KEY_MODE} defaultPort=${DEFAULT_BROKER_PORT}"
       - '[ -n "${CERT_CA_ARN}" ] || { echo "ERROR: no CA ARN for variant ${FIRMWARE_VARIANT} (CA_ARN/MLDSA_CA_ARN unset)"; exit 1; }'
       - SKETCH_DIR="/tmp/firmware_build/$SKETCH_NAME"
@@ -172,6 +182,55 @@ phases:
       - aws s3 cp "$BUILD_DIR/"*.bootloader.bin "s3://$FIRMWARE_BUCKET/$S3_PREFIX/bootloader.bin" || true
       - aws s3 cp "$BUILD_DIR/"*.partitions.bin "s3://$FIRMWARE_BUCKET/$S3_PREFIX/partitions.bin" || true
       - aws s3 cp "$BUILD_DIR/boot_app0.bin" "s3://$FIRMWARE_BUCKET/$S3_PREFIX/boot_app0.bin" || true
+      # ─── OTA firmware SIGNING (Workstream 1) ────────────────────────────────
+      # Sign firmware.bin with the STABLE per-era signer key from Secrets Manager
+      # and upload firmware.bin.sig + the signer leaf cert. The device verifies
+      # the signature against the signer leaf (shipped here), which chains to the
+      # baked-in CA root. Encodings proven in the G2 spike:
+      #   classical: ECDSA-P256 over the SHA-256 digest → DER SEQUENCE{r,s} ~71 B
+      #              (`openssl dgst -sha256 -sign`; wolfSSL wc_ecc_verify_hash
+      #              takes the DER directly, no raw r||s conversion).
+      #   mldsa:     ML-DSA-44 over the RAW image (pure scheme, hashes internally)
+      #              → fixed 2420 B (`openssl pkeyutl -sign -rawin`, OpenSSL 3.5).
+      # SIGNER_ERA empty ⇒ unsigned (classical 1.0.0 USB-only); skip signing.
+      - SIG_ALG=""
+      - |
+        if [ -z "${SIGNER_ERA}" ]; then
+          echo "Variant ${FIRMWARE_VARIANT} is unsigned (USB/trusted-flash); skipping OTA signing."
+        else
+          SIGN_WORK="$(mktemp -d)"
+          case "${SIGNER_ERA}" in
+            classical)
+              SIGNER_KEY_SECRET="${SIGNER_CLASSICAL_KEY_SECRET}"
+              SIGNER_CERT_SECRET="${SIGNER_CLASSICAL_CERT_SECRET}"
+              SIG_ALG="ecdsa-p256"
+              SIGN_OPENSSL="openssl"
+              ;;
+            mldsa)
+              SIGNER_KEY_SECRET="${SIGNER_MLDSA_KEY_SECRET}"
+              SIGNER_CERT_SECRET="${SIGNER_MLDSA_CERT_SECRET}"
+              SIG_ALG="mldsa44"
+              SIGN_OPENSSL="/opt/openssl-3.5/bin/openssl"
+              ;;
+            *)
+              echo "ERROR: unknown SIGNER_ERA '${SIGNER_ERA}'"; exit 1 ;;
+          esac
+          [ -n "${SIGNER_KEY_SECRET}" ] && [ -n "${SIGNER_CERT_SECRET}" ] || { echo "ERROR: signer secret ids unset for era ${SIGNER_ERA} (SIGNER_*_KEY_SECRET / SIGNER_*_CERT_SECRET)"; exit 1; }
+          echo "Signing firmware.bin with ${SIG_ALG} signer (era ${SIGNER_ERA})..."
+          aws secretsmanager get-secret-value --secret-id "${SIGNER_KEY_SECRET}" --query SecretString --output text > "$SIGN_WORK/signer.key"
+          aws secretsmanager get-secret-value --secret-id "${SIGNER_CERT_SECRET}" --query SecretString --output text > "$SIGN_WORK/signer.crt"
+          if [ "${SIG_ALG}" = "ecdsa-p256" ]; then
+            "${SIGN_OPENSSL}" dgst -sha256 -sign "$SIGN_WORK/signer.key" -out "$SIGN_WORK/firmware.bin.sig" "$BIN_FILE"
+          else
+            "${SIGN_OPENSSL}" pkeyutl -sign -inkey "$SIGN_WORK/signer.key" -rawin -in "$BIN_FILE" -out "$SIGN_WORK/firmware.bin.sig"
+          fi
+          [ -s "$SIGN_WORK/firmware.bin.sig" ] || { echo "ERROR: empty signature produced"; exit 1; }
+          echo "Signature: ${SIG_ALG}, $(wc -c < "$SIGN_WORK/firmware.bin.sig") bytes"
+          aws s3 cp "$SIGN_WORK/firmware.bin.sig" "s3://$FIRMWARE_BUCKET/$S3_PREFIX/firmware.bin.sig"
+          aws s3 cp "$SIGN_WORK/signer.crt" "s3://$FIRMWARE_BUCKET/$S3_PREFIX/signer.crt"
+          # Scrub the signer private key from disk immediately after signing.
+          rm -rf "$SIGN_WORK"
+        fi
       - |
         cat > /tmp/build-metadata.json << EOF
         {
@@ -179,6 +238,8 @@ phases:
           "thingName": "esp32-$DEVICE_SERIAL",
           "firmwareVersion": "$FIRMWARE_VERSION",
           "firmwareType": "${FIRMWARE_VARIANT}",
+          "signed": $( [ -n "${SIG_ALG}" ] && echo true || echo false ),
+          "sigAlg": "${SIG_ALG}",
           "buildId": "$CODEBUILD_BUILD_ID",
           "buildTime": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
           "partitionTable": "pqc_workshop",

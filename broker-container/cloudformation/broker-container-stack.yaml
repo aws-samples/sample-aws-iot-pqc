@@ -413,6 +413,50 @@ Resources:
       Name: pqc-broker/mldsa-broker-key
       Description: ML-DSA-44 broker TLS private key
 
+  # ─── OTA firmware SIGNER cert secrets (one STABLE signer per era) ───────────
+  # These are the stable per-era firmware-signing identities, distinct from the
+  # broker TLS certs and the per-device certs. The classical signer (ECDSA P-256,
+  # classical CA) signs OTA images for the 2.0.0/3.0.0 era; the ML-DSA-44 signer
+  # (ML-DSA CA) signs the 4.0.0+ era. The firmware build READS the signer key to
+  # sign firmware.bin; the device verifies the signature against the signer leaf
+  # delivered with the OTA, which chains to the baked-in CA root. One signer per
+  # era (not per build/device), so the device trusts a single leaf per era.
+  SignerClassicalCACertSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: pqc-broker/signer-classical-ca
+      Description: Classical CA cert for the firmware signer (device trust root, 2.0.0/3.0.0 era)
+
+  SignerClassicalCertSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: pqc-broker/signer-classical-cert
+      Description: Classical ECDSA-P256 firmware signer certificate (leaf, ships with OTA)
+
+  SignerClassicalKeySecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: pqc-broker/signer-classical-key
+      Description: Classical ECDSA-P256 firmware signer private key (read by the build to sign)
+
+  SignerMlDsaCACertSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: pqc-broker/signer-mldsa-ca
+      Description: ML-DSA-44 CA cert for the firmware signer (device trust root, 4.0.0+ era)
+
+  SignerMlDsaCertSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: pqc-broker/signer-mldsa-cert
+      Description: ML-DSA-44 firmware signer certificate (leaf, ships with OTA)
+
+  SignerMlDsaKeySecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: pqc-broker/signer-mldsa-key
+      Description: ML-DSA-44 firmware signer private key (read by the build to sign)
+
   # ═══════════════════════════════════════════════════════════════════════════
   # ECS — Cluster, Task Definition, Service
   # ═══════════════════════════════════════════════════════════════════════════
@@ -967,6 +1011,12 @@ Resources:
                   - !Ref MlDsaBrokerCACertSecret
                   - !Ref MlDsaBrokerCertSecret
                   - !Ref MlDsaBrokerKeySecret
+                  - !Ref SignerClassicalCACertSecret
+                  - !Ref SignerClassicalCertSecret
+                  - !Ref SignerClassicalKeySecret
+                  - !Ref SignerMlDsaCACertSecret
+                  - !Ref SignerMlDsaCertSecret
+                  - !Ref SignerMlDsaKeySecret
               # CodeBuild reads its build source from S3, so it needs both
               # GetObject (on the objects) and ListBucket (on the bucket) — the
               # same grant CertIssuerBuildRole has. Without ListBucket the
@@ -1018,6 +1068,21 @@ Resources:
             Value: !Ref MlDsaBrokerKeySecret
           - Name: BROKER_CN
             Value: pqc-mqtt-broker
+          # ── OTA firmware signer secrets (stable per-era signing identity) ──
+          - Name: SIGNER_CLASSICAL_CA_SECRET
+            Value: !Ref SignerClassicalCACertSecret
+          - Name: SIGNER_CLASSICAL_CERT_SECRET
+            Value: !Ref SignerClassicalCertSecret
+          - Name: SIGNER_CLASSICAL_KEY_SECRET
+            Value: !Ref SignerClassicalKeySecret
+          - Name: SIGNER_MLDSA_CA_SECRET
+            Value: !Ref SignerMlDsaCACertSecret
+          - Name: SIGNER_MLDSA_CERT_SECRET
+            Value: !Ref SignerMlDsaCertSecret
+          - Name: SIGNER_MLDSA_KEY_SECRET
+            Value: !Ref SignerMlDsaKeySecret
+          - Name: SIGNER_CN
+            Value: pqc-firmware-signer
       LogsConfig:
         CloudWatchLogs:
           Status: ENABLED
@@ -1290,6 +1355,34 @@ Outputs:
   MlDsaPrivateCAArn:
     Description: ML-DSA-44 Private CA ARN (for issuing post-quantum device certificates)
     Value: !Ref MlDsaPrivateCA
+
+  # ─── OTA firmware signer secret ARNs (consumed by the device-builder stack) ──
+  # The firmware build reads the era-appropriate signer KEY to sign firmware.bin
+  # and the signer CERT to ship alongside the OTA. Export the ARNs so the build's
+  # CodeBuild role can be scoped to exactly these secrets.
+  SignerClassicalCACertSecretArn:
+    Description: ARN of the classical firmware-signer CA cert secret (device trust root, 2.0.0/3.0.0)
+    Value: !Ref SignerClassicalCACertSecret
+
+  SignerClassicalCertSecretArn:
+    Description: ARN of the classical ECDSA-P256 firmware-signer leaf cert secret
+    Value: !Ref SignerClassicalCertSecret
+
+  SignerClassicalKeySecretArn:
+    Description: ARN of the classical ECDSA-P256 firmware-signer private key secret
+    Value: !Ref SignerClassicalKeySecret
+
+  SignerMlDsaCACertSecretArn:
+    Description: ARN of the ML-DSA-44 firmware-signer CA cert secret (device trust root, 4.0.0+)
+    Value: !Ref SignerMlDsaCACertSecret
+
+  SignerMlDsaCertSecretArn:
+    Description: ARN of the ML-DSA-44 firmware-signer leaf cert secret
+    Value: !Ref SignerMlDsaCertSecret
+
+  SignerMlDsaKeySecretArn:
+    Description: ARN of the ML-DSA-44 firmware-signer private key secret
+    Value: !Ref SignerMlDsaKeySecret
 
   ECRRepositoryUri:
     Description: ECR repository for broker image
