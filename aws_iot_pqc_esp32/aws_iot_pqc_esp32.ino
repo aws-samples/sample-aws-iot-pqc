@@ -46,11 +46,17 @@
 #include <wolfssl/wolfcrypt/settings.h>
 #include <wolfssl/ssl.h>
 #include <wolfssl/wolfcrypt/logging.h>
+// wolfcrypt primitives for OTA firmware signature verification (Workstream 3).
+#include <wolfssl/wolfcrypt/sha256.h>
+#include <wolfssl/wolfcrypt/ecc.h>
+#include <wolfssl/wolfcrypt/dilithium.h>
+#include <wolfssl/wolfcrypt/asn_public.h>
 
 #include "secrets.h"
 
 #include <esp_ota_ops.h>
 #include <esp_partition.h>
+#include <esp_heap_caps.h>
 
 // ─── Log Tags ───────────────────────────────────────────────────────────────
 // Each component gets its own tag for per-module log level control.
@@ -195,6 +201,16 @@ static char g_otaUrl[2048] = {0};   // presigned S3 URL is ~1500 bytes; 1024 tru
 static char g_otaVersion[32] = {0};
 static int  g_otaSize = 0;
 static SemaphoreHandle_t g_otaSemaphore = NULL;
+
+// OTA signature material (Workstream 3). Populated from the cmd/<thing>/ota
+// payload's sigUrl/sigAlg/signerCertUrl when the push is SIGNED; left empty for
+// an unsigned push (classical 1.0.0 / legacy command). The otaTask fetches the
+// detached signature + signer leaf from these presigned URLs and verifies the
+// freshly-written image before switching the boot partition.
+static char g_otaSigUrl[2048] = {0};         // presigned firmware.bin.sig
+static char g_otaSignerCertUrl[2048] = {0};  // presigned signer.crt (leaf)
+static char g_otaSigAlg[16] = {0};           // "ecdsa-p256" | "mldsa44" | ""
+static char g_otaSha256[65] = {0};           // expected image sha256 (hex), enforced before boot
 
 // ─── Forward Declarations ───────────────────────────────────────────────────
 void wifiTask(void* pvParameters);
@@ -903,9 +919,28 @@ void mqttMessageHandler(String &topic, String &payload) {
 
                 g_otaSize = (int)jsonGetNumber(payload, "size");
 
+                // Expected image hash (Workstream 3). The cloud always sends
+                // sha256; the device previously IGNORED it. Capture it so the
+                // otaTask can enforce integrity before switching the boot slot.
+                String sha = jsonGetString(payload, "sha256");
+                sha.toCharArray(g_otaSha256, sizeof(g_otaSha256));
+
+                // Signature material (Workstream 3). Present only for SIGNED
+                // variants; absent for an unsigned push (classical 1.0.0 /
+                // legacy command). Parsed tolerantly — empty strings mean
+                // "unsigned" and otaTask handles that per its verify policy.
+                String sigAlg = jsonGetString(payload, "sigAlg");
+                sigAlg.toCharArray(g_otaSigAlg, sizeof(g_otaSigAlg));
+                String sigUrl = jsonGetString(payload, "sigUrl");
+                sigUrl.toCharArray(g_otaSigUrl, sizeof(g_otaSigUrl));
+                String signerCertUrl = jsonGetString(payload, "signerCertUrl");
+                signerCertUrl.toCharArray(g_otaSignerCertUrl, sizeof(g_otaSignerCertUrl));
+
                 g_otaPending = true;
                 if (g_otaSemaphore) xSemaphoreGive(g_otaSemaphore);
-                ESP_LOGI(TAG_MQTT, "OTA download queued: v%s, %d bytes", g_otaVersion, g_otaSize);
+                ESP_LOGI(TAG_MQTT, "OTA download queued: v%s, %d bytes, sigAlg=%s",
+                         g_otaVersion, g_otaSize,
+                         g_otaSigAlg[0] ? g_otaSigAlg : "<unsigned>");
             } else {
                 ESP_LOGE(TAG_MQTT, "ota-update command missing/invalid url");
             }
@@ -953,6 +988,290 @@ void mqttMessageHandler(String &topic, String &payload) {
     }
 
     ESP_LOGW(TAG_MQTT, "Unhandled message on topic '%s'", topic.c_str());
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  OTA Firmware Signature Verification (Workstream 3)
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// The security spine of the OTA path: every field-delivered image is signed in
+// the cloud build by a STABLE per-era signer and verified HERE before the device
+// switches its boot partition. USB flash on the builder-Pi is trusted/unsigned;
+// OTA is not. Trust model:
+//   - The device holds NO signing key — it only VERIFIES, so wolfSSL crypto
+//     primitives (not a TPM) are sufficient.
+//   - The signer LEAF cert travels WITH each OTA (signerCertUrl); the device
+//     validates that leaf chains to the baked-in CA ROOT (OTA_SIGNER_CA_ROOT,
+//     injected into secrets.h by the build) and then verifies the image
+//     signature with the leaf's public key.
+//   - classical era (ecdsa-p256): ECDSA-P256 over the image's SHA-256 digest,
+//     DER-encoded signature (~71 B). ML-DSA era (mldsa44): ML-DSA-44 over the
+//     RAW image (pure scheme, hashes internally), fixed 2420 B signature.
+//
+// The firmware image is never fully in RAM (streamed to flash). For ECDSA we
+// hash incrementally during the download; for ML-DSA we memory-map the written
+// partition read-only to get a contiguous pointer for the one-shot verify.
+
+#ifndef OTA_SIGNER_CA_ROOT_DEFINED
+// Fallback for a local/desktop build where secrets.h did not inject the signer
+// CA root. An empty anchor makes the chain check fail closed (reject), which is
+// the safe default — a real CodeBuild artifact always defines OTA_SIGNER_CA_ROOT
+// (and OTA_SIGNER_CA_ROOT_DEFINED) in secrets.h. We key the guard off the
+// _DEFINED marker macro, not off OTA_SIGNER_CA_ROOT itself, because the real
+// one is a `static const char[]` (not a macro) so #ifndef would not see it.
+static const char OTA_SIGNER_CA_ROOT[] = "";
+#endif
+
+// Max sizes for the small artifacts fetched into RAM. ML-DSA-44 signature is a
+// fixed 2420 B; a signer leaf PEM is ~5.7 KB. Generous caps with headroom.
+#define OTA_SIG_BUF_MAX        2600
+#define OTA_SIGNER_CERT_MAX    8192
+
+// Fetch a small object from a presigned S3 URL into a caller buffer over TLS.
+// Mirrors otaTask's S3 download (fresh context, verify disabled — integrity for
+// these artifacts comes from the signature chain they feed, not the transport),
+// but reads the whole body into `out` instead of streaming to flash. Returns
+// true and sets *outLen on success. Used for the detached signature and the
+// signer leaf cert; NOT for the firmware image (that is streamed).
+static bool otaHttpsGetToBuffer(const char* urlCstr, uint8_t* out, size_t cap, size_t* outLen) {
+    if (!urlCstr || !urlCstr[0]) return false;
+    String url(urlCstr), host, path;
+    uint16_t port = 443;
+    if (url.startsWith("https://")) url = url.substring(8);
+    int pathStart = url.indexOf('/');
+    if (pathStart <= 0) { ESP_LOGE(TAG_OTA, "sig GET: bad URL"); return false; }
+    host = url.substring(0, pathStart);
+    path = url.substring(pathStart);
+    int colonIdx = host.indexOf(':');
+    if (colonIdx > 0) { port = host.substring(colonIdx + 1).toInt(); host = host.substring(0, colonIdx); }
+
+    WiFiClient tcp;
+    if (!tcp.connect(host.c_str(), port)) { ESP_LOGE(TAG_OTA, "sig GET: TCP connect failed"); return false; }
+
+    WOLFSSL_CTX* ctx = wolfSSL_CTX_new(wolfTLSv1_3_client_method());
+    if (!ctx) { tcp.stop(); return false; }
+    wolfSSL_CTX_load_verify_buffer(ctx, (const unsigned char*)S3_ROOT_CA, strlen(S3_ROOT_CA), WOLFSSL_FILETYPE_PEM);
+    wolfSSL_CTX_set_verify(ctx, WOLFSSL_VERIFY_NONE, NULL);
+    wolfSSL_CTX_SetIORecv(ctx, wolfssl_recv_cb);
+    wolfSSL_CTX_SetIOSend(ctx, wolfssl_send_cb);
+
+    wolfssl_io_ctx_t io = { .client = &tcp };
+    WOLFSSL* ssl = wolfSSL_new(ctx);
+    if (!ssl) { wolfSSL_CTX_free(ctx); tcp.stop(); return false; }
+    wolfSSL_SetIOReadCtx(ssl, &io);
+    wolfSSL_SetIOWriteCtx(ssl, &io);
+    #ifdef HAVE_SNI
+    wolfSSL_UseSNI(ssl, WOLFSSL_SNI_HOST_NAME, host.c_str(), host.length());
+    #endif
+
+    unsigned long hsStart = millis();
+    int ret;
+    do {
+        ret = wolfSSL_connect(ssl);
+        if (ret == WOLFSSL_SUCCESS) break;
+        int e = wolfSSL_get_error(ssl, ret);
+        if (e == WOLFSSL_ERROR_WANT_READ || e == WOLFSSL_ERROR_WANT_WRITE) { vTaskDelay(pdMS_TO_TICKS(10)); continue; }
+        ESP_LOGE(TAG_OTA, "sig GET: TLS handshake failed (err=%d)", e);
+        wolfSSL_free(ssl); wolfSSL_CTX_free(ctx); tcp.stop(); return false;
+    } while ((millis() - hsStart) < 15000);
+    if (ret != WOLFSSL_SUCCESS) { wolfSSL_free(ssl); wolfSSL_CTX_free(ctx); tcp.stop(); return false; }
+
+    String req = "GET " + path + " HTTP/1.1\r\nHost: " + host + "\r\nConnection: close\r\n\r\n";
+    wolfSSL_write(ssl, req.c_str(), req.length());
+
+    // Parse headers for Content-Length (1 byte at a time, WANT_READ tolerant).
+    String line, status;
+    int contentLength = -1;
+    bool headersDone = false;
+    unsigned long hdrStart = millis();
+    while (!headersDone && (millis() - hdrStart) < 15000) {
+        char c; int r = wolfSSL_read(ssl, &c, 1);
+        if (r <= 0) {
+            int e = wolfSSL_get_error(ssl, r);
+            if (e == WOLFSSL_ERROR_WANT_READ || e == WOLFSSL_ERROR_WANT_WRITE) { vTaskDelay(pdMS_TO_TICKS(5)); continue; }
+            break;
+        }
+        line += c;
+        if (line.endsWith("\r\n")) {
+            String t = line; t.trim();
+            if (t.length() == 0) { headersDone = true; break; }
+            if (status.length() == 0) status = t;
+            String lower = line; lower.toLowerCase();
+            if (lower.startsWith("content-length:")) contentLength = line.substring(line.indexOf(':') + 1).toInt();
+            line = "";
+        }
+    }
+    if (!headersDone || contentLength <= 0 || (size_t)contentLength > cap) {
+        ESP_LOGE(TAG_OTA, "sig GET: bad length %d (cap %u, status '%s')", contentLength, (unsigned)cap, status.c_str());
+        wolfSSL_free(ssl); wolfSSL_CTX_free(ctx); tcp.stop(); return false;
+    }
+
+    // Read exactly contentLength body bytes into out.
+    size_t got = 0;
+    unsigned long bodyStart = millis();
+    while (got < (size_t)contentLength && (millis() - bodyStart) < 20000) {
+        int r = wolfSSL_read(ssl, out + got, (int)((size_t)contentLength - got));
+        if (r > 0) { got += r; continue; }
+        int e = wolfSSL_get_error(ssl, r);
+        if (e == WOLFSSL_ERROR_WANT_READ || e == WOLFSSL_ERROR_WANT_WRITE) { vTaskDelay(pdMS_TO_TICKS(5)); continue; }
+        break;
+    }
+    wolfSSL_shutdown(ssl);
+    wolfSSL_free(ssl);
+    wolfSSL_CTX_free(ctx);
+    tcp.stop();
+
+    if (got != (size_t)contentLength) { ESP_LOGE(TAG_OTA, "sig GET: short read %u/%d", (unsigned)got, contentLength); return false; }
+    *outLen = got;
+    return true;
+}
+
+// Validate that the signer leaf PEM chains to the baked-in CA root
+// (OTA_SIGNER_CA_ROOT). Uses a throwaway wolfSSL cert manager so the trust
+// decision is independent of the TLS session. Returns true only if the leaf is
+// signed (transitively) by the embedded root.
+static bool otaVerifyChainToRoot(const uint8_t* leafPem, size_t leafLen) {
+    const char* root = OTA_SIGNER_CA_ROOT;
+    if (!root || !root[0]) { ESP_LOGE(TAG_OTA, "No baked-in signer CA root; refusing (fail-closed)"); return false; }
+
+    WOLFSSL_CERT_MANAGER* cm = wolfSSL_CertManagerNew();
+    if (!cm) { ESP_LOGE(TAG_OTA, "CertManagerNew failed"); return false; }
+    int ret = wolfSSL_CertManagerLoadCABuffer(cm, (const unsigned char*)root, strlen(root), WOLFSSL_FILETYPE_PEM);
+    if (ret != WOLFSSL_SUCCESS) {
+        ESP_LOGE(TAG_OTA, "Load signer CA root failed (rc=%d)", ret);
+        wolfSSL_CertManagerFree(cm);
+        return false;
+    }
+    ret = wolfSSL_CertManagerVerifyBuffer(cm, leafPem, (long)leafLen, WOLFSSL_FILETYPE_PEM);
+    wolfSSL_CertManagerFree(cm);
+    if (ret != WOLFSSL_SUCCESS) {
+        ESP_LOGE(TAG_OTA, "Signer leaf does NOT chain to baked-in root (rc=%d)", ret);
+        return false;
+    }
+    ESP_LOGI(TAG_OTA, "Signer leaf verified against baked-in CA root");
+    return true;
+}
+
+// Parse the signer leaf PEM and copy out its DER-encoded public key into
+// `pubDer` (caller buffer, cap pubCap). Returns the DER length, or <0 on error.
+// Used to feed the public key to wc_ecc / wc_dilithium verify.
+static int otaSignerPublicKeyDer(const uint8_t* leafPem, size_t leafLen, uint8_t* pubDer, size_t pubCap) {
+    DecodedCert cert;
+    wc_InitDecodedCert(&cert, leafPem, (word32)leafLen, NULL);
+    // ParseCert with VERIFY so the structure is fully populated; CM not required
+    // here (chain trust is checked separately in otaVerifyChainToRoot).
+    int ret = wc_ParseCert(&cert, CERT_TYPE, NO_VERIFY, NULL);
+    if (ret != 0) { ESP_LOGE(TAG_OTA, "wc_ParseCert failed (%d)", ret); wc_FreeDecodedCert(&cert); return -1; }
+    if (cert.pubKeySize == 0 || cert.pubKeySize > pubCap) {
+        ESP_LOGE(TAG_OTA, "signer pubkey size %u out of range", (unsigned)cert.pubKeySize);
+        wc_FreeDecodedCert(&cert);
+        return -1;
+    }
+    memcpy(pubDer, cert.publicKey, cert.pubKeySize);
+    int n = (int)cert.pubKeySize;
+    wc_FreeDecodedCert(&cert);
+    return n;
+}
+
+// Verify an ECDSA-P256 signature (DER SEQUENCE{r,s}) over `digest` (32-byte
+// SHA-256) using the signer leaf's public key. Returns true iff valid.
+static bool otaVerifyEcdsaP256(const uint8_t* sig, size_t sigLen,
+                               const uint8_t* digest,
+                               const uint8_t* leafPem, size_t leafLen) {
+    uint8_t pubDer[128];
+    int pubLen = otaSignerPublicKeyDer(leafPem, leafLen, pubDer, sizeof(pubDer));
+    if (pubLen < 0) return false;
+
+    ecc_key key;
+    if (wc_ecc_init(&key) != 0) return false;
+    word32 idx = 0;
+    bool ok = false;
+    if (wc_EccPublicKeyDecode(pubDer, &idx, &key, (word32)pubLen) == 0) {
+        int verifyStatus = 0;
+        int ret = wc_ecc_verify_hash(sig, (word32)sigLen, digest, 32, &verifyStatus, &key);
+        ok = (ret == 0 && verifyStatus == 1);
+        if (!ok) ESP_LOGE(TAG_OTA, "ECDSA verify failed (ret=%d, status=%d)", ret, verifyStatus);
+    } else {
+        ESP_LOGE(TAG_OTA, "ECDSA pubkey decode failed");
+    }
+    wc_ecc_free(&key);
+    return ok;
+}
+
+// Verify an ML-DSA-44 signature over the FULL image using the signer leaf's
+// public key. ML-DSA hashes internally, so it needs the whole message in one
+// call — we memory-map the written OTA partition read-only (zero-copy) to get a
+// contiguous pointer rather than buffering 3.5 MB in RAM. The dilithium_key is
+// multi-KB, so it is PSRAM-allocated. Returns true iff valid.
+static bool otaVerifyMlDsa44(const uint8_t* sig, size_t sigLen,
+                             const esp_partition_t* part, size_t imageLen,
+                             const uint8_t* leafPem, size_t leafLen) {
+    uint8_t pubDer[2048];  // ML-DSA-44 SubjectPublicKeyInfo DER ~1334 B
+    int pubLen = otaSignerPublicKeyDer(leafPem, leafLen, pubDer, sizeof(pubDer));
+    if (pubLen < 0) return false;
+
+    // Map the whole image contiguously (read-only) from flash.
+    const void* mapPtr = NULL;
+    esp_partition_mmap_handle_t mapHandle;
+    esp_err_t merr = esp_partition_mmap(part, 0, imageLen, ESP_PARTITION_MMAP_DATA, &mapPtr, &mapHandle);
+    if (merr != ESP_OK || !mapPtr) {
+        ESP_LOGE(TAG_OTA, "esp_partition_mmap failed: %s", esp_err_to_name(merr));
+        return false;
+    }
+
+    // dilithium_key is large; keep it off the task stack (PSRAM preferred).
+    dilithium_key* key = (dilithium_key*)heap_caps_malloc(sizeof(dilithium_key), MALLOC_CAP_SPIRAM);
+    if (!key) key = (dilithium_key*)malloc(sizeof(dilithium_key));
+    if (!key) { ESP_LOGE(TAG_OTA, "dilithium_key alloc failed"); esp_partition_munmap(mapHandle); return false; }
+
+    bool ok = false;
+    if (wc_dilithium_init(key) == 0) {
+        word32 idx = 0;
+        // wc_Dilithium_PublicKeyDecode parses a full SubjectPublicKeyInfo and
+        // sets the level from the OID, so an explicit set_level is not required
+        // for an ASN.1-encoded public key.
+        if (wc_Dilithium_PublicKeyDecode(pubDer, &idx, key, (word32)pubLen) == 0) {
+            // FIPS 204 pure ML-DSA with an EMPTY context (what OpenSSL 3.5
+            // `pkeyutl -sign -rawin` produces). Use the explicit-context verify
+            // with ctx=NULL/ctxLen=0 so this is correct regardless of whether
+            // the build defines WOLFSSL_MLDSA_NO_CTX (the plain _verify_msg
+            // macro only exists in the NO_CTX build).
+            int verifyStatus = 0;
+            int ret = wc_dilithium_verify_ctx_msg(sig, (word32)sigLen,
+                                                  NULL, 0,
+                                                  (const byte*)mapPtr, (word32)imageLen,
+                                                  &verifyStatus, key);
+            ok = (ret == 0 && verifyStatus == 1);
+            if (!ok) ESP_LOGE(TAG_OTA, "ML-DSA verify failed (ret=%d, status=%d)", ret, verifyStatus);
+        } else {
+            ESP_LOGE(TAG_OTA, "ML-DSA pubkey decode failed");
+        }
+        wc_dilithium_free(key);
+    }
+    free(key);
+    esp_partition_munmap(mapHandle);
+    return ok;
+}
+
+// Top-level OTA verify gate. Given the signer material already fetched into RAM
+// and the written image (partition + size + its SHA-256 digest), run the full
+// policy: (1) chain the signer leaf to the baked-in root, (2) verify the image
+// signature with the correct algorithm. Returns true ONLY if BOTH pass.
+static bool otaVerifyImage(const char* sigAlg,
+                           const uint8_t* sig, size_t sigLen,
+                           const uint8_t* leafPem, size_t leafLen,
+                           const esp_partition_t* part, size_t imageLen,
+                           const uint8_t* sha256Digest) {
+    if (!otaVerifyChainToRoot(leafPem, leafLen)) return false;
+
+    if (strcmp(sigAlg, "ecdsa-p256") == 0) {
+        return otaVerifyEcdsaP256(sig, sigLen, sha256Digest, leafPem, leafLen);
+    }
+    if (strcmp(sigAlg, "mldsa44") == 0) {
+        return otaVerifyMlDsa44(sig, sigLen, part, imageLen, leafPem, leafLen);
+    }
+    ESP_LOGE(TAG_OTA, "Unknown sigAlg '%s'; refusing", sigAlg);
+    return false;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1149,6 +1468,14 @@ void otaTask(void* pvParameters) {
         int lastProgress = 0;
         bool downloadOk = true;
 
+        // Incremental SHA-256 of the image AS IT STREAMS to flash (Workstream 3).
+        // The image is never fully in RAM, so we hash each chunk here; the digest
+        // is used both to enforce the transmitted sha256 (integrity) and as the
+        // input to the ECDSA signature verify (authenticity). Cheap and runs in
+        // lockstep with esp_ota_write.
+        wc_Sha256 otaSha;
+        bool shaOk = (wc_InitSha256(&otaSha) == 0);
+
         // Bounded WANT_READ retry: near EOF the last TLS record can be briefly
         // in flight (socket momentarily empty), so a WANT_READ is normal and we
         // wait for it rather than aborting. Cap the wait so a genuinely stalled
@@ -1184,6 +1511,11 @@ void otaTask(void* pvParameters) {
                 downloadOk = false;
                 break;
             }
+            // Hash the same bytes we just wrote to flash (Workstream 3).
+            if (shaOk && wc_Sha256_Update(&otaSha, buf, bytesRead) != 0) {
+                ESP_LOGE(TAG_OTA, "SHA-256 update failed");
+                shaOk = false;
+            }
 
             totalRead += bytesRead;
             int progress = (totalRead * 100) / contentLength;
@@ -1210,6 +1542,75 @@ void otaTask(void* pvParameters) {
             ESP_LOGE(TAG_OTA, "esp_ota_end failed: %s", esp_err_to_name(err));
             g_otaPending = false;
             continue;
+        }
+
+        // ─── Verify gate (Workstream 3) ─────────────────────────────────────
+        // The image is written but NOT yet bootable. Before switching the boot
+        // partition we (1) finalize the streamed SHA-256 and enforce the
+        // transmitted sha256 (integrity), and (2) for a SIGNED push, verify the
+        // signature + signer-leaf chain-to-baked-in-root (authenticity). On ANY
+        // failure we DO NOT set the boot partition: the freshly written slot is
+        // simply abandoned and the device keeps running its current firmware.
+        uint8_t imgDigest[WC_SHA256_DIGEST_SIZE] = {0};
+        if (!shaOk || wc_Sha256_Final(&otaSha, imgDigest) != 0) {
+            ESP_LOGE(TAG_OTA, "Image SHA-256 finalize failed; refusing to boot new image");
+            g_otaPending = false;
+            continue;
+        }
+
+        // Enforce the transmitted sha256 (hex) if present — closes the latent
+        // gap where the device previously ignored it. A mismatch means the bytes
+        // on flash are not what the cloud built; refuse.
+        {
+            char digestHex[2 * WC_SHA256_DIGEST_SIZE + 1];
+            for (int i = 0; i < WC_SHA256_DIGEST_SIZE; i++)
+                sprintf(digestHex + 2 * i, "%02x", imgDigest[i]);
+            // g_otaSha256 was captured from the OTA command at parse time.
+            if (g_otaSha256[0] && strcasecmp(g_otaSha256, digestHex) != 0) {
+                ESP_LOGE(TAG_OTA, "sha256 mismatch!\n  expected %s\n  actual   %s",
+                         g_otaSha256, digestHex);
+                g_otaPending = false;
+                continue;
+            }
+            if (g_otaSha256[0]) ESP_LOGI(TAG_OTA, "Image sha256 OK (%s)", digestHex);
+        }
+
+        // Signature verification. Policy: if the push declares a sigAlg, the
+        // signature MUST verify. If no sigAlg (unsigned/legacy push), log loudly
+        // and proceed (classical 1.0.0 USB-origin images and pre-signing
+        // commands are unsigned). A signed-era device is only ever SENT signed
+        // pushes by publish-ota, so "unsigned" here means the classical path.
+        if (g_otaSigAlg[0]) {
+            ESP_LOGI(TAG_OTA, "Verifying %s signature before boot...", g_otaSigAlg);
+
+            uint8_t* sigBuf = (uint8_t*)malloc(OTA_SIG_BUF_MAX);
+            uint8_t* leafBuf = (uint8_t*)malloc(OTA_SIGNER_CERT_MAX + 1);
+            size_t sigLen = 0, leafLen = 0;
+            bool fetched = sigBuf && leafBuf &&
+                otaHttpsGetToBuffer(g_otaSigUrl, sigBuf, OTA_SIG_BUF_MAX, &sigLen) &&
+                otaHttpsGetToBuffer(g_otaSignerCertUrl, leafBuf, OTA_SIGNER_CERT_MAX, &leafLen);
+
+            bool verified = false;
+            if (fetched) {
+                leafBuf[leafLen] = '\0';  // PEM is text; NUL-terminate for safety
+                verified = otaVerifyImage(g_otaSigAlg, sigBuf, sigLen,
+                                          leafBuf, leafLen,
+                                          otaPartition, (size_t)totalRead, imgDigest);
+            } else {
+                ESP_LOGE(TAG_OTA, "Failed to fetch signature/signer cert for verification");
+            }
+            if (sigBuf) free(sigBuf);
+            if (leafBuf) free(leafBuf);
+
+            if (!verified) {
+                ESP_LOGE(TAG_OTA, "SIGNATURE VERIFICATION FAILED — refusing to boot new image. "
+                                  "Running firmware is unchanged.");
+                g_otaPending = false;
+                continue;
+            }
+            ESP_LOGI(TAG_OTA, "Signature verified — image is authentic.");
+        } else {
+            ESP_LOGW(TAG_OTA, "OTA image is UNSIGNED (no sigAlg); proceeding (classical/legacy path).");
         }
 
         err = esp_ota_set_boot_partition(otaPartition);

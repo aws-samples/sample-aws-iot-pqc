@@ -149,8 +149,39 @@ phases:
         echo "static const char AWS_CERT_PRIVATE[] PROGMEM = R\"KEY(" >> "$SKETCH_DIR/secrets.h"
         echo "$DEVICE_KEY" >> "$SKETCH_DIR/secrets.h"
         echo ")KEY\";" >> "$SKETCH_DIR/secrets.h"
-        echo "" >> "$SKETCH_DIR/secrets.h"
-        echo "#endif" >> "$SKETCH_DIR/secrets.h"
+      # ─── OTA signer trust anchor (Workstream 3) ─────────────────────────────
+      # Bake the firmware-signer CA ROOT(s) into the image as OTA_SIGNER_CA_ROOT
+      # so the on-device OTA verifier can validate that a signed OTA's signer
+      # leaf chains to a trusted root. We bake BOTH era roots (classical +
+      # ML-DSA-44) concatenated into one PEM bundle: wolfSSL's cert manager loads
+      # multiple CA certs, so a classical-signed OR an ML-DSA-signed OTA both
+      # verify. Baking both from the signed variants onward solves the cutover
+      # chicken-and-egg: a device on 3.0.0-mldsa already trusts the ML-DSA root
+      # before the first 4.0.0 ML-DSA-signed update arrives. The roots come from
+      # the stable-per-era signer secrets provisioned in the broker stack
+      # (pqc-broker/signer-*-ca); the build reads them like it reads the device CA.
+      - |
+        SIGNER_ROOT_BUNDLE=""
+        if [ -n "${SIGNER_CLASSICAL_CA_SECRET}" ]; then
+          SIGNER_ROOT_BUNDLE="$(aws secretsmanager get-secret-value --secret-id "${SIGNER_CLASSICAL_CA_SECRET}" --query SecretString --output text 2>/dev/null || true)"
+        fi
+        if [ -n "${SIGNER_MLDSA_CA_SECRET}" ]; then
+          MLDSA_ROOT="$(aws secretsmanager get-secret-value --secret-id "${SIGNER_MLDSA_CA_SECRET}" --query SecretString --output text 2>/dev/null || true)"
+          SIGNER_ROOT_BUNDLE="$(printf '%s\n%s' "$SIGNER_ROOT_BUNDLE" "$MLDSA_ROOT")"
+        fi
+      - |
+        if [ -n "${SIGNER_ROOT_BUNDLE}" ]; then
+          echo "" >> "$SKETCH_DIR/secrets.h"
+          echo "#define OTA_SIGNER_CA_ROOT_DEFINED 1" >> "$SKETCH_DIR/secrets.h"
+          echo "static const char OTA_SIGNER_CA_ROOT[] = R\"EOF(" >> "$SKETCH_DIR/secrets.h"
+          echo "$SIGNER_ROOT_BUNDLE" >> "$SKETCH_DIR/secrets.h"
+          echo ")EOF\";" >> "$SKETCH_DIR/secrets.h"
+          echo "OTA signer CA root(s) baked into secrets.h"
+        else
+          echo "WARNING: no signer CA root secrets available; OTA signature chain check will fail closed"
+        fi
+      - echo "" >> "$SKETCH_DIR/secrets.h"
+      - echo "#endif" >> "$SKETCH_DIR/secrets.h"
       - echo "secrets.h generated for esp32-$DEVICE_SERIAL"
       # Scrub the on-disk private key + CSR now that it is baked into secrets.h.
       - rm -rf "$CERT_WORK"

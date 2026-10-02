@@ -64,25 +64,31 @@ follows design.md "Sequencing".
 
 ## Workstream 3 — Device verifier + durable signer cert + SHA-256
 
-- [ ] 3.1 Implement the OTA image hash: incremental SHA-256 during the
-      `esp_ota_write` loop (preferred) so the image is never fully in RAM; fallback
-      re-read the written partition. Enforce the transmitted `sha256` as a
-      pre-check (close the current latent gap).
-- [ ] 3.2 Implement signature verification with wolfSSL
-      (`wc_ecc_verify_hash` / `wc_dilithium_verify_msg`) against the signer leaf's
-      public key; validate the signer leaf chains to the baked-in CA root anchor.
-- [ ] 3.3 Wire verify INTO `otaTask` between `esp_ota_end` and
-      `esp_ota_set_boot_partition`: on success set boot + reboot; on failure
-      `esp_ota_abort`, keep running firmware, report the failure (telemetry/log).
-      Apply to ALL three sketches (identical handlers).
-- [ ] 3.4 Bake the CA trust ANCHOR (root cert) into the firmware image: classical
-      CA root in the classical-verifying variants; ML-DSA-44 CA root baked into
-      3.0.0-mldsa onward so it is present before the 4.0.0 cutover. (The signer
-      LEAF cert is NOT stored on-device — it travels with the OTA.) No NVS or
-      partition change required for the anchor; NVS storage of a leaf is an
-      optional later optimization only.
-- [ ] 3.5 Parse `sigUrl`/`sigAlg` + the signer leaf cert in `mqttMessageHandler`
-      (currently ignores `sha256` too) and fetch the `.sig`/leaf in `otaTask`.
+- [x] 3.1 Implement the OTA image hash: incremental SHA-256 during the
+      `esp_ota_write` loop so the image is never fully in RAM; enforce the
+      transmitted `sha256` as a pre-check (closes the latent gap where the device
+      ignored it). **DONE** (`wc_Sha256` streamed per chunk; mismatch → refuse).
+- [x] 3.2 Implement signature verification with wolfSSL
+      (`wc_ecc_verify_hash` for ecdsa-p256 over the SHA-256 digest;
+      `wc_dilithium_verify_ctx_msg` over the mmap'd image for mldsa44) against the
+      signer leaf's public key; validate the leaf chains to the baked-in CA root
+      via a `WOLFSSL_CERT_MANAGER`. **DONE (code);** cross-impl verify (esp. ML-DSA)
+      MUST be proven on hardware in WS4 — see design "WS3 verification status".
+- [x] 3.3 Wire verify INTO `otaTask` between `esp_ota_end` and
+      `esp_ota_set_boot_partition`: on success set boot + reboot; on failure DO
+      NOT switch the boot partition (abandon the written slot; running firmware
+      intact) and log loudly. Applied IDENTICALLY to all three sketches (verifier
+      region md5-identical). **DONE.**
+- [x] 3.4 Bake the CA trust ANCHOR into the firmware image via the build:
+      `OTA_SIGNER_CA_ROOT` injected into `secrets.h` from the signer CA-root
+      secrets (`pqc-broker/signer-*-ca`). Bakes BOTH era roots concatenated (the
+      cert manager loads multiple CAs), so a device trusts the ML-DSA root before
+      the 4.0.0 cutover. Threaded broker Output → main → device-builder env.
+      **DONE.** (Correction to earlier plan: NOT a hardcoded .ino const — the PCA
+      root is per-account, so it is build-injected like `AWS_CERT_CA`.)
+- [x] 3.5 Parse `sigUrl`/`sigAlg`/`signerCertUrl` (and the previously-ignored
+      `sha256`) in `mqttMessageHandler`; fetch the `.sig`/signer leaf in `otaTask`
+      via `otaHttpsGetToBuffer`. Tolerates absence (unsigned push). **DONE.**
 
 ## Workstream 4 — New variants + proof
 

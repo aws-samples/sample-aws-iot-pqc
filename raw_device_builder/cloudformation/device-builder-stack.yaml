@@ -81,6 +81,19 @@ Parameters:
     Type: String
     Default: ''
     Description: ARN of the ML-DSA-44 firmware-signer leaf cert secret
+  SignerClassicalCACertSecretArn:
+    Type: String
+    Default: ''
+    Description: >-
+      ARN of the classical firmware-signer CA root secret. Baked into the
+      firmware image as the OTA verifier's trust anchor (device-side chain check).
+  SignerMlDsaCACertSecretArn:
+    Type: String
+    Default: ''
+    Description: >-
+      ARN of the ML-DSA-44 firmware-signer CA root secret. Baked into the
+      firmware image (from the signed variants onward) so a device trusts the
+      ML-DSA root before the 4.0.0 ML-DSA-signed OTA cutover.
 
   BuilderPiInstanceId:
     Type: String
@@ -1141,6 +1154,12 @@ Resources:
             Value: !Ref SignerMlDsaKeySecretArn
           - Name: SIGNER_MLDSA_CERT_SECRET
             Value: !Ref SignerMlDsaCertSecretArn
+          # Signer CA ROOT secrets — baked into the firmware image as the OTA
+          # verifier's trust anchor (OTA_SIGNER_CA_ROOT in secrets.h).
+          - Name: SIGNER_CLASSICAL_CA_SECRET
+            Value: !Ref SignerClassicalCACertSecretArn
+          - Name: SIGNER_MLDSA_CA_SECRET
+            Value: !Ref SignerMlDsaCACertSecretArn
       TimeoutInMinutes: 15
 
   # ═══════════════════════════════════════════════════════════════════════════
