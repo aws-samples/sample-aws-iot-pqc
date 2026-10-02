@@ -31,6 +31,7 @@
         "thingName.$": "$.Payload.thingName",
         "serialNumber.$": "$.Payload.serialNumber",
         "variant.$": "$.Payload.variant",
+        "buildVariant.$": "$.Payload.buildVariant",
         "version.$": "$.Payload.version",
         "signerEra.$": "$.Payload.signerEra",
         "sigAlg.$": "$.Payload.sigAlg",
@@ -59,7 +60,8 @@
         "EnvironmentVariablesOverride": [
           { "Name": "DEVICE_SERIAL", "Value.$": "$.prepare.serialNumber", "Type": "PLAINTEXT" },
           { "Name": "FIRMWARE_VERSION", "Value.$": "$.prepare.version", "Type": "PLAINTEXT" },
-          { "Name": "FIRMWARE_VARIANT", "Value.$": "$.prepare.variant", "Type": "PLAINTEXT" },
+          { "Name": "FIRMWARE_VARIANT", "Value.$": "$.prepare.buildVariant", "Type": "PLAINTEXT" },
+          { "Name": "SIGNER_ERA", "Value.$": "$.prepare.signerEra", "Type": "PLAINTEXT" },
           { "Name": "WIFI_SSID", "Value.$": "$.prepare.buildEnv.wifiSsid", "Type": "PLAINTEXT" },
           { "Name": "WIFI_PASSWORD", "Value.$": "$.prepare.buildEnv.wifiPassword", "Type": "PLAINTEXT" },
           { "Name": "BROKER_ENDPOINT", "Value.$": "$.prepare.buildEnv.brokerEndpoint", "Type": "PLAINTEXT" },

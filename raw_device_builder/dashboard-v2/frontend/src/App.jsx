@@ -92,11 +92,13 @@ const MIGRATION_IN_PROGRESS = ['building', 'pushing-ota', 'rebooting'];
 
 // The three firmware variants the operator can flash, in migration order. The
 // value is what start-migration expects; the label is what the picker shows.
-const VARIANTS = ['classical', 'pqc', 'pqc-mldsa'];
+const VARIANTS = ['classical', 'pqc', 'pqc-mldsa', 'signer', 'verified'];
 const VARIANT_LABELS = {
   classical: 'Classical (ECDSA)',
   pqc: 'PQC key exchange (ML-KEM)',
   'pqc-mldsa': 'PQC + ML-DSA-44 cert',
+  signer: 'Signed OTA (ML-DSA-44)',
+  verified: 'Verified OTA (proof)',
 };
 
 // Best-effort "what is the device running now" from live telemetry. The device
@@ -108,6 +110,11 @@ const VARIANT_LABELS = {
 // reading just defaults to "pqc".
 function detectVariant(device) {
   const v = (device.firmwareVersion || '').trim().toLowerCase();
+  // ML-DSA signer-era variants (Workstream 4). Check these first: they are the
+  // highest steps on the path. Suffixes are distinct so order is not critical,
+  // but keeping them ahead of the base checks documents the migration order.
+  if (v.endsWith('-verified')) return 'verified';
+  if (v.endsWith('-signer')) return 'signer';
   if (v.endsWith('-mldsa')) return 'pqc-mldsa';
   if (v.endsWith('-pqc')) return 'pqc';
   if (v.endsWith('-classical')) return 'classical';

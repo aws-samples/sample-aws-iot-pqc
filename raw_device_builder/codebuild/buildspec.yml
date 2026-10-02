@@ -24,14 +24,14 @@ phases:
             CERT_CA_ARN="${MLDSA_CA_ARN}"
             CERT_KEY_MODE="mldsa44"
             DEFAULT_BROKER_PORT="8884"
-            SIGNER_ERA="classical"
+            DEFAULT_SIGNER_ERA="classical"
             ;;
           pqc)
             SKETCH_NAME="aws_iot_pqc_esp32"
             CERT_CA_ARN="${CA_ARN}"
             CERT_KEY_MODE="ec-p256"
             DEFAULT_BROKER_PORT="8883"
-            SIGNER_ERA="classical"
+            DEFAULT_SIGNER_ERA="classical"
             ;;
           *)
             FIRMWARE_VARIANT="classical"
@@ -39,16 +39,20 @@ phases:
             CERT_CA_ARN="${CA_ARN}"
             CERT_KEY_MODE="ec-p256"
             DEFAULT_BROKER_PORT="8883"
-            SIGNER_ERA=""
+            DEFAULT_SIGNER_ERA=""
             ;;
         esac
-      # OTA firmware-signing ERA (Workstream 1). Mirrors prepare-build
-      # VARIANT_CONFIG[*]["signer_era"]: classical 1.0.0 is USB/trusted-flash
-      # only (never OTA) so it is UNSIGNED; the 2.0.0/3.0.0 OTA era is signed by
-      # the classical ECDSA-P256 signer; the 4.0.0+ era (Workstream 4) by the
-      # ML-DSA-44 signer. SIGNER_ERA picks which Secrets Manager signer key the
-      # post_build signing step reads. SIGNER_ERA empty ⇒ no signature produced.
-      - echo "signer_era=${SIGNER_ERA:-<none/unsigned>}"
+      # OTA firmware-signing ERA (Workstreams 1 + 4). The signer era is a
+      # property of the VERSION, not the build sketch: the ML-DSA-signer-era
+      # variants (4.0.0-signer / 5.0.0-verified) build the SAME pqc-mldsa sketch
+      # but are signed by the ML-DSA-44 signer. So the state machine passes the
+      # authoritative SIGNER_ERA (from prepare-build VARIANT_CONFIG signer_era);
+      # we only fall back to the per-sketch DEFAULT_SIGNER_ERA when the build was
+      # started WITHOUT a SIGNER_ERA override (e.g. the registrar's classical
+      # first-flash, which is unsigned anyway). Empty ⇒ no signature produced
+      # (classical 1.0.0 USB/trusted-flash).
+      - SIGNER_ERA="${SIGNER_ERA:-$DEFAULT_SIGNER_ERA}"
+      - echo "signer_era=${SIGNER_ERA:-<none/unsigned>} (build_variant=${FIRMWARE_VARIANT})"
       - echo "variant=${FIRMWARE_VARIANT} sketch=${SKETCH_NAME} ca=${CERT_CA_ARN} key=${CERT_KEY_MODE} defaultPort=${DEFAULT_BROKER_PORT}"
       - '[ -n "${CERT_CA_ARN}" ] || { echo "ERROR: no CA ARN for variant ${FIRMWARE_VARIANT} (CA_ARN/MLDSA_CA_ARN unset)"; exit 1; }'
       - SKETCH_DIR="/tmp/firmware_build/$SKETCH_NAME"

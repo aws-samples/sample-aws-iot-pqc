@@ -92,12 +92,25 @@ follows design.md "Sequencing".
 
 ## Workstream 4 — New variants + proof
 
-- [ ] 4.1 Add `4.0.0-signer` variant (ML-DSA-signed OTA; carries/ensures the
-      ML-DSA signer cert) to VARIANT_CONFIG + buildspec + dashboard picker.
-- [ ] 4.2 Add `5.0.0-verified` variant (ML-DSA-signed OTA) — the acceptance-proof
-      variant.
-- [ ] 4.3 Negative test: craft a bad/mis-signed OTA and confirm the device
-      REJECTS it (no boot switch, running firmware intact).
+- [x] 4.1 Add `4.0.0-signer` variant (ML-DSA-signed OTA) to VARIANT_CONFIG +
+      buildspec + dashboard picker. **DONE** (`signer` key → `4.0.0-signer`).
+- [x] 4.2 Add `5.0.0-verified` variant (ML-DSA-signed OTA) — the acceptance-proof
+      variant. **DONE** (`verified` key → `5.0.0-verified`).
+      **Design note (both):** these build the SAME `pqc-mldsa` sketch (ML-KEM +
+      ML-DSA-44 device cert, 8884) — only the OTA SIGNER era differs. Introduced
+      a `build_variant` field (what to build) separate from `signer_era` (who
+      signs): prepare-build now returns `buildVariant`, the state machine sources
+      `FIRMWARE_VARIANT` from `$.prepare.buildVariant` and adds a `SIGNER_ERA`
+      build env from `$.prepare.signerEra`, and the buildspec lets the passed-in
+      `SIGNER_ERA` win over the per-sketch default. Picker (`App.jsx` VARIANTS /
+      labels / detectVariant) and `start-migration` allow-list both extended.
+      asl.json + inline stack copy kept in sync (drift guard updated + green).
+- [x] 4.3 Negative/tamper test harness: `raw_device_builder/tests/ota_tamper_test.sh`
+      — 3 modes (corrupt-image / wrong-sig / swap-signer) corrupt the signed S3
+      artifact, publish the tampered OTA, and ASSERT the device's reported
+      firmwareVersion is UNCHANGED (it refused). On-hardware test (not in the
+      mocked suite); run during the WS4 end-to-end proof. **DONE (harness);**
+      executing it requires a deployed env + online device.
 
 ## Workstream 5 — Cross-cutting
 
