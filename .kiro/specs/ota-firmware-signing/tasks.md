@@ -50,12 +50,17 @@ follows design.md "Sequencing".
 
 ## Workstream 2 — OTA command + publish-ota
 
-- [ ] 2.1 Extend `publish-ota` `cmd/<thing>/ota` payload with `sigUrl` (presigned
-      `firmware.bin.sig`), `sigAlg` (`ecdsa-p256`|`mldsa44`), and a signer-cert
-      locator; preserve `url/version/size/sha256/expiresIn`.
-- [ ] 2.2 Presign `firmware.bin.sig` with the same lifetime as the firmware; wait
-      out the POST_BUILD upload lag (reuse the existing `_firmware_metadata`
-      polling pattern for the `.sig`).
+- [x] 2.1 Extend `publish-ota` `cmd/<thing>/ota` payload with `sigUrl` (presigned
+      `firmware.bin.sig`), `sigAlg` (`ecdsa-p256`|`mldsa44`), and `signerCertUrl`
+      (presigned signer leaf); preserve `url/version/size/sha256/expiresIn`.
+      **DONE:** signed variants add the three fields; unsigned variants (classical
+      1.0.0) publish the exact legacy payload. `sigAlg` sourced from the event
+      (prepare-build → state machine `$.prepare.sigAlg`).
+- [x] 2.2 Presign `firmware.bin.sig` + `signer.crt` with the same lifetime as the
+      firmware; wait out the POST_BUILD upload lag (new `_object_ready()` presence
+      poll, same 403-or-404 handling as `_firmware_metadata`). Raises if a signed
+      variant's `.sig`/`signer.crt` never lands. Both eras deliver the signature
+      by presigned URL (ML-DSA sig is 2420 B, too large to inline). **DONE.**
 
 ## Workstream 3 — Device verifier + durable signer cert + SHA-256
 

@@ -522,6 +522,8 @@ Resources:
                 "serialNumber.$": "$.Payload.serialNumber",
                 "variant.$": "$.Payload.variant",
                 "version.$": "$.Payload.version",
+                "signerEra.$": "$.Payload.signerEra",
+                "sigAlg.$": "$.Payload.sigAlg",
                 "s3Key.$": "$.Payload.s3Key",
                 "buildNeeded.$": "$.Payload.buildNeeded",
                 "buildEnv.$": "$.Payload.buildEnv"
@@ -577,7 +579,8 @@ Resources:
                   "serialNumber.$": "$.prepare.serialNumber",
                   "s3Key.$": "$.prepare.s3Key",
                   "version.$": "$.prepare.version",
-                  "variant.$": "$.prepare.variant"
+                  "variant.$": "$.prepare.variant",
+                  "sigAlg.$": "$.prepare.sigAlg"
                 }
               },
               "ResultPath": "$.publish",

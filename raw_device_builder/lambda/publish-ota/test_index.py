@@ -41,7 +41,9 @@ def _env():
     )
 
 
-def _seed():
+def _seed(sig_artifacts=False):
+    """Seed the registry row + firmware object. When sig_artifacts is True, also
+    seed the detached signature + signer cert the signed-variant path presigns."""
     ddb = boto3.resource("dynamodb", region_name="us-east-1")
     ddb.create_table(
         TableName=REGISTRY_TABLE,
@@ -57,6 +59,17 @@ def _seed():
         Key=f"FC22E0/{PQC_VERSION}/firmware.bin",
         Body=b"firmware-bytes",
     )
+    if sig_artifacts:
+        s3.put_object(
+            Bucket=FIRMWARE_BUCKET,
+            Key=f"FC22E0/{PQC_VERSION}/firmware.bin.sig",
+            Body=b"\x30\x45signature-der-bytes",
+        )
+        s3.put_object(
+            Bucket=FIRMWARE_BUCKET,
+            Key=f"FC22E0/{PQC_VERSION}/signer.crt",
+            Body=b"-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n",
+        )
 
 
 @mock_aws
@@ -91,12 +104,78 @@ def test_publishes_ota_command_and_updates_registry(monkeypatch):
     assert published["payload"]["size"] == len(b"firmware-bytes")
     # sha256 of the firmware bytes is present.
     assert len(published["payload"]["sha256"]) == 64
+    # No sigAlg in the event → unsigned push → NO signature fields (legacy shape).
+    assert "sigUrl" not in published["payload"]
+    assert "sigAlg" not in published["payload"]
+    assert "signerCertUrl" not in published["payload"]
 
     # Registry updated to ota-pending.
     ddb = boto3.resource("dynamodb", region_name="us-east-1")
     item = ddb.Table(REGISTRY_TABLE).get_item(Key={"serialNumber": "FC22E0"})["Item"]
     assert item["status"] == "ota-pending"
     assert item["targetFirmwareVersion"] == PQC_VERSION
+
+
+@mock_aws
+def test_signed_variant_adds_signature_fields(monkeypatch):
+    """A signed variant (sigAlg set) adds sigUrl/sigAlg/signerCertUrl, presigned
+    from the sibling .sig and signer.crt, while preserving the firmware fields."""
+    _seed(sig_artifacts=True)
+    _env()
+    mod = load_handler_module(os.path.join(HERE, "index.py"), "publish_ota_signed")
+
+    published = {}
+
+    def fake_publish(topic, qos, payload):
+        published["payload"] = json.loads(payload)
+
+    monkeypatch.setattr(mod.iot_data, "publish", fake_publish, raising=True)
+
+    event = {
+        "thingName": "esp32-FC22E0",
+        "serialNumber": "FC22E0",
+        "s3Key": f"FC22E0/{PQC_VERSION}/firmware.bin",
+        "version": PQC_VERSION,
+        "sigAlg": "ecdsa-p256",
+    }
+    result = mod.handler(event, None)
+    assert result["success"] is True
+
+    p = published["payload"]
+    # Firmware fields preserved.
+    assert p["action"] == "ota-update"
+    assert p["url"].startswith("https://")
+    assert len(p["sha256"]) == 64
+    # Signature fields present and pointing at the sibling artifacts.
+    assert p["sigAlg"] == "ecdsa-p256"
+    assert p["sigUrl"].startswith("https://")
+    assert "firmware.bin.sig" in p["sigUrl"]
+    assert p["signerCertUrl"].startswith("https://")
+    assert "signer.crt" in p["signerCertUrl"]
+
+
+@mock_aws
+def test_signed_variant_missing_signature_raises(monkeypatch):
+    """If a variant declares a signature but the .sig never lands in S3, fail
+    loudly rather than publishing an OTA the device cannot verify."""
+    _seed(sig_artifacts=False)  # firmware present, but NO .sig / signer.crt
+    _env()
+    mod = load_handler_module(os.path.join(HERE, "index.py"), "publish_ota_missing_sig")
+
+    # Keep the test fast: don't actually sleep through the bounded retry.
+    monkeypatch.setattr(mod.time, "sleep", lambda *_: None, raising=True)
+    monkeypatch.setattr(mod.iot_data, "publish", lambda **_: None, raising=True)
+
+    event = {
+        "thingName": "esp32-FC22E0",
+        "serialNumber": "FC22E0",
+        "s3Key": f"FC22E0/{PQC_VERSION}/firmware.bin",
+        "version": PQC_VERSION,
+        "sigAlg": "mldsa44",
+    }
+    with pytest.raises(RuntimeError) as exc:
+        mod.handler(event, None)
+    assert "signature not found" in str(exc.value).lower()
 
 
 @mock_aws

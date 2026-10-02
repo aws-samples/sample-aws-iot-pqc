@@ -1,12 +1,18 @@
 """
 Publish OTA Lambda — final work step of the PQC migration state machine.
 
-Given { thingName, serialNumber, s3Key } (the build has completed by the time
-the state machine reaches this step), this:
+Given { thingName, serialNumber, s3Key, sigAlg } (the build has completed by the
+time the state machine reaches this step), this:
   1. Reads the firmware size (head_object) and computes its sha256.
   2. Generates a regional presigned S3 GET URL.
+  2b. For SIGNED variants (sigAlg set), presigns the detached signature
+      (firmware.bin.sig) and the signer leaf cert (signer.crt) uploaded next to
+      the firmware, and adds sigUrl/sigAlg/signerCertUrl to the OTA command.
   3. Publishes an ota-update command to cmd/<thingName>/ota.
   4. Marks the registry item targetFirmwareVersion + status=ota-pending.
+
+Unsigned variants (classical 1.0.0 USB-flash; sigAlg empty/absent) publish the
+exact prior payload shape, so older devices and unsigned pushes interoperate.
 
 The device downloads the firmware, writes ota_1, and reboots into PQC.
 
@@ -80,6 +86,13 @@ def handler(event, context):
         parts = s3_key.split("/")
         version = parts[1] if len(parts) >= 3 else PQC_VERSION
 
+    # Signature era/algorithm for this image. prepare-build forwards sigAlg
+    # (ecdsa-p256 | mldsa44) for OTA-delivered variants; empty/absent means an
+    # UNSIGNED variant (classical 1.0.0 USB-flash) — publish the legacy payload
+    # unchanged so an unsigned push and an older device still interoperate.
+    sig_alg = (event.get("sigAlg") or "").strip()
+    signed = bool(sig_alg)
+
     # 1. Size + sha256 (waits out the POST_BUILD upload lag; see constants).
     meta = _firmware_metadata(bucket, s3_key)
     if not meta:
@@ -88,14 +101,56 @@ def handler(event, context):
             f"{FIRMWARE_WAIT_ATTEMPTS * FIRMWARE_WAIT_SECONDS}s: {s3_key}"
         )
 
-    # 2. Regional presigned URL.
+    # 2. Regional presigned URL for the firmware image.
     presigned_url = s3.generate_presigned_url(
         "get_object",
         Params={"Bucket": bucket, "Key": s3_key},
         ExpiresIn=PRESIGNED_URL_EXPIRY,
     )
 
-    # 3. Publish OTA command.
+    # 2b. Signed variants: presign the detached signature + the signer leaf cert
+    # (both uploaded by the build next to firmware.bin). The ML-DSA-44 signature
+    # is a fixed 2420 B (G2 spike), too large for the device's ~4 KB MQTT buffer
+    # with headroom, so BOTH eras deliver the signature by presigned URL rather
+    # than inline — one mechanism for both. The signer leaf travels WITH the OTA
+    # (same bucket/prefix) and the device validates it against its baked-in CA
+    # root; the device never needs the leaf stored durably.
+    sig_fields = {}
+    if signed:
+        prefix = s3_key.rsplit("/", 1)[0]  # <serial>/<version>
+        sig_key = f"{prefix}/firmware.bin.sig"
+        signer_cert_key = f"{prefix}/signer.crt"
+        # Wait out the POST_BUILD upload lag for the sibling artifacts too — they
+        # are uploaded in the same post_build phase as firmware.bin, so if the
+        # image is present they are almost certainly present, but poll to be safe.
+        if not _object_ready(bucket, sig_key):
+            raise RuntimeError(
+                f"Signed variant '{sig_alg}' but signature not found in S3 after "
+                f"{FIRMWARE_WAIT_ATTEMPTS * FIRMWARE_WAIT_SECONDS}s: {sig_key}"
+            )
+        if not _object_ready(bucket, signer_cert_key):
+            raise RuntimeError(
+                f"Signed variant '{sig_alg}' but signer cert not found in S3 after "
+                f"{FIRMWARE_WAIT_ATTEMPTS * FIRMWARE_WAIT_SECONDS}s: {signer_cert_key}"
+            )
+        sig_fields = {
+            "sigAlg": sig_alg,
+            "sigUrl": s3.generate_presigned_url(
+                "get_object",
+                Params={"Bucket": bucket, "Key": sig_key},
+                ExpiresIn=PRESIGNED_URL_EXPIRY,
+            ),
+            "signerCertUrl": s3.generate_presigned_url(
+                "get_object",
+                Params={"Bucket": bucket, "Key": signer_cert_key},
+                ExpiresIn=PRESIGNED_URL_EXPIRY,
+            ),
+        }
+    else:
+        print(f"Variant version {version} is unsigned; publishing legacy OTA payload.")
+
+    # 3. Publish OTA command. Signature fields are added only for signed variants
+    #    so unsigned pushes and older devices keep the exact prior payload shape.
     ota_payload = {
         "action": "ota-update",
         "url": presigned_url,
@@ -103,10 +158,11 @@ def handler(event, context):
         "size": meta["size"],
         "sha256": meta["sha256"],
         "expiresIn": PRESIGNED_URL_EXPIRY,
+        **sig_fields,
     }
     topic = f"cmd/{thing_name}/ota"
     iot_data.publish(topic=topic, qos=1, payload=json.dumps(ota_payload))
-    print(f"OTA command published to {topic}")
+    print(f"OTA command published to {topic} (signed={signed}, sigAlg={sig_alg or 'none'})")
 
     # 4. Mark registry.
     _table().update_item(
@@ -169,3 +225,37 @@ def _firmware_metadata(bucket, s3_key):
     if last_err:
         print(f"Firmware metadata gave up after retries: {last_err}")
     return None
+
+
+def _object_ready(bucket, s3_key):
+    """Return True once the object exists, polling out the POST_BUILD upload lag.
+
+    Presence-only sibling of _firmware_metadata (no body read / hash) for the
+    detached signature and signer cert, which are uploaded in the SAME build
+    post_build phase as firmware.bin. Same 403-or-404 handling: this Lambda's
+    role has s3:GetObject but not s3:ListBucket, so a not-yet-uploaded key comes
+    back as 403 Forbidden rather than 404 — treat both as "not ready yet".
+    """
+    for attempt in range(1, FIRMWARE_WAIT_ATTEMPTS + 1):
+        try:
+            s3.head_object(Bucket=bucket, Key=s3_key)
+            return True
+        except ClientError as e:
+            code = e.response.get("Error", {}).get("Code", "")
+            status = e.response.get("ResponseMetadata", {}).get("HTTPStatusCode")
+            if code in ("403", "404", "NoSuchKey", "NotFound", "Forbidden") or status in (403, 404):
+                if attempt < FIRMWARE_WAIT_ATTEMPTS:
+                    print(
+                        f"Artifact not in S3 yet ({s3_key}) [{code or status}], attempt "
+                        f"{attempt}/{FIRMWARE_WAIT_ATTEMPTS}; waiting {FIRMWARE_WAIT_SECONDS}s..."
+                    )
+                    time.sleep(FIRMWARE_WAIT_SECONDS)
+                    continue
+                print(f"Artifact still absent after {attempt} attempts: {s3_key}")
+                return False
+            print(f"Artifact presence S3 error ({code}): {e}")
+            return False
+        except Exception as e:  # noqa: BLE001
+            print(f"Artifact presence error: {e}")
+            return False
+    return False
