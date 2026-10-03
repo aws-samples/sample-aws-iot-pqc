@@ -53,6 +53,17 @@ phases:
       # (classical 1.0.0 USB/trusted-flash).
       - SIGNER_ERA="${SIGNER_ERA:-$DEFAULT_SIGNER_ERA}"
       - echo "signer_era=${SIGNER_ERA:-<none/unsigned>} (build_variant=${FIRMWARE_VARIANT})"
+      # Human-readable OTA firmware-signature algorithm for the device to report
+      # in telemetry (dashboard integrity badge). Derived from the signer era:
+      # classical -> ECDSA-P256, mldsa -> ML-DSA-44, empty -> unsigned (USB/
+      # trusted factory flash). Baked into secrets.h as FIRMWARE_OTA_SIG_ALG.
+      - |
+        case "${SIGNER_ERA}" in
+          classical) OTA_SIG_ALG_DISPLAY="ECDSA-P256" ;;
+          mldsa)     OTA_SIG_ALG_DISPLAY="ML-DSA-44" ;;
+          *)         OTA_SIG_ALG_DISPLAY="unsigned" ;;
+        esac
+      - echo "ota_sig_alg_display=${OTA_SIG_ALG_DISPLAY}"
       - echo "variant=${FIRMWARE_VARIANT} sketch=${SKETCH_NAME} ca=${CERT_CA_ARN} key=${CERT_KEY_MODE} defaultPort=${DEFAULT_BROKER_PORT}"
       - '[ -n "${CERT_CA_ARN}" ] || { echo "ERROR: no CA ARN for variant ${FIRMWARE_VARIANT} (CA_ARN/MLDSA_CA_ARN unset)"; exit 1; }'
       - SKETCH_DIR="/tmp/firmware_build/$SKETCH_NAME"
@@ -127,6 +138,12 @@ phases:
         // all agree. secrets.h is included before the sketch's #ifndef-guarded
         // fallback #define, so this value always wins in a CodeBuild artifact.
         #define FIRMWARE_VERSION "$FIRMWARE_VERSION"
+
+        // OTA firmware signature era (dashboard integrity badge). Derived from
+        // the build's SIGNER_ERA: ECDSA-P256 (classical signer), ML-DSA-44
+        // (ML-DSA signer), or unsigned (USB/trusted factory flash). Distinct
+        // from the TLS cert signature (CERT_SIGNATURE_ALG in the sketch).
+        #define FIRMWARE_OTA_SIG_ALG "$OTA_SIG_ALG_DISPLAY"
 
         #define WIFI_SSID     "$WIFI_SSID"
         #define WIFI_PASSWORD "$WIFI_PASSWORD"

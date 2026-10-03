@@ -140,6 +140,21 @@ function DeviceCard({ device, onCommand, onShowLog, onFlash }) {
   // (v3). PQC key exchange (v2) still uses a classical ECDSA certificate.
   const isPqcCert = device.certSigAlg &&
     (device.certSigAlg.includes('ML-DSA') || device.certSigAlg.includes('MLDSA') || device.certSigAlg.includes('Dilithium'));
+
+  // Firmware integrity badge (OTA firmware-signing). otaSigAlg is the signature
+  // era that protected the RUNNING image — distinct from certSigAlg (the TLS
+  // *certificate* signature). firmwareSha256 is the device-computed hash of its
+  // own running app partition, so the badge ties to the exact image bytes.
+  const otaSig = (device.otaSigAlg || '').trim();
+  const otaSigIsPqc = otaSig.includes('ML-DSA') || otaSig.includes('MLDSA') || otaSig.includes('Dilithium');
+  const otaSigIsClassical = /ecdsa|rsa/i.test(otaSig);
+  const otaSigned = otaSigIsPqc || otaSigIsClassical;
+  const fwSha = (device.firmwareSha256 || '').trim();
+  const fwShaShort = fwSha ? fwSha.slice(0, 12) : '';
+  const sigClass = otaSigIsPqc ? 'sig-pqc' : (otaSigIsClassical ? 'sig-classical' : 'sig-unsigned');
+  const sigLabel = otaSig
+    ? (otaSigIsPqc ? `${otaSig} ✓` : (otaSigIsClassical ? `${otaSig} ✓` : 'unsigned (factory)'))
+    : '—';
   const lastSeenDate = device.lastSeen ? new Date(device.lastSeen) : null;
   const isStale = lastSeenDate ? (Date.now() - lastSeenDate.getTime() > 90000) : true;
   const isOnline = device.status === 'online' && !isStale;
@@ -173,6 +188,12 @@ function DeviceCard({ device, onCommand, onShowLog, onFlash }) {
         <div className="metric">
           <label>Firmware</label>
           <span>{device.firmwareVersion || '—'}</span>
+        </div>
+        <div className="metric metric-wide">
+          <label>Firmware Signature</label>
+          <span className={`sig-badge ${sigClass}`} title={fwSha ? `Running image SHA-256: ${fwSha}` : 'No image hash reported'}>
+            🔐 {sigLabel}{otaSigned && fwShaShort ? <span className="sig-sha"> · {fwShaShort}…</span> : null}
+          </span>
         </div>
         <div className="metric">
           <label>WiFi</label>

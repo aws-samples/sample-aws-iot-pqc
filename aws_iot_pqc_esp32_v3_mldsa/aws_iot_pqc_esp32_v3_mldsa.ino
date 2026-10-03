@@ -102,6 +102,19 @@ static const char* TAG_OTA     = "ota";
 #define FIRMWARE_VERSION "3.0.0-mldsa"
 #endif
 
+// ─── OTA Firmware Signature Era ─────────────────────────────────────────────
+// The signature algorithm that signed THIS firmware IMAGE for OTA delivery —
+// distinct from CERT_SIGNATURE_ALG below (which is the TLS *certificate*
+// signature). The signing era is a property of the VERSION, so CodeBuild
+// injects FIRMWARE_OTA_SIG_ALG into secrets.h from the build's SIGNER_ERA
+// ("ECDSA-P256" for the classical signer era, "ML-DSA-44" for the ML-DSA signer
+// era, "unsigned" for a USB/trusted factory flash). Reported in telemetry so
+// the dashboard can show which signature protected the running image. This
+// #define is only a fallback for a local build where secrets.h did not set it.
+#ifndef FIRMWARE_OTA_SIG_ALG
+#define FIRMWARE_OTA_SIG_ALG "unsigned"
+#endif
+
 // ─── Certificate Signature Algorithm ────────────────────────────────────────
 // The signature algorithm of the X.509 client certificate this firmware
 // presents during the TLS handshake. Fixed per firmware variant: this v3
@@ -215,6 +228,12 @@ static char g_otaSignerCertUrl[2048] = {0};  // presigned signer.crt (leaf)
 static char g_otaSigAlg[16] = {0};           // "ecdsa-p256" | "mldsa44" | ""
 static char g_otaSha256[65] = {0};           // expected image sha256 (hex), enforced before boot
 
+// SHA-256 (hex) of the RUNNING app image, computed once at boot from the active
+// OTA partition via esp_partition_get_sha256(). Reported in telemetry so the
+// dashboard badge can tie the running firmware to the exact image bytes the
+// build produced + signed. Empty until computed in setup().
+static char g_firmwareSha256[65] = {0};
+
 // ─── Forward Declarations ───────────────────────────────────────────────────
 void wifiTask(void* pvParameters);
 void mqttTask(void* pvParameters);
@@ -235,6 +254,33 @@ static void initDeviceIdentity() {
     snprintf(g_thingName, sizeof(g_thingName), "esp32-%02X%02X%02X",
              macBytes[3], macBytes[4], macBytes[5]);
     ESP_LOGI(TAG_MAIN, "Device identity: %s (MAC-derived)", g_thingName);
+}
+
+// ─── Running-image SHA-256 (dashboard integrity badge) ──────────────────────
+// Compute the SHA-256 of the RUNNING app image once at boot and cache the hex
+// in g_firmwareSha256. esp_partition_get_sha256() hashes the actual app-image
+// region of the active OTA partition (not the whole partition), so this digest
+// matches the firmware.bin the build produced and signed — letting the
+// dashboard tie the running image to the exact bytes that were OTA-verified.
+// Reported in telemetry alongside FIRMWARE_OTA_SIG_ALG. Best-effort: on any
+// error g_firmwareSha256 is left empty and telemetry simply omits a real value.
+static void computeRunningFirmwareSha256() {
+    const esp_partition_t* running = esp_ota_get_running_partition();
+    if (!running) {
+        ESP_LOGW(TAG_MAIN, "running partition not found; firmware sha256 unavailable");
+        return;
+    }
+    uint8_t digest[32] = {0};
+    esp_err_t err = esp_partition_get_sha256(running, digest);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG_MAIN, "esp_partition_get_sha256 failed: %s", esp_err_to_name(err));
+        return;
+    }
+    for (int i = 0; i < 32; i++) {
+        snprintf(g_firmwareSha256 + 2 * i, 3, "%02x", digest[i]);
+    }
+    ESP_LOGI(TAG_MAIN, "Running image sha256: %s (partition '%s')",
+             g_firmwareSha256, running->label);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1762,7 +1808,7 @@ void mqttTask(void* pvParameters) {
                 // Announce that the device is online. This is the counterpart
                 // to the LWT offline message. Retained so new subscribers
                 // immediately know the device state.
-                char onlinePayload[320];
+                char onlinePayload[448];  // headroom for ota_sig_alg + firmware_sha256
                 snprintf(onlinePayload, sizeof(onlinePayload),
                          "{"
                          "\"status\":\"online\","
@@ -1771,6 +1817,8 @@ void mqttTask(void* pvParameters) {
                          "\"pqc_algorithm\":\"%s\","
                          "\"tls_version\":\"%s\","
                          "\"cert_sig_alg\":\"%s\","
+                         "\"ota_sig_alg\":\"%s\","
+                         "\"firmware_sha256\":\"%s\","
                          "\"ip\":\"%s\","
                          "\"uptime_sec\":%lu"
                          "}",
@@ -1779,6 +1827,8 @@ void mqttTask(void* pvParameters) {
                          g_tlsKeyExchange,
                          g_tlsVersion,
                          CERT_SIGNATURE_ALG,
+                         FIRMWARE_OTA_SIG_ALG,
+                         g_firmwareSha256,
                          WiFi.localIP().toString().c_str(),
                          millis() / 1000);
 
@@ -1816,7 +1866,7 @@ void mqttTask(void* pvParameters) {
 
             // Build a JSON telemetry message
             float chipTempC = temperatureRead(); // Internal die temperature (°C)
-            char payload[640];
+            char payload[768];  // headroom for ota_sig_alg + firmware_sha256 (64 hex)
             snprintf(payload, sizeof(payload),
                      "{"
                      "\"device\":\"%s\","
@@ -1836,7 +1886,9 @@ void mqttTask(void* pvParameters) {
                      "\"chip_temp_c\":%.1f,"
                      "\"pqc_algorithm\":\"%s\","
                      "\"tls_version\":\"%s\","
-                     "\"cert_sig_alg\":\"%s\""
+                     "\"cert_sig_alg\":\"%s\","
+                     "\"ota_sig_alg\":\"%s\","
+                     "\"firmware_sha256\":\"%s\""
                      "}",
                      g_thingName,
                      FIRMWARE_VERSION,
@@ -1855,7 +1907,9 @@ void mqttTask(void* pvParameters) {
                      chipTempC,
                      g_tlsKeyExchange,
                      g_tlsVersion,
-                     CERT_SIGNATURE_ALG);
+                     CERT_SIGNATURE_ALG,
+                     FIRMWARE_OTA_SIG_ALG,
+                     g_firmwareSha256);
 
             if (mqttClient.publish(g_topicTelemetry, payload)) {
                 ESP_LOGI(TAG_MQTT, "Published telemetry #%lu → %s", messageCount, g_topicTelemetry);
@@ -1935,6 +1989,9 @@ void setup() {
 
     // Derive device identity from MAC address FIRST (needed for banner)
     initDeviceIdentity();
+
+    // Hash the running image once at boot for the dashboard integrity badge.
+    computeRunningFirmwareSha256();
 
     ESP_LOGI(TAG_MAIN, "");
     ESP_LOGI(TAG_MAIN, "══════════════════════════════════════════════════");
