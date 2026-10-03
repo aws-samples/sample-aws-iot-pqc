@@ -51,6 +51,10 @@
 #include <wolfssl/wolfcrypt/ecc.h>
 #include <wolfssl/wolfcrypt/dilithium.h>
 #include <wolfssl/wolfcrypt/asn_public.h>
+// asn.h (not just asn_public.h) declares DecodedCert, wc_InitDecodedCert,
+// wc_ParseCert, and the NO_VERIFY parse flag used to pull the signer leaf's
+// public key out of its cert for the OTA signature verify.
+#include <wolfssl/wolfcrypt/asn.h>
 
 #include "secrets.h"
 
@@ -1152,25 +1156,43 @@ static bool otaVerifyChainToRoot(const uint8_t* leafPem, size_t leafLen) {
     return true;
 }
 
-// Parse the signer leaf PEM and copy out its DER-encoded public key into
-// `pubDer` (caller buffer, cap pubCap). Returns the DER length, or <0 on error.
-// Used to feed the public key to wc_ecc / wc_dilithium verify.
+// Parse the signer leaf PEM and copy out its DER-encoded SubjectPublicKeyInfo
+// into `pubDer` (caller buffer, cap pubCap). Returns the DER length, or <0 on
+// error. The resulting SPKI DER feeds wc_EccPublicKeyDecode /
+// wc_Dilithium_PublicKeyDecode for the signature verify. Uses the documented
+// public path: PEM->DER (wc_CertPemToDer) -> DecodedCert (wc_InitDecodedCert /
+// wc_ParseCert) -> wc_GetPubKeyDerFromCert.
 static int otaSignerPublicKeyDer(const uint8_t* leafPem, size_t leafLen, uint8_t* pubDer, size_t pubCap) {
-    DecodedCert cert;
-    wc_InitDecodedCert(&cert, leafPem, (word32)leafLen, NULL);
-    // ParseCert with VERIFY so the structure is fully populated; CM not required
-    // here (chain trust is checked separately in otaVerifyChainToRoot).
-    int ret = wc_ParseCert(&cert, CERT_TYPE, NO_VERIFY, NULL);
-    if (ret != 0) { ESP_LOGE(TAG_OTA, "wc_ParseCert failed (%d)", ret); wc_FreeDecodedCert(&cert); return -1; }
-    if (cert.pubKeySize == 0 || cert.pubKeySize > pubCap) {
-        ESP_LOGE(TAG_OTA, "signer pubkey size %u out of range", (unsigned)cert.pubKeySize);
-        wc_FreeDecodedCert(&cert);
+    // 1. Convert the leaf PEM to DER into a scratch buffer. A signer leaf DER is
+    //    well under MAX_CERTIFICATE_SZ (16 KB); ML-DSA leaf DER is ~5 KB.
+    uint8_t* derBuf = (uint8_t*)malloc(leafLen);  // DER is always smaller than its PEM
+    if (!derBuf) { ESP_LOGE(TAG_OTA, "signer der alloc failed"); return -1; }
+    int derLen = wc_CertPemToDer(leafPem, (int)leafLen, derBuf, (int)leafLen, CERT_TYPE);
+    if (derLen <= 0) {
+        ESP_LOGE(TAG_OTA, "wc_CertPemToDer failed (%d)", derLen);
+        free(derBuf);
         return -1;
     }
-    memcpy(pubDer, cert.publicKey, cert.pubKeySize);
-    int n = (int)cert.pubKeySize;
+
+    // 2. Parse the DER cert and extract its public key in DER (SPKI).
+    DecodedCert cert;
+    wc_InitDecodedCert(&cert, derBuf, (word32)derLen, NULL);
+    int ret = wc_ParseCert(&cert, CERT_TYPE, NO_VERIFY, NULL);
+    if (ret != 0) {
+        ESP_LOGE(TAG_OTA, "wc_ParseCert failed (%d)", ret);
+        wc_FreeDecodedCert(&cert);
+        free(derBuf);
+        return -1;
+    }
+    word32 pubLen = (word32)pubCap;
+    ret = wc_GetPubKeyDerFromCert(&cert, pubDer, &pubLen);
     wc_FreeDecodedCert(&cert);
-    return n;
+    free(derBuf);
+    if (ret != 0) {
+        ESP_LOGE(TAG_OTA, "wc_GetPubKeyDerFromCert failed (%d)", ret);
+        return -1;
+    }
+    return (int)pubLen;
 }
 
 // Verify an ECDSA-P256 signature (DER SEQUENCE{r,s}) over `digest` (32-byte
@@ -1227,10 +1249,24 @@ static bool otaVerifyMlDsa44(const uint8_t* sig, size_t sigLen,
     bool ok = false;
     if (wc_dilithium_init(key) == 0) {
         word32 idx = 0;
-        // wc_Dilithium_PublicKeyDecode parses a full SubjectPublicKeyInfo and
-        // sets the level from the OID, so an explicit set_level is not required
-        // for an ASN.1-encoded public key.
-        if (wc_Dilithium_PublicKeyDecode(pubDer, &idx, key, (word32)pubLen) == 0) {
+        // wc_GetPubKeyDerFromCert returns the RAW ML-DSA-44 public key (1312 B,
+        // leading bytes are key material, NOT a 0x30 SEQUENCE), not a full
+        // SubjectPublicKeyInfo — so there is no algorithm OID for the decoder to
+        // read the parameter set from. We MUST set the level explicitly before
+        // decode or wc_Dilithium_PublicKeyDecode fails. Proven on hardware
+        // (pqc-a, C69E18, 4.0.0-signer): with the level set, an OpenSSL-3.5
+        // ML-DSA-44 signature verifies on the wolfSSL device. WC_ML_DSA_44 is the
+        // FIPS 204 Level-2 parameter set this workshop uses. The pubDer len/head
+        // log stays as a cheap, useful breadcrumb for any future key-format drift.
+        ESP_LOGI(TAG_OTA, "ML-DSA pubDer len=%d head=%02x %02x %02x %02x",
+                 pubLen, pubDer[0], pubDer[1], pubDer[2], pubDer[3]);
+        int lvlRet = wc_dilithium_set_level(key, WC_ML_DSA_44);
+        if (lvlRet != 0) ESP_LOGW(TAG_OTA, "wc_dilithium_set_level(44) rc=%d (continuing)", lvlRet);
+        int decRet = wc_Dilithium_PublicKeyDecode(pubDer, &idx, key, (word32)pubLen);
+        if (decRet != 0) {
+            ESP_LOGE(TAG_OTA, "ML-DSA pubkey decode failed (ret=%d, idx=%u)", decRet, (unsigned)idx);
+        }
+        if (decRet == 0) {
             // FIPS 204 pure ML-DSA with an EMPTY context (what OpenSSL 3.5
             // `pkeyutl -sign -rawin` produces). Use the explicit-context verify
             // with ctx=NULL/ctxLen=0 so this is correct regardless of whether
@@ -1243,8 +1279,6 @@ static bool otaVerifyMlDsa44(const uint8_t* sig, size_t sigLen,
                                                   &verifyStatus, key);
             ok = (ret == 0 && verifyStatus == 1);
             if (!ok) ESP_LOGE(TAG_OTA, "ML-DSA verify failed (ret=%d, status=%d)", ret, verifyStatus);
-        } else {
-            ESP_LOGE(TAG_OTA, "ML-DSA pubkey decode failed");
         }
         wc_dilithium_free(key);
     }
@@ -1512,7 +1546,7 @@ void otaTask(void* pvParameters) {
                 break;
             }
             // Hash the same bytes we just wrote to flash (Workstream 3).
-            if (shaOk && wc_Sha256_Update(&otaSha, buf, bytesRead) != 0) {
+            if (shaOk && wc_Sha256Update(&otaSha, buf, bytesRead) != 0) {
                 ESP_LOGE(TAG_OTA, "SHA-256 update failed");
                 shaOk = false;
             }
@@ -1552,7 +1586,7 @@ void otaTask(void* pvParameters) {
         // failure we DO NOT set the boot partition: the freshly written slot is
         // simply abandoned and the device keeps running its current firmware.
         uint8_t imgDigest[WC_SHA256_DIGEST_SIZE] = {0};
-        if (!shaOk || wc_Sha256_Final(&otaSha, imgDigest) != 0) {
+        if (!shaOk || wc_Sha256Final(&otaSha, imgDigest) != 0) {
             ESP_LOGE(TAG_OTA, "Image SHA-256 finalize failed; refusing to boot new image");
             g_otaPending = false;
             continue;
@@ -1670,7 +1704,11 @@ void mqttTask(void* pvParameters) {
 
     // Create the wolfSSL-backed TLS client and MQTT client
     static WolfSSLClient tlsClient;
-    static MQTTClient mqttClient(4096); // 4096 byte buffer (OTA cmd ~1.5KB)
+    // 8 KB buffer: the SIGNED OTA command (Workstream 2+) carries url + sigUrl +
+    // signerCertUrl (three ~1.5 KB presigned S3 URLs) + sha256, ~4.9 KB total,
+    // which overflowed the old 4 KB buffer — the MQTT library silently dropped
+    // the message and the OTA never started. 8 KB gives comfortable headroom.
+    static MQTTClient mqttClient(8192);
 
     mqttClient.begin(MQTT_BROKER_ENDPOINT, MQTT_BROKER_PORT, tlsClient);
     mqttClient.onMessage(mqttMessageHandler);

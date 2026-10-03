@@ -121,6 +121,35 @@ the teardown/rebuild. Handle these to keep a from-scratch deploy clean:
   is reused across rebuilds (fine, just don't expect the stack to own it).
 
 Backlog candidates surfaced during rebuilds (not yet fixed):
+- **[MEMORY — explore only IF we hit severe RAM/heap constraints] Keep the
+  growing cert/signature material in memory-mapped FLASH, not SRAM.** As the
+  firmware now carries more X.509 material (device cert + CA + the baked-in
+  OTA_SIGNER_CA_ROOT bundle = classical + ML-DSA roots ~6.3 KB, plus per-OTA the
+  ~5.7 KB ML-DSA signer leaf and 2420 B signature), SRAM/heap pressure on the
+  ESP32-S3 could become the limiting factor (observed min-heap during the ML-DSA
+  TLS handshake ~44-90 KB, and ~68 KB on the v3_mldsa idle loop). User surfaced
+  the lever (Oct 3): on the ESP32-S3 the Arduino core already maps `.rodata` into
+  memory-mapped flash through the MMU/flash cache, so a `static const char[]`
+  string literal (our certs/roots in `secrets.h`) ALREADY lives in flash, not
+  SRAM — `PROGMEM` is effectively a no-op on the S3. The nuance the user read is
+  real: PEM MUST keep its `\n` line breaks (our `R"EOF(...)EOF"` raw-string form
+  preserves them), and the win is lost the moment a cert is copied into RAM at
+  use time (e.g. into an Arduino `String`, a `malloc`'d scratch buffer, or passed
+  to an API that duplicates it). So the actual optimization work is NOT "move
+  certs to flash" (they're mostly there already) but: (1) audit the OTA verify +
+  TLS-setup paths for places that copy a flash-resident cert/root into a RAM
+  buffer and eliminate the copy (pass the flash pointer directly where the API
+  allows); (2) for large transient blobs read at verify time (signer leaf,
+  signature, and especially the 3.5 MB image) prefer `esp_partition_mmap`
+  zero-copy over buffering — the image verify ALREADY mmaps; extend the same
+  discipline to the leaf/sig if they grow; (3) confirm wolfSSL isn't internally
+  duplicating the baked-in root when loaded via `wolfSSL_CertManagerLoadCABuffer`
+  (it parses into a signer store — measure the heap delta and, if significant,
+  load once and reuse the CertManager rather than new/free per OTA). Decision-
+  gated: do NOT spend effort here until a build or on-device run actually hits a
+  heap/RAM wall; it's a mitigation lever to reach for under pressure, not a
+  proactive refactor. Touches `secrets.h` generation (buildspec), the three
+  sketches' `otaVerify*` + `setupWolfSSLContext`, and the wolfSSL user settings.
 - **[TOP PRIORITY — ABSOLUTE WORKSHOP REQUIREMENT] [FEATURE — OTA firmware
   signing + on-device verification via wolfTPM software TPM] Sign firmware and
   have the device verify the signature before applying an OTA update.**

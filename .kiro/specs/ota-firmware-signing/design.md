@@ -258,37 +258,62 @@ all three (`aws_iot_pqc_esp32`, `aws_iot_pqc_esp32_v1_classical`,
   `signer.crt` (~5.7 KB); the firmware itself keeps streaming to `esp_ota_write`
   (never buffered).
 
-### WS3 verification status + open risks (MUST close in WS4 on real hardware)
+### WS3/WS4 verification status — CLEARED on real hardware (pqc-a, 2026-10-03)
 
-The WS3 device code is implemented and statically checked (identical verifier
-across all three sketches, balanced braces, wolfSSL API calls grounded against
-the real `wolfssl/wolfcrypt/dilithium.h` header). It has NOT been compiled or
-run on-device yet — there is no ESP32/wolfSSL toolchain in the dev environment,
-so these are the explicit gates WS4 must clear with a real CodeBuild + flash:
+The device verifier was compiled by the real firmware-builder CodeBuild and the
+full migration chain was run end-to-end on a physical XIAO ESP32-S3 (device
+C69E18) against the live pqc-a stack:
+`1.0.0-classical → 2.0.0-pqc → 3.0.0-mldsa → 4.0.0-signer`. The headline gate —
+the FIRST ML-DSA-signed OTA (`4.0.0-signer`, OpenSSL-3.5 signer → wolfSSL device
+verify) — PASSED: the device downloaded the image, matched the sha256, verified
+the ML-DSA-44 signature, chained the signer leaf to the baked-in ML-DSA root,
+set the boot partition, and booted the new image reporting `4.0.0-signer` on
+8884 with `SECP256R1_MLKEM768`. Status of each original gate:
 
-- **Compile gate.** Confirm the firmware-builder image's wolfSSL exposes
-  `wc_dilithium_verify_ctx_msg`, `wc_Dilithium_PublicKeyDecode` (needs
-  `WOLFSSL_MLDSA_PUBLIC_KEY`, now set in the user settings), `wc_ecc_verify_hash`,
-  `wc_EccPublicKeyDecode`, `DecodedCert`/`wc_ParseCert`, and that
-  `esp_partition_mmap(..., ESP_PARTITION_MMAP_DATA, ...)` matches the installed
-  ESP-IDF signature. First real build will surface any symbol/signature drift.
-- **ECDSA cross-impl (LOW risk).** OpenSSL `dgst -sha256 -sign` DER sig →
-  wolfSSL `wc_ecc_verify_hash` is standard and the encoding was proven in G2.
-- **ML-DSA cross-impl (MODERATE risk — the real unknown).** G2 proved OpenSSL
-  3.5 sign → OpenSSL verify, NOT OpenSSL → wolfSSL. FIPS 204 pure ML-DSA signs
-  over a context+message; `pkeyutl -sign -rawin` uses an EMPTY context. The
-  device uses `wc_dilithium_verify_ctx_msg(..., ctx=NULL, ctxLen=0, ...)` to
-  match an empty context. WS4 MUST prove an OpenSSL-3.5-signed image verifies on
-  the device; if it does not, the likely fixes are (a) the ctx variant/length,
-  or (b) switching the build to a signing path whose context convention matches
-  wolfSSL. Do NOT consider ML-DSA OTA signing done until a device accepts a good
-  signature AND rejects a tampered one.
-- **mmap size (LOW/MODERATE).** Mapping a ~3.5 MB OTA partition needs enough
-  contiguous MMU vaddr; the S3 has ample, but confirm `esp_partition_mmap`
-  succeeds for a full image on the XIAO ESP32-S3 under real heap pressure.
-- **Memory (LOW/MODERATE).** `dilithium_key` is PSRAM-allocated; confirm free
-  PSRAM at OTA time and that the 32 KB OTA task stack suffices with the verify
-  added (bump `OTA_TASK_STACK_SIZE` if needed).
+- **Compile gate — CLEARED.** The firmware-builder image's wolfSSL exposes all
+  the APIs the verifier uses (`wc_dilithium_verify_ctx_msg`,
+  `wc_Dilithium_PublicKeyDecode`, `wc_dilithium_set_level`, `WC_ML_DSA_44`,
+  `wc_ecc_verify_hash`, `wc_EccPublicKeyDecode`, `DecodedCert`/`wc_ParseCert`,
+  `wc_GetPubKeyDerFromCert`) and the ESP-IDF `esp_partition_mmap(...,
+  ESP_PARTITION_MMAP_DATA, ...)` signature matches. Two compile fixes WS4 had to
+  make for the real toolchain: `#include <wolfssl/wolfcrypt/asn.h>` (not just
+  `asn_public.h`) for `DecodedCert`/`wc_ParseCert`/`NO_VERIFY`, and the wolfSSL
+  SHA-256 incremental API is `wc_Sha256Update`/`wc_Sha256Final` (no underscore),
+  not `wc_Sha256_Update`/`_Final`.
+- **ECDSA cross-impl — CLEARED.** OpenSSL `dgst -sha256 -sign` DER sig →
+  wolfSSL `wc_ecc_verify_hash` verified for every classical-signer OTA
+  (`2.0.0-pqc`, `3.0.0-mldsa`), exactly as G2 predicted.
+- **ML-DSA cross-impl — RESOLVED (this was the real unknown).** An OpenSSL-3.5
+  `pkeyutl -sign -rawin` (empty-context, pure ML-DSA-44) signature DOES verify on
+  the wolfSSL device with `wc_dilithium_verify_ctx_msg(..., ctx=NULL, ctxLen=0,
+  ...)`. The ctx convention was NOT the problem. The actual blocker was PUBLIC-KEY
+  EXTRACTION, found via an on-device diagnostic: `wc_GetPubKeyDerFromCert` returns
+  the **RAW 1312-byte ML-DSA-44 public key** (observed `len=1312 head=54 ca b3 96`),
+  NOT a SubjectPublicKeyInfo (an SPKI would be ~1334 B starting `30 82` SEQUENCE).
+  With raw key bytes there is no algorithm OID for `wc_Dilithium_PublicKeyDecode`
+  to infer the parameter set from, so it failed. FIX: call
+  `wc_dilithium_set_level(key, WC_ML_DSA_44)` BEFORE the decode. With the level
+  set explicitly the decode consumes the raw key and the signature verifies. (For
+  ECC the same `wc_GetPubKeyDerFromCert` DOES yield a decodable SPKI, which is why
+  the ECDSA path never needed this — the two key types return different shapes.)
+  Negative test (requirement 5.3) remains to be exercised with the WS4 tamper
+  harness: a mis-signed/tampered image must be REJECTED (fail-closed was already
+  observed — every failed verify this session kept the device on its current
+  firmware and never set the boot partition).
+- **mmap size — CLEARED.** `esp_partition_mmap` over the full ~1.2 MB image
+  succeeded on the S3. One operational caveat learned: do NOT run repeated OTA
+  attempts on a single long-lived boot — `esp_ota_end` does its own
+  `bootloader_mmap`, and stale mmap/OTA state accumulated across attempts on the
+  same boot caused `bootloader_mmap: tried to bootloader_mmap twice` +
+  `ESP_ERR_OTA_VALIDATE_FAILED` at `esp_ota_end`. A device reboot clears it; in
+  the field each device does one migration then reboots, so this is a
+  test-harness artifact, not a production concern.
+- **Memory — CLEARED.** The verify ran with free heap ~119-148 KB and min-heap
+  ~68 KB on the v3_mldsa firmware during the ML-DSA OTA; the 32 KB OTA task stack
+  was sufficient. (Note: the device reports PSRAM 0 bytes, so the `dilithium_key`
+  `heap_caps_malloc(..., MALLOC_CAP_SPIRAM)` falls back to internal heap via the
+  `if (!key) key = malloc(...)` path — fine at current headroom. See the backlog
+  memory item for the flash-resident-cert lever if headroom ever gets tight.)
 - **Trust anchor on device, signer leaf with the OTA (requirement 3).** What the
   device MUST hold durably is the **CA trust anchor** (the ACM Private CA root),
   not the per-signer leaf. The signer's private key signs the firmware; the device
