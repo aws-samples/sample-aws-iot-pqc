@@ -773,6 +773,75 @@ Backlog candidates surfaced during rebuilds (not yet fixed):
   `setup-all.sh` VIA SSM (never interactively), make it log to a file + not abort
   silently (surface which step failed), so we get the reliability + observability
   win without the full re-architecture.
+- **[FEATURE — bake the builder-Pi SOFTWARE into a custom Raspbian image via a
+  CodeBuild pipeline; keep CONFIGURATION on SSM] Move all software INSTALLATION
+  off the live Pi and into image-creation time.** Desired end state: a CodeBuild
+  pipeline builds a custom Raspberry Pi OS image that already contains ALL the
+  heavy software — arduino-cli + the ~5GB ESP32 Arduino core, wolfSSL PQC build
+  config, Python deps, the workshop-builder CLI, the builder GUI app, the systemd
+  unit, the CloudWatch agent, the SSM agent — so the operator just burns the
+  image to an SD card and boots. The on-device, per-deploy work then shrinks to
+  CONFIGURATION ONLY, which STAYS on SSM: SSM-agent hybrid-activation
+  registration plus the per-account/runtime config (the `/pqc-workshop/wifi/*`
+  SSID/PSK + AP setup, broker endpoint / IoT config, device identity) applied by
+  the existing `configure-*` SSM documents. Net split: **image build = install
+  software (once, in AWS); SSM = configure + register (per deploy).**
+  - **Reference implementation to copy from:**
+    https://github.com/aws-samples/aws-codebuild-custom-raspbian-builder — an
+    aws-samples project that builds custom Raspbian OS images from SHA256-verified
+    source entirely in AWS CodeBuild (QEMU emulation to build ARM-native Raspbian
+    on x86 CodeBuild), outputting a ready-to-burn SD image to S3 (and a reduced
+    size). It is provisioned as a SINGLE-STEP CloudFormation template with the
+    build code embedded + copied to S3 to kick off the pipeline with no end-user
+    intervention — exactly the one-shot, deployable-in-one-attempt model this
+    workshop requires. It has built-in options for WiFi-at-build-time, Docker
+    install, a headless-setup SSH user, per-device `/boot` startup-script
+    customization, and build-time customization via its inline buildspec.yml +
+    Dockerfile. There is both a baremetal (SD image → S3) and a Docker (image →
+    ECR) variant; we want the BAREMETAL SD-image variant. Copy its CFN + buildspec
+    + QEMU approach and swap in our software list (ESP32 core, wolfSSL, builder GUI
+    app, etc.).
+  - **Why this is the right evolution of the SSM-provisioning item above:** that
+    item already moved software INSTALL off the operator's hands onto SSM
+    documents run from the deploy host — a big reliability win — but the ~5GB
+    ESP32-core install still happens ON the live Pi at provisioning time (~10-12
+    min, the slowest + most fragile part of bring-up, and the thing SSM Run
+    Command's timeout/output caps keep bumping into). Baking it into the image
+    removes that entirely: no multi-GB download over the Pi's network at the
+    workshop, no per-Pi recompile, instant toolchain, and a verified/reproducible
+    chain-of-custody for the base OS. SSM then does only the light, genuinely
+    per-deploy configuration it is well suited to.
+  - **Design intent / constraints:**
+    1. Keep the deployable-in-one-attempt philosophy: the pipeline should be a
+       single CFN template (like the reference) that self-seeds its build source
+       to S3 and outputs the finished `.img` to S3 for download/burn — no manual
+       pipeline wiring.
+    2. Pin + verify the base image (SHA256) like the reference does, so the
+       workshop image is reproducible and auditable.
+    3. Draw a crisp line: anything that is the SAME for every workshop/account
+       (software, toolchain, GUI app code) → baked into the image; anything that
+       is per-account/per-deploy/secret (WiFi PSK, broker endpoint, IoT identity,
+       SSM activation) → stays on SSM `configure-*` docs. Do NOT bake secrets into
+       the image.
+    4. The bundle (`bundle-for-builder-pi.sh`) likely collapses to near-nothing —
+       SSM-agent registration can be baked in too, leaving only the hybrid
+       activation code to inject at first boot (via the `/boot` startup-script
+       mechanism the reference provides).
+    5. Versioning: tag/output images per workshop release so a known-good image
+       can be re-burned; keep the SSM `configure-*` docs backward-compatible with
+       the shipped image.
+  - **Open questions to resolve during design:** (a) QEMU ARM build time + cost on
+    CodeBuild for a ~5GB-core image (may be long — size the timeout); (b) how the
+    firmware GUI app + workshop-builder CLI get versioned into the image vs. still
+    being pulled fresh (bake a known version, or bake a thin launcher that pulls
+    at boot?); (c) SD-image size after adding the ESP32 core (the reference
+    auto-reduces, but our core is large — confirm it still fits a sensible SD);
+    (d) how operators receive the image (S3 presigned download in the runbook /
+    Workshop Studio asset).
+  - Relationship to the item above: this SUPERSEDES the "install via SSM docs"
+    approach for the SOFTWARE half (install moves to image build) but KEEPS its
+    SSM model for the CONFIGURATION half. Do the SSM-docs item's interim wins
+    now (they help today); treat this image-pipeline as the strategic end state.
 - **[DONE] Automate the NetworkManager AP as part of Pi provisioning.** The Pi's
   2.4GHz workshop AP used to be a MANUAL `nmcli` setup (DEPLOYMENT.md §5a), which
   caused a `4WAY_HANDSHAKE_TIMEOUT` during a device test when the operator-typed
