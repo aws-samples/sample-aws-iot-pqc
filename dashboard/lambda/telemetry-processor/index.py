@@ -58,6 +58,11 @@ def handler(event, context):
             'pqcAlgorithm': event.get('pqc_algorithm'),
             'tlsVersion': event.get('tls_version'),
             'certSigAlg': event.get('cert_sig_alg'),
+            # OTA firmware-signing badge: the signature era that protected the
+            # running image (ECDSA-P256 / ML-DSA-44 / unsigned) and the SHA-256
+            # the device computed of its own running app partition at boot.
+            'otaSigAlg': event.get('ota_sig_alg'),
+            'firmwareSha256': event.get('firmware_sha256'),
             'status': 'online',
         }
         # Only include firmware_version if present (don't overwrite with 'unknown')
@@ -95,6 +100,14 @@ def handler(event, context):
             update_parts.append('#certSigAlg = :certSigAlg')
             attr_names['#certSigAlg'] = 'certSigAlg'
             attr_values[':certSigAlg'] = event['cert_sig_alg']
+        if 'ota_sig_alg' in event:
+            update_parts.append('#otaSigAlg = :otaSigAlg')
+            attr_names['#otaSigAlg'] = 'otaSigAlg'
+            attr_values[':otaSigAlg'] = event['ota_sig_alg']
+        if 'firmware_sha256' in event:
+            update_parts.append('#firmwareSha256 = :firmwareSha256')
+            attr_names['#firmwareSha256'] = 'firmwareSha256'
+            attr_values[':firmwareSha256'] = event['firmware_sha256']
 
     # Update DynamoDB (only modifies fields present — doesn't clear others).
     #

@@ -92,11 +92,13 @@ const MIGRATION_IN_PROGRESS = ['building', 'pushing-ota', 'rebooting'];
 
 // The three firmware variants the operator can flash, in migration order. The
 // value is what start-migration expects; the label is what the picker shows.
-const VARIANTS = ['classical', 'pqc', 'pqc-mldsa'];
+const VARIANTS = ['classical', 'pqc', 'pqc-mldsa', 'signer', 'verified'];
 const VARIANT_LABELS = {
   classical: 'Classical (ECDSA)',
   pqc: 'PQC key exchange (ML-KEM)',
   'pqc-mldsa': 'PQC + ML-DSA-44 cert',
+  signer: 'Signed OTA (ML-DSA-44)',
+  verified: 'Verified OTA (proof)',
 };
 
 // Best-effort "what is the device running now" from live telemetry. The device
@@ -108,6 +110,11 @@ const VARIANT_LABELS = {
 // reading just defaults to "pqc".
 function detectVariant(device) {
   const v = (device.firmwareVersion || '').trim().toLowerCase();
+  // ML-DSA signer-era variants (Workstream 4). Check these first: they are the
+  // highest steps on the path. Suffixes are distinct so order is not critical,
+  // but keeping them ahead of the base checks documents the migration order.
+  if (v.endsWith('-verified')) return 'verified';
+  if (v.endsWith('-signer')) return 'signer';
   if (v.endsWith('-mldsa')) return 'pqc-mldsa';
   if (v.endsWith('-pqc')) return 'pqc';
   if (v.endsWith('-classical')) return 'classical';
@@ -133,6 +140,21 @@ function DeviceCard({ device, onCommand, onShowLog, onFlash }) {
   // (v3). PQC key exchange (v2) still uses a classical ECDSA certificate.
   const isPqcCert = device.certSigAlg &&
     (device.certSigAlg.includes('ML-DSA') || device.certSigAlg.includes('MLDSA') || device.certSigAlg.includes('Dilithium'));
+
+  // Firmware integrity badge (OTA firmware-signing). otaSigAlg is the signature
+  // era that protected the RUNNING image — distinct from certSigAlg (the TLS
+  // *certificate* signature). firmwareSha256 is the device-computed hash of its
+  // own running app partition, so the badge ties to the exact image bytes.
+  const otaSig = (device.otaSigAlg || '').trim();
+  const otaSigIsPqc = otaSig.includes('ML-DSA') || otaSig.includes('MLDSA') || otaSig.includes('Dilithium');
+  const otaSigIsClassical = /ecdsa|rsa/i.test(otaSig);
+  const otaSigned = otaSigIsPqc || otaSigIsClassical;
+  const fwSha = (device.firmwareSha256 || '').trim();
+  const fwShaShort = fwSha ? fwSha.slice(0, 12) : '';
+  const sigClass = otaSigIsPqc ? 'sig-pqc' : (otaSigIsClassical ? 'sig-classical' : 'sig-unsigned');
+  const sigLabel = otaSig
+    ? (otaSigIsPqc ? `${otaSig} ✓` : (otaSigIsClassical ? `${otaSig} ✓` : 'unsigned (factory)'))
+    : '—';
   const lastSeenDate = device.lastSeen ? new Date(device.lastSeen) : null;
   const isStale = lastSeenDate ? (Date.now() - lastSeenDate.getTime() > 90000) : true;
   const isOnline = device.status === 'online' && !isStale;
@@ -166,6 +188,12 @@ function DeviceCard({ device, onCommand, onShowLog, onFlash }) {
         <div className="metric">
           <label>Firmware</label>
           <span>{device.firmwareVersion || '—'}</span>
+        </div>
+        <div className="metric metric-wide">
+          <label>Firmware Signature</label>
+          <span className={`sig-badge ${sigClass}`} title={fwSha ? `Running image SHA-256: ${fwSha}` : 'No image hash reported'}>
+            🔐 {sigLabel}{otaSigned && fwShaShort ? <span className="sig-sha"> · {fwShaShort}…</span> : null}
+          </span>
         </div>
         <div className="metric">
           <label>WiFi</label>

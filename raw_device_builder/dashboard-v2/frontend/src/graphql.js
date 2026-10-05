@@ -11,6 +11,8 @@ export const LIST_DEVICES = `
       pqcAlgorithm
       tlsVersion
       certSigAlg
+      otaSigAlg
+      firmwareSha256
       wifiRssi
       freeHeap
       heapTotal

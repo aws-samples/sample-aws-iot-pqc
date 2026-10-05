@@ -59,6 +59,24 @@ def test_explicit_variant_is_forwarded(monkeypatch):
     assert json.loads(calls["input"])["variant"] == "pqc-mldsa"
 
 
+@pytest.mark.parametrize("variant", ["signer", "verified"])
+def test_mldsa_signer_era_variants_forwarded(monkeypatch, variant):
+    """The Workstream 4 ML-DSA-signer-era variants (4.0.0-signer / 5.0.0-verified)
+    are accepted by the allow-list and forwarded into the execution input."""
+    os.environ["STATE_MACHINE_ARN"] = STATE_MACHINE_ARN
+    mod = load_handler_module(os.path.join(HERE, "index.py"), f"start_migration_{variant}")
+    calls = {}
+    monkeypatch.setattr(
+        mod.sfn, "start_execution",
+        lambda **kw: (calls.update(kw) or {"executionArn": "arn:...:runN"}),
+        raising=True,
+    )
+    result = mod.handler({"thingName": "esp32-FC22E0", "variant": variant}, None)
+    assert result["success"] is True
+    assert result["variant"] == variant
+    assert json.loads(calls["input"])["variant"] == variant
+
+
 def test_invalid_variant_returns_failure(monkeypatch):
     os.environ["STATE_MACHINE_ARN"] = STATE_MACHINE_ARN
     mod = load_handler_module(os.path.join(HERE, "index.py"), "start_migration_badvariant")

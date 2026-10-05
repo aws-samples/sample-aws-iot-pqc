@@ -24,7 +24,9 @@ sfn = boto3.client("stepfunctions")
 
 # Keep in sync with prepare-build VARIANT_CONFIG. Reject anything else so a bad
 # picker value fails fast in the UI rather than starting a doomed execution.
-VALID_VARIANTS = {"classical", "pqc", "pqc-mldsa"}
+# "signer"/"verified" are the ML-DSA-signer-era variants (Workstream 4): same
+# pqc-mldsa firmware, signed by the ML-DSA signer (4.0.0-signer / 5.0.0-verified).
+VALID_VARIANTS = {"classical", "pqc", "pqc-mldsa", "signer", "verified"}
 DEFAULT_VARIANT = "pqc"
 
 

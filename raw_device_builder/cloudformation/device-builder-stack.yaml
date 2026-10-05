@@ -60,6 +60,41 @@ Parameters:
       ARN of the ML-DSA-44 Private CA (from broker-container stack) used to issue
       post-quantum device certs for the pqc-mldsa firmware variant.
 
+  # ─── OTA firmware signer secret ARNs (from broker-container stack) ──────────
+  # The firmware build reads the era-appropriate signer KEY to sign firmware.bin
+  # and the signer CERT to ship alongside the OTA. Scoped to these four secrets
+  # (classical key+cert, ML-DSA key+cert); the CA-cert secrets are not read by
+  # the build (the CA root is baked into firmware, Workstream 3).
+  SignerClassicalKeySecretArn:
+    Type: String
+    Default: ''
+    Description: ARN of the classical ECDSA-P256 firmware-signer private key secret
+  SignerClassicalCertSecretArn:
+    Type: String
+    Default: ''
+    Description: ARN of the classical ECDSA-P256 firmware-signer leaf cert secret
+  SignerMlDsaKeySecretArn:
+    Type: String
+    Default: ''
+    Description: ARN of the ML-DSA-44 firmware-signer private key secret
+  SignerMlDsaCertSecretArn:
+    Type: String
+    Default: ''
+    Description: ARN of the ML-DSA-44 firmware-signer leaf cert secret
+  SignerClassicalCACertSecretArn:
+    Type: String
+    Default: ''
+    Description: >-
+      ARN of the classical firmware-signer CA root secret. Baked into the
+      firmware image as the OTA verifier's trust anchor (device-side chain check).
+  SignerMlDsaCACertSecretArn:
+    Type: String
+    Default: ''
+    Description: >-
+      ARN of the ML-DSA-44 firmware-signer CA root secret. Baked into the
+      firmware image (from the signed variants onward) so a device trusts the
+      ML-DSA root before the 4.0.0 ML-DSA-signed OTA cutover.
+
   BuilderPiInstanceId:
     Type: String
     Description: >-
@@ -499,7 +534,10 @@ Resources:
                 "thingName.$": "$.Payload.thingName",
                 "serialNumber.$": "$.Payload.serialNumber",
                 "variant.$": "$.Payload.variant",
+                "buildVariant.$": "$.Payload.buildVariant",
                 "version.$": "$.Payload.version",
+                "signerEra.$": "$.Payload.signerEra",
+                "sigAlg.$": "$.Payload.sigAlg",
                 "s3Key.$": "$.Payload.s3Key",
                 "buildNeeded.$": "$.Payload.buildNeeded",
                 "buildEnv.$": "$.Payload.buildEnv"
@@ -521,7 +559,8 @@ Resources:
                 "EnvironmentVariablesOverride": [
                   { "Name": "DEVICE_SERIAL", "Value.$": "$.prepare.serialNumber", "Type": "PLAINTEXT" },
                   { "Name": "FIRMWARE_VERSION", "Value.$": "$.prepare.version", "Type": "PLAINTEXT" },
-                  { "Name": "FIRMWARE_VARIANT", "Value.$": "$.prepare.variant", "Type": "PLAINTEXT" },
+                  { "Name": "FIRMWARE_VARIANT", "Value.$": "$.prepare.buildVariant", "Type": "PLAINTEXT" },
+                  { "Name": "SIGNER_ERA", "Value.$": "$.prepare.signerEra", "Type": "PLAINTEXT" },
                   { "Name": "WIFI_SSID", "Value.$": "$.prepare.buildEnv.wifiSsid", "Type": "PLAINTEXT" },
                   { "Name": "WIFI_PASSWORD", "Value.$": "$.prepare.buildEnv.wifiPassword", "Type": "PLAINTEXT" },
                   { "Name": "BROKER_ENDPOINT", "Value.$": "$.prepare.buildEnv.brokerEndpoint", "Type": "PLAINTEXT" },
@@ -555,7 +594,8 @@ Resources:
                   "serialNumber.$": "$.prepare.serialNumber",
                   "s3Key.$": "$.prepare.s3Key",
                   "version.$": "$.prepare.version",
-                  "variant.$": "$.prepare.variant"
+                  "variant.$": "$.prepare.variant",
+                  "sigAlg.$": "$.prepare.sigAlg"
                 }
               },
               "ResultPath": "$.publish",
@@ -1046,6 +1086,18 @@ Resources:
                 Resource:
                   - !Ref PrivateCAArn
                   - !Ref MlDsaPrivateCAArn
+              # Read the stable per-era OTA firmware SIGNER secrets to sign
+              # firmware.bin in post_build (buildspec.yml). Scoped to the signer
+              # secret name pattern (provisioned in broker-container-stack.yaml as
+              # pqc-broker/signer-*). Name-pattern scoping (rather than the ARN
+              # params) keeps this valid even if the ARN params are left at their
+              # empty default, and Secrets Manager appends a random 6-char suffix
+              # to the ARN so the trailing wildcard is required.
+              - Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                Resource:
+                  - !Sub 'arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:pqc-broker/signer-*'
 
   FirmwareBuildProject:
     Type: AWS::CodeBuild::Project
@@ -1092,6 +1144,24 @@ Resources:
             Value: !Ref PrivateCAArn
           - Name: MLDSA_CA_ARN
             Value: !Ref MlDsaPrivateCAArn
+          # OTA firmware signer secret ids (ARNs). The build reads the
+          # era-appropriate signer key to sign firmware.bin and the signer cert
+          # to ship with the OTA (buildspec.yml post_build). Secrets Manager
+          # accepts the full ARN as --secret-id.
+          - Name: SIGNER_CLASSICAL_KEY_SECRET
+            Value: !Ref SignerClassicalKeySecretArn
+          - Name: SIGNER_CLASSICAL_CERT_SECRET
+            Value: !Ref SignerClassicalCertSecretArn
+          - Name: SIGNER_MLDSA_KEY_SECRET
+            Value: !Ref SignerMlDsaKeySecretArn
+          - Name: SIGNER_MLDSA_CERT_SECRET
+            Value: !Ref SignerMlDsaCertSecretArn
+          # Signer CA ROOT secrets — baked into the firmware image as the OTA
+          # verifier's trust anchor (OTA_SIGNER_CA_ROOT in secrets.h).
+          - Name: SIGNER_CLASSICAL_CA_SECRET
+            Value: !Ref SignerClassicalCACertSecretArn
+          - Name: SIGNER_MLDSA_CA_SECRET
+            Value: !Ref SignerMlDsaCACertSecretArn
       TimeoutInMinutes: 15
 
   # ═══════════════════════════════════════════════════════════════════════════

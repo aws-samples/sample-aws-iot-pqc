@@ -77,6 +77,8 @@ def test_telemetry_event_writes_fields():
         "chip_temp_c": 42, "pqc_algorithm": "SECP256R1_MLKEM768",
         "tls_version": "TLSv1.3", "firmware_version": "3.0.0-mldsa",
         "cert_sig_alg": "ML-DSA-44",
+        "ota_sig_alg": "ML-DSA-44",
+        "firmware_sha256": "204254104425cb962ba7efd4cf328bcd79e359336c4738f10f4a112914335bf3",
     }
     mod.handler(event, None)
 
@@ -84,6 +86,12 @@ def test_telemetry_event_writes_fields():
     assert item["pqcAlgorithm"] == "SECP256R1_MLKEM768"
     assert item["tlsVersion"] == "TLSv1.3"
     assert item["certSigAlg"] == "ML-DSA-44"
+    # OTA firmware-signing badge fields (the running image's signature era +
+    # the device-computed SHA-256 of its own running partition).
+    assert item["otaSigAlg"] == "ML-DSA-44"
+    assert item["firmwareSha256"] == (
+        "204254104425cb962ba7efd4cf328bcd79e359336c4738f10f4a112914335bf3"
+    )
     # firmwareVersion is now carried on the periodic telemetry payload (not only
     # the connect-time lifecycle message), so the dashboard shows it reliably.
     assert item["firmwareVersion"] == "3.0.0-mldsa"
@@ -111,6 +119,8 @@ def test_lifecycle_event_writes_status_and_ip():
             "thingName": "esp32-FC22E0", "status": "online", "ip": "10.0.0.5",
             "pqc_algorithm": "SECP256R1_MLKEM768", "tls_version": "TLSv1.3",
             "cert_sig_alg": "ECDSA-P256",
+            "ota_sig_alg": "ECDSA-P256",
+            "firmware_sha256": "4bb849c436aa6557d33d7d4c15ae78c78406839fb1f97bad54c456597afe1c10",
         },
         None,
     )
@@ -118,6 +128,11 @@ def test_lifecycle_event_writes_status_and_ip():
     assert item["status"] == "online"
     assert item["ipAddress"] == "10.0.0.5"
     assert item["certSigAlg"] == "ECDSA-P256"
+    # OTA firmware-signing badge fields persist via the lifecycle path too.
+    assert item["otaSigAlg"] == "ECDSA-P256"
+    assert item["firmwareSha256"] == (
+        "4bb849c436aa6557d33d7d4c15ae78c78406839fb1f97bad54c456597afe1c10"
+    )
 
 
 @mock_aws

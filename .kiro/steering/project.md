@@ -121,6 +121,35 @@ the teardown/rebuild. Handle these to keep a from-scratch deploy clean:
   is reused across rebuilds (fine, just don't expect the stack to own it).
 
 Backlog candidates surfaced during rebuilds (not yet fixed):
+- **[MEMORY — explore only IF we hit severe RAM/heap constraints] Keep the
+  growing cert/signature material in memory-mapped FLASH, not SRAM.** As the
+  firmware now carries more X.509 material (device cert + CA + the baked-in
+  OTA_SIGNER_CA_ROOT bundle = classical + ML-DSA roots ~6.3 KB, plus per-OTA the
+  ~5.7 KB ML-DSA signer leaf and 2420 B signature), SRAM/heap pressure on the
+  ESP32-S3 could become the limiting factor (observed min-heap during the ML-DSA
+  TLS handshake ~44-90 KB, and ~68 KB on the v3_mldsa idle loop). User surfaced
+  the lever (Oct 3): on the ESP32-S3 the Arduino core already maps `.rodata` into
+  memory-mapped flash through the MMU/flash cache, so a `static const char[]`
+  string literal (our certs/roots in `secrets.h`) ALREADY lives in flash, not
+  SRAM — `PROGMEM` is effectively a no-op on the S3. The nuance the user read is
+  real: PEM MUST keep its `\n` line breaks (our `R"EOF(...)EOF"` raw-string form
+  preserves them), and the win is lost the moment a cert is copied into RAM at
+  use time (e.g. into an Arduino `String`, a `malloc`'d scratch buffer, or passed
+  to an API that duplicates it). So the actual optimization work is NOT "move
+  certs to flash" (they're mostly there already) but: (1) audit the OTA verify +
+  TLS-setup paths for places that copy a flash-resident cert/root into a RAM
+  buffer and eliminate the copy (pass the flash pointer directly where the API
+  allows); (2) for large transient blobs read at verify time (signer leaf,
+  signature, and especially the 3.5 MB image) prefer `esp_partition_mmap`
+  zero-copy over buffering — the image verify ALREADY mmaps; extend the same
+  discipline to the leaf/sig if they grow; (3) confirm wolfSSL isn't internally
+  duplicating the baked-in root when loaded via `wolfSSL_CertManagerLoadCABuffer`
+  (it parses into a signer store — measure the heap delta and, if significant,
+  load once and reuse the CertManager rather than new/free per OTA). Decision-
+  gated: do NOT spend effort here until a build or on-device run actually hits a
+  heap/RAM wall; it's a mitigation lever to reach for under pressure, not a
+  proactive refactor. Touches `secrets.h` generation (buildspec), the three
+  sketches' `otaVerify*` + `setupWolfSSLContext`, and the wolfSSL user settings.
 - **[TOP PRIORITY — ABSOLUTE WORKSHOP REQUIREMENT] [FEATURE — OTA firmware
   signing + on-device verification via wolfTPM software TPM] Sign firmware and
   have the device verify the signature before applying an OTA update.**
@@ -744,6 +773,75 @@ Backlog candidates surfaced during rebuilds (not yet fixed):
   `setup-all.sh` VIA SSM (never interactively), make it log to a file + not abort
   silently (surface which step failed), so we get the reliability + observability
   win without the full re-architecture.
+- **[FEATURE — bake the builder-Pi SOFTWARE into a custom Raspbian image via a
+  CodeBuild pipeline; keep CONFIGURATION on SSM] Move all software INSTALLATION
+  off the live Pi and into image-creation time.** Desired end state: a CodeBuild
+  pipeline builds a custom Raspberry Pi OS image that already contains ALL the
+  heavy software — arduino-cli + the ~5GB ESP32 Arduino core, wolfSSL PQC build
+  config, Python deps, the workshop-builder CLI, the builder GUI app, the systemd
+  unit, the CloudWatch agent, the SSM agent — so the operator just burns the
+  image to an SD card and boots. The on-device, per-deploy work then shrinks to
+  CONFIGURATION ONLY, which STAYS on SSM: SSM-agent hybrid-activation
+  registration plus the per-account/runtime config (the `/pqc-workshop/wifi/*`
+  SSID/PSK + AP setup, broker endpoint / IoT config, device identity) applied by
+  the existing `configure-*` SSM documents. Net split: **image build = install
+  software (once, in AWS); SSM = configure + register (per deploy).**
+  - **Reference implementation to copy from:**
+    https://github.com/aws-samples/aws-codebuild-custom-raspbian-builder — an
+    aws-samples project that builds custom Raspbian OS images from SHA256-verified
+    source entirely in AWS CodeBuild (QEMU emulation to build ARM-native Raspbian
+    on x86 CodeBuild), outputting a ready-to-burn SD image to S3 (and a reduced
+    size). It is provisioned as a SINGLE-STEP CloudFormation template with the
+    build code embedded + copied to S3 to kick off the pipeline with no end-user
+    intervention — exactly the one-shot, deployable-in-one-attempt model this
+    workshop requires. It has built-in options for WiFi-at-build-time, Docker
+    install, a headless-setup SSH user, per-device `/boot` startup-script
+    customization, and build-time customization via its inline buildspec.yml +
+    Dockerfile. There is both a baremetal (SD image → S3) and a Docker (image →
+    ECR) variant; we want the BAREMETAL SD-image variant. Copy its CFN + buildspec
+    + QEMU approach and swap in our software list (ESP32 core, wolfSSL, builder GUI
+    app, etc.).
+  - **Why this is the right evolution of the SSM-provisioning item above:** that
+    item already moved software INSTALL off the operator's hands onto SSM
+    documents run from the deploy host — a big reliability win — but the ~5GB
+    ESP32-core install still happens ON the live Pi at provisioning time (~10-12
+    min, the slowest + most fragile part of bring-up, and the thing SSM Run
+    Command's timeout/output caps keep bumping into). Baking it into the image
+    removes that entirely: no multi-GB download over the Pi's network at the
+    workshop, no per-Pi recompile, instant toolchain, and a verified/reproducible
+    chain-of-custody for the base OS. SSM then does only the light, genuinely
+    per-deploy configuration it is well suited to.
+  - **Design intent / constraints:**
+    1. Keep the deployable-in-one-attempt philosophy: the pipeline should be a
+       single CFN template (like the reference) that self-seeds its build source
+       to S3 and outputs the finished `.img` to S3 for download/burn — no manual
+       pipeline wiring.
+    2. Pin + verify the base image (SHA256) like the reference does, so the
+       workshop image is reproducible and auditable.
+    3. Draw a crisp line: anything that is the SAME for every workshop/account
+       (software, toolchain, GUI app code) → baked into the image; anything that
+       is per-account/per-deploy/secret (WiFi PSK, broker endpoint, IoT identity,
+       SSM activation) → stays on SSM `configure-*` docs. Do NOT bake secrets into
+       the image.
+    4. The bundle (`bundle-for-builder-pi.sh`) likely collapses to near-nothing —
+       SSM-agent registration can be baked in too, leaving only the hybrid
+       activation code to inject at first boot (via the `/boot` startup-script
+       mechanism the reference provides).
+    5. Versioning: tag/output images per workshop release so a known-good image
+       can be re-burned; keep the SSM `configure-*` docs backward-compatible with
+       the shipped image.
+  - **Open questions to resolve during design:** (a) QEMU ARM build time + cost on
+    CodeBuild for a ~5GB-core image (may be long — size the timeout); (b) how the
+    firmware GUI app + workshop-builder CLI get versioned into the image vs. still
+    being pulled fresh (bake a known version, or bake a thin launcher that pulls
+    at boot?); (c) SD-image size after adding the ESP32 core (the reference
+    auto-reduces, but our core is large — confirm it still fits a sensible SD);
+    (d) how operators receive the image (S3 presigned download in the runbook /
+    Workshop Studio asset).
+  - Relationship to the item above: this SUPERSEDES the "install via SSM docs"
+    approach for the SOFTWARE half (install moves to image build) but KEEPS its
+    SSM model for the CONFIGURATION half. Do the SSM-docs item's interim wins
+    now (they help today); treat this image-pipeline as the strategic end state.
 - **[DONE] Automate the NetworkManager AP as part of Pi provisioning.** The Pi's
   2.4GHz workshop AP used to be a MANUAL `nmcli` setup (DEPLOYMENT.md §5a), which
   caused a `4WAY_HANDSHAKE_TIMEOUT` during a device test when the operator-typed

@@ -83,6 +83,13 @@
 #define WOLFSSL_WC_DILITHIUM        // wolfSSL native ML-DSA implementation
 #define WOLFSSL_DILITHIUM_VERIFY    // Verify an ML-DSA peer certificate (broker cert)
 #define WOLFSSL_DILITHIUM_SIGN      // Sign the CertificateVerify with the ML-DSA key
+// Explicitly enable the ML-DSA public-key path the OTA verifier uses
+// (Workstream 3). WOLFSSL_MLDSA_PUBLIC_KEY compiles wc_MlDsaKey_PublicKeyDecode
+// (aliased wc_Dilithium_PublicKeyDecode) so we can parse the signer leaf's
+// public key from its SubjectPublicKeyInfo and verify the firmware signature
+// over the mmap'd image. TLS already parses ML-DSA certs, but we state the
+// dependency rather than rely on it being pulled in transitively.
+#define WOLFSSL_MLDSA_PUBLIC_KEY
 // ML-DSA uses SHAKE128/256 (already enabled below for ML-KEM) and SHA3.
 
 // ─── ECC (for hybrid PQC key exchange) ──────────────────────────────────────

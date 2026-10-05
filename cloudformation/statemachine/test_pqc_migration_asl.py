@@ -97,16 +97,24 @@ def test_build_wait_uses_codebuild_sync(asl):
 
 def test_variant_threaded_through(asl):
     """The firmware variant is data-driven, not hardcoded: PrepareBuild receives
-    $.variant, and WaitForBuild's FIRMWARE_VARIANT comes from the prepared
-    variant (so the same state machine builds classical / pqc / pqc-mldsa)."""
+    $.variant (the picker key), and WaitForBuild's FIRMWARE_VARIANT comes from
+    the prepared BUILD variant. These can differ (Workstream 4): the signer-era
+    variants 'signer'/'verified' build the same 'pqc-mldsa' sketch, so the build
+    is driven by buildVariant, while the OTA signer is driven by signerEra."""
     prepare = asl["States"]["PrepareBuild"]
     assert prepare["Parameters"]["Payload"]["variant.$"] == "$.variant"
 
     wait_env = asl["States"]["WaitForBuild"]["Parameters"]["EnvironmentVariablesOverride"]
     by_name = {e["Name"]: e for e in wait_env}
-    # FIRMWARE_VARIANT must be sourced from the prepared variant, never a literal.
-    assert by_name["FIRMWARE_VARIANT"].get("Value.$") == "$.prepare.variant"
+    # FIRMWARE_VARIANT (which sketch/CA/port) must come from the prepared BUILD
+    # variant, never a literal. buildVariant falls back to the picker key for the
+    # base variants, so classical/pqc/pqc-mldsa still build correctly.
+    assert by_name["FIRMWARE_VARIANT"].get("Value.$") == "$.prepare.buildVariant"
     assert "Value" not in by_name["FIRMWARE_VARIANT"], "FIRMWARE_VARIANT must not be hardcoded"
+    # SIGNER_ERA (which signer key signs the OTA) must be threaded from the
+    # prepared signer era, so 4.0.0-signer/5.0.0-verified are ML-DSA-signed even
+    # though they build the pqc-mldsa sketch.
+    assert by_name["SIGNER_ERA"].get("Value.$") == "$.prepare.signerEra"
     # The per-device WiFi/broker env resolved by prepare-build flows to the build.
     assert by_name["WIFI_SSID"].get("Value.$") == "$.prepare.buildEnv.wifiSsid"
     assert by_name["BROKER_ENDPOINT"].get("Value.$") == "$.prepare.buildEnv.brokerEndpoint"

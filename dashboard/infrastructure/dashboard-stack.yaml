@@ -142,6 +142,8 @@ Resources:
           pqcAlgorithm: String
           tlsVersion: String
           certSigAlg: String
+          otaSigAlg: String
+          firmwareSha256: String
           wifiRssi: Int
           freeHeap: Int
           heapTotal: Int
@@ -211,6 +213,8 @@ Resources:
           pqcAlgorithm: String
           tlsVersion: String
           certSigAlg: String
+          otaSigAlg: String
+          firmwareSha256: String
           wifiRssi: Int
           freeHeap: Int
           heapTotal: Int

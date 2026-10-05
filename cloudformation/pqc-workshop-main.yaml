@@ -226,6 +226,16 @@ Resources:
       Parameters:
         PrivateCAArn: !GetAtt BrokerStack.Outputs.PrivateCAArn
         MlDsaPrivateCAArn: !GetAtt BrokerStack.Outputs.MlDsaPrivateCAArn
+        # OTA firmware signer secret ARNs (minted by the broker stack's cert
+        # provisioner into pqc-broker/signer-*); the firmware build reads the
+        # era-appropriate signer key to sign firmware.bin.
+        SignerClassicalKeySecretArn: !GetAtt BrokerStack.Outputs.SignerClassicalKeySecretArn
+        SignerClassicalCertSecretArn: !GetAtt BrokerStack.Outputs.SignerClassicalCertSecretArn
+        SignerMlDsaKeySecretArn: !GetAtt BrokerStack.Outputs.SignerMlDsaKeySecretArn
+        SignerMlDsaCertSecretArn: !GetAtt BrokerStack.Outputs.SignerMlDsaCertSecretArn
+        # Signer CA roots — baked into firmware as the OTA verifier trust anchor.
+        SignerClassicalCACertSecretArn: !GetAtt BrokerStack.Outputs.SignerClassicalCACertSecretArn
+        SignerMlDsaCACertSecretArn: !GetAtt BrokerStack.Outputs.SignerMlDsaCACertSecretArn
         DefaultBrokerEndpoint: !GetAtt BrokerStack.Outputs.BrokerEndpoint
         IoTEndpoint: !Ref IoTEndpoint
         DefaultWifiSsid: !Ref DefaultWifiSsid

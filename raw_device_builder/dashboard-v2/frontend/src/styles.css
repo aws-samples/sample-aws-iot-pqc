@@ -118,6 +118,25 @@ header p { color: var(--text-secondary); margin-top: 4px; }
 .pqc-text { color: var(--accent-pqc); font-weight: 600; }
 .classical-text { color: var(--accent-classical); font-weight: 600; }
 
+/* ─── Firmware signature badge (OTA firmware-signing integrity) ───────────── */
+/* Shows the signature era that protected the running image + a short SHA-256 of
+   the running partition. Post-quantum (ML-DSA) is the goal state (green);
+   classically-signed is calmer (amber); an unsigned factory image is muted. */
+.sig-badge {
+  font-weight: 600;
+  font-size: 0.78rem;
+  white-space: nowrap;
+}
+.sig-badge.sig-pqc { color: var(--accent-pqc); }
+.sig-badge.sig-classical { color: var(--accent-classical); }
+.sig-badge.sig-unsigned { color: var(--text-secondary); font-weight: 500; }
+.sig-badge .sig-sha {
+  color: var(--text-secondary);
+  font-weight: 400;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.72rem;
+}
+
 /* ─── Metrics Grid ────────────────────────────────────────────────────────── */
 
 .device-metrics {
@@ -129,13 +148,25 @@ header p { color: var(--text-secondary); margin-top: 4px; }
 
 .metric {
   display: flex;
-  justify-content: space-between;
+  flex-direction: column;      /* label above value — long crypto strings no longer
+                                  collide with the neighbouring column's label */
+  gap: 2px;
   padding: 6px 10px;
   background: rgba(255,255,255,0.03);
   border-radius: 6px;
+  min-width: 0; /* let the grid column shrink instead of being forced wider */
 }
-.metric label { color: var(--text-secondary); font-size: 0.75rem; }
-.metric span { font-size: 0.8rem; font-weight: 500; }
+.metric label { color: var(--text-secondary); font-size: 0.72rem; }
+.metric span {
+  font-size: 0.8rem;
+  font-weight: 500;
+  min-width: 0;
+  overflow-wrap: anywhere;     /* wrap a long value within its cell rather than overflow */
+}
+
+/* Full-width metric row — the firmware-signature badge gets its own line so its
+   long value (algorithm + sha256 chip) never squeezes the neighbouring column. */
+.metric.metric-wide { grid-column: 1 / -1; }
 
 /* ─── Actions ─────────────────────────────────────────────────────────────── */
 

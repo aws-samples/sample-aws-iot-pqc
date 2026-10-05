@@ -113,6 +113,28 @@
                             </button>
                         </div>
                     ` : ''}
+                    ${device.status === 'error' ? `
+                        <div class="device-actions">
+                            ${device.isRegistered ? `
+                                <button class="action-btn reflash" onclick="reflashDevice('${device.port}')">
+                                    🔄 Retry Flash
+                                </button>
+                                <button class="action-btn serial" onclick="openSerial('${device.port}')">
+                                    📟 Serial
+                                </button>
+                                <button class="action-btn deregister" onclick="deregisterDevice('${device.port}')">
+                                    🗑️ Deregister
+                                </button>
+                            ` : `
+                                <button class="action-btn reflash" onclick="registerDevice('${device.port}')">
+                                    🚀 Retry Register & Flash
+                                </button>
+                                <button class="action-btn serial" onclick="openSerial('${device.port}')">
+                                    📟 Serial
+                                </button>
+                            `}
+                        </div>
+                    ` : ''}
                     ${device.error ? `<div class="error-msg">❌ ${device.error}</div>` : ''}
                     <div class="progress-log">
                         ${(device.progress || []).map(line => `<div class="log-line">${line}</div>`).join('')}

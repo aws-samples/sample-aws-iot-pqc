@@ -41,7 +41,7 @@ Thumbs.db
 # Python test harness (workshop-deployment-hardening)
 .venv/
 __pycache__/
-*.pyc
+*.py[cod]
 .pytest_cache/
 .coverage
 *.egg-info/
