@@ -42,7 +42,9 @@
 #   - One-time firmware Docker image build (ImageBuilderProject output)
 #   - Builder-Pi SSM agent registration on the physical Raspberry Pi
 #
-# Teardown:  aws cloudformation delete-stack --stack-name pqc-workshop
+# Teardown:  ./teardown-workshop.sh <region> [--profile NAME] [--wait]
+#   (a bare `delete-stack` is NOT enough — versioned S3 buckets, ECR images, and
+#   IoT things/thing-type block the delete; teardown-workshop.sh clears them first)
 #
 # Copyright 2024-2026 Amazon.com, Inc. or its affiliates. All Rights Reserved.
 # SPDX-License-Identifier: MIT-0
