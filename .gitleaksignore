@@ -1,0 +1,6 @@
+074805252a2cf9107735fa6c31b504547781db51:cloudformation/deploy-workshop.sh:hashicorp-tf-password:119
+6e5ebe4d15229df907ed9dd88c589f966f4f2159:broker-container/cloudformation/broker-container-stack.yaml:generic-api-key:46
+f932bd22caa0dde9f33719897c7711252e19ad9e:README.md:generic-api-key:101
+20b3b77018ffe4709c2589fa5e6a0114add4c49d:cloudformation/deploy-workshop.sh:hashicorp-tf-password:378
+8e49f52db260f34c372860bc936853c76c1f838e:aws_iot_pqc_esp32_v1_classical/secrets.h:private-key:41
+e500ecd3f912bc24b1d3dae72fb93192e5e3c358:aws_iot_pqc_esp32/secrets.h:private-key:60
