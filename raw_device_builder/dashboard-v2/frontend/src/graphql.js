@@ -1,3 +1,6 @@
+// Copyright 2026 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+// SPDX-License-Identifier: MIT-0
+
 /**
  * GraphQL queries, mutations, and subscriptions for the device dashboard.
  */

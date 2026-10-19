@@ -1,3 +1,6 @@
+# Copyright 2026 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: MIT-0
+
 """
 AWS helpers shared by the Builder-Pi GUI and CLI.
 

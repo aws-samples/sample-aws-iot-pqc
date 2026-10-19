@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright 2026 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: MIT-0
+
 # ─────────────────────────────────────────────────────────────────────────────
 # ota_tamper_test.sh — Workstream 4 (task 4.3) negative/tamper proof.
 #

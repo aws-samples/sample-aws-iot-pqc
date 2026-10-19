@@ -1,4 +1,7 @@
 #!/bin/bash
+# Copyright 2026 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: MIT-0
+
 # ─────────────────────────────────────────────────────────────────────────────
 # build-and-push.sh — Build the Mosquitto PQC Docker image via CodeBuild
 #

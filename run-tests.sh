@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright 2026 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: MIT-0
+
 # ─────────────────────────────────────────────────────────────────────────────
 # run-tests.sh — Fast, mocked unit-test suite for the workshop's Python code.
 #

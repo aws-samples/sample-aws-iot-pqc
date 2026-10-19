@@ -1,3 +1,6 @@
+# Copyright 2026 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: MIT-0
+
 """Builder-Pi configuration load/save (single source, shared by GUI + CLI)."""
 import json
 import os
