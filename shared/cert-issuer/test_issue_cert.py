@@ -92,7 +92,7 @@ def test_issue_certificate_end_to_end_mocked(monkeypatch):
         key_mode="ec-p256",
         ca_arn="arn:aws:acm-pca:us-east-1:111:certificate-authority/x",
         subject_ou="MQTT Broker",
-        idempotency_token="broker-classical-pqc-mqtt-broker",
+        idempotency_token="broker-classical-pqc-mqtt-broker",  # nosec B106 - not a password: this is an ACM PCA idempotency/dedup token, not a credential
         acm_pca_client=fake,
     )
 

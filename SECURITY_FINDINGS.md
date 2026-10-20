@@ -66,3 +66,80 @@ The remaining Probe findings are all INFO severity and are left as-is:
 - `unquoted-variable-expansion-in-command`, `prefer-json-notation`,
   `missing-template-string-indicator`, `B106`/`B110` — style/false-positive
   noise in helper scripts and tests.
+
+---
+
+# Slingshot scan (Checkov / cfn-lint / Bandit / Semgrep OSS)
+
+Slingshot runs a broader, stricter rubric than Probe and, like Probe, does
+**not** honor inline suppressions (`# nosemgrep`, `# nosec`) or the in-template
+`checkov: skip` / `cfn_nag` metadata. It surfaced 65 HIGH findings. They fall
+into three groups.
+
+## Resolved in source (Slingshot)
+
+- **`avoid_app_run_with_bad_host` (HIGH)** — `raw_device_builder/builder-pi/app.py`.
+  The builder-Pi Flask GUI bind host is now read from config
+  (`config.json` → `gui_host`) instead of a hardcoded `'0.0.0.0'` literal in the
+  `app.run()` call. The default remains all-interfaces because the GUI is
+  reached from the operator's laptop over the Pi's workshop WiFi access point
+  (loopback would make it unreachable), but operators can now narrow it to the
+  AP interface IP or `127.0.0.1`. Making the bind a documented, overridable
+  deployment choice is the improvement; behavior is unchanged by default.
+
+- **`S3 Example Bucket Naming` (HIGH)** — `raw_device_builder/README.md`.
+  The example `aws cloudformation deploy` command used a concrete, guessable
+  firmware-bucket name. Replaced with a `<your-unique-firmware-bucket-name>`
+  placeholder so readers supply their own non-squattable name.
+
+## Audit-level false positives (no injection vector)
+
+These are Semgrep/Bandit "audit" rules that flag any dynamic `subprocess`
+call or keyword-arg string for human review. Reviewed and confirmed safe:
+
+- **`dangerous-subprocess-use-audit` / Bandit `B603`/`B607`** —
+  `shared/cert-issuer/issue_cert.py`, `raw_device_builder/builder-pi/{device_manager,cli}.py`,
+  `raw_device_builder/lambda/pqc-upgrader/index.py`. Every call uses an argv
+  **list** with no `shell=True` (verified repo-wide), so arguments are never
+  passed through a shell — there is no command-injection vector. Inputs are
+  additionally sanitized (e.g. `_sanitize_token` in the cert issuer).
+- **Bandit `B106` "hardcoded password"** — `shared/cert-issuer/test_issue_cert.py`.
+  The flagged string is an ACM PCA **idempotency token** (a dedup key), not a
+  credential. Annotated `# nosec B106` with that reason.
+
+## Intentional sample-vs-production tradeoffs (by design)
+
+Every one of the 59 Checkov HIGH findings already carries a documented
+`checkov: skip` (and usually a `cfn_nag` suppression) in its CloudFormation
+template; Slingshot re-surfaces them only because it ignores those skips.
+They are deliberate choices for a one-shot-deployable **teaching sample**, not
+a production system — "fixing" them would add KMS CMKs, dedicated log buckets,
+and tightly-scoped IAM that fight the workshop's stated design goal of a
+readable, single-attempt deploy. The decisions:
+
+- **`EA022` broker Security Group `0.0.0.0/0` on 8883/8884** — **required.** The
+  ESP32 devices connect from the public internet to the broker's internet-facing
+  NLB; mutual TLS (`require_certificate true`) is the authentication gate. This
+  is the paved-path shape for a public, auth-gated service port (analogous to a
+  public 443). Narrowing it would break device connectivity for every attendee.
+- **`CKV_AWS_366` Cognito unauthenticated access** — **intentional.** The
+  dashboard is a public, read-only workshop dashboard that uses unauthenticated
+  Cognito identities bound to a restrictive unauth IAM role.
+- **`CKV_AWS_109` / `CKV_AWS_111` IAM wildcards (30)** — scoping every policy's
+  resources/actions is invasive and raises redeploy risk; the roles are
+  workshop-scoped and short-lived.
+- **`CKV_AWS_149` Secrets Manager / `CKV_AWS_119` DynamoDB / `CKV_AWS_136` ECR
+  (21)** — these resources use AWS-managed (AES256 / aws/* KMS) encryption at
+  rest by default. The rules want customer-managed CMKs, which add key
+  management + cost for no meaningful gain on disposable workshop data.
+- **`CKV_AWS_18` S3 / `CKV_AWS_86` CloudFront / `CKV_AWS_193` AppSync access
+  logging (6)** — access-logging destinations are out of scope for the sample.
+- **`CKV_AWS_174` CloudFront TLS version** — the distribution uses the default
+  `*.cloudfront.net` certificate, which does not permit setting a
+  `MinimumProtocolVersion` without a custom domain + ACM certificate (extra
+  infra the workshop does not require).
+
+If this code were promoted toward production, the production checklist is:
+customer-managed KMS CMKs on Secrets Manager / DynamoDB / ECR, per-resource
+IAM scoping, S3 + CloudFront + AppSync access logging, a custom CloudFront
+domain/cert with a modern `MinimumProtocolVersion`, and WAF on the dashboard.

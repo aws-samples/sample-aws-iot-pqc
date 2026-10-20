@@ -80,7 +80,7 @@ aws cloudformation deploy \
   --capabilities CAPABILITY_NAMED_IAM \
   --parameter-overrides \
     GitRepoUrl=<your-gitlab-repo-url> \
-    FirmwareBucketName=pqc-workshop-firmware-087195661091
+    FirmwareBucketName=<your-unique-firmware-bucket-name>
 ```
 
 ### 2. Setup Builder-Pi
