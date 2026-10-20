@@ -10,14 +10,13 @@ ENV DEBIAN_FRONTEND=noninteractive
 # mirror fails fast and retries instead of stalling the whole build for many
 # minutes (which previously blew the CodeBuild timeout). Reliability matters:
 # this image is built during the one-shot Workshop Studio deploy.
-# nosemgrep: remove-package-cache -- false positive: this RUN cleans the apt cache in-layer (rm -rf /var/lib/apt/lists/* on its last line)
 RUN printf 'Acquire::Retries "5";\nAcquire::http::Timeout "30";\nAcquire::https::Timeout "30";\n' \
       > /etc/apt/apt.conf.d/80-retries && \
     apt-get update && apt-get install -y --no-install-recommends \
     build-essential git cmake pkg-config \
     libcjson-dev libsystemd-dev \
     python3 python3-pip curl ca-certificates \
-    && rm -rf /var/lib/apt/lists/*
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # ─── Build OpenSSL 3.5 with PQC support ─────────────────────────────────────
 WORKDIR /tmp
@@ -59,9 +58,8 @@ RUN git clone --depth 1 --branch 0.6.1 https://github.com/open-quantum-safe/oqs-
 # Install system libssl-dev for headers, then replace libs with our custom build.
 # This ensures the compiler finds openssl headers in the standard location,
 # and links ONLY against our PQC-enabled OpenSSL 3.5.
-# nosemgrep: remove-package-cache -- false positive: this RUN cleans the apt cache in-layer (rm -rf /var/lib/apt/lists/* on its next line)
 RUN apt-get update && apt-get install -y --no-install-recommends libssl-dev && \
-    rm -rf /var/lib/apt/lists/* && \
+    apt-get clean && rm -rf /var/lib/apt/lists/* && \
     rm -rf /usr/include/openssl && \
     ln -sf /opt/openssl-pqc/include/openssl /usr/include/openssl && \
     rm -f /usr/lib/x86_64-linux-gnu/libssl.so* /usr/lib/x86_64-linux-gnu/libcrypto.so* && \
@@ -97,11 +95,10 @@ FROM public.ecr.aws/ubuntu/ubuntu:22.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-# nosemgrep: remove-package-cache -- false positive: this RUN cleans the apt cache in-layer (rm -rf /var/lib/apt/lists/* on its last line)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3 python3-pip curl ca-certificates libcjson1 \
     && pip3 install --no-cache-dir awscli boto3 \
-    && rm -rf /var/lib/apt/lists/*
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # Copy built artifacts
 COPY --from=builder /opt/openssl-pqc /opt/openssl-pqc

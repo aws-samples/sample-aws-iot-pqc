@@ -53,10 +53,14 @@ export async function loadConfig() {
   if (!loaded.appSyncEndpoint || !loaded.apiEndpoint || !loaded.identityPoolId) {
     throw new Error('config.json is missing required endpoints');
   }
-  // nosemgrep: insecure-object-assign -- trusted static config merge: `loaded`
-  // is the app's own /config.json (deployed artifact), validated above, not
-  // user-controlled web input.
-  Object.assign(config, loaded);
+  // Copy only the known config keys explicitly (rather than a blanket
+  // Object.assign of the parsed payload) so the shape of `config` is fixed by
+  // this allow-list and never extended by arbitrary keys from config.json.
+  config.appSyncEndpoint = loaded.appSyncEndpoint;
+  config.identityPoolId = loaded.identityPoolId;
+  config.apiEndpoint = loaded.apiEndpoint;
+  if (loaded.region) config.region = loaded.region;
+  if (loaded.pollInterval) config.pollInterval = loaded.pollInterval;
   return config;
 }
 
