@@ -14,6 +14,7 @@ SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
 # Install system dependencies
 # (build-essential/perl/wget added to compile OpenSSL 3.5 from source below)
+# nosemgrep: remove-package-cache -- false positive: this RUN cleans the apt cache in-layer (rm -rf /var/lib/apt/lists/* on its last line)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3 python3-pip curl git ca-certificates unzip \
     build-essential perl wget \

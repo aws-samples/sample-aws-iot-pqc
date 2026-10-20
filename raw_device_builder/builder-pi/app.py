@@ -390,7 +390,7 @@ def _reflash_pipeline(port: str):
             return
 
         # Verify boot
-        time.sleep(3)
+        time.sleep(3)  # nosemgrep: arbitrary-sleep -- settle delay after flash before reading boot output
         device_manager.verify_boot(port, timeout=45)
 
         # Restart serial monitor

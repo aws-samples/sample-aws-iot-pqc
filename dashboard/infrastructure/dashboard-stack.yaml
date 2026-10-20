@@ -65,6 +65,10 @@ Resources:
         rules_to_suppress:
           - id: W28
             reason: "workshop depends on fixed resource names referenced across stacks/scripts"
+      checkov:
+        skip:
+          - id: CKV_AWS_119
+            comment: "encrypted with the AWS-owned/managed DynamoDB key (SSEEnabled); a customer-managed CMK is out of scope for the workshop sample"
     Properties:
       TableName: pqc-workshop-devices
       BillingMode: PAY_PER_REQUEST
@@ -670,6 +674,10 @@ Resources:
         rules_to_suppress:
           - id: W28
             reason: "workshop depends on fixed resource names referenced across stacks/scripts"
+      checkov:
+        skip:
+          - id: CKV_AWS_119
+            comment: "encrypted with the AWS-owned/managed DynamoDB key (SSEEnabled); a customer-managed CMK is out of scope for the workshop sample"
     Properties:
       TableName: pqc-workshop-message-log
       BillingMode: PAY_PER_REQUEST
@@ -1081,6 +1089,8 @@ Resources:
         rules_to_suppress:
           - id: W35
             reason: "workshop sample; access logging adds a log bucket out of scope"
+          - id: W51
+            reason: "CodeBuild source bucket; private (public-access-block enabled), accessed only by the dashboard build role — no bucket policy needed"
       checkov:
         skip:
           - id: CKV_AWS_18
@@ -1168,6 +1178,11 @@ Resources:
 
   DashboardBuildProject:
     Type: AWS::CodeBuild::Project
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W32
+            reason: "default AWS-managed CodeBuild encryption key; a customer-managed CMK is out of scope for the workshop sample"
     Properties:
       Name: pqc-workshop-dashboard-build
       Description: Builds + deploys the v2 PQC dashboard (Vite/React) to S3 + CloudFront

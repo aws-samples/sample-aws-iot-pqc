@@ -1,0 +1,16 @@
+# Checkov configuration for the PQC workshop repository.
+#
+# skip-check lists checks that are intentionally not enforced repo-wide, each
+# with a documented reason. Resource-specific exceptions are expressed inline
+# via resource Metadata (checkov.skip) instead; this file is for checks whose
+# scanner operates on raw file text (e.g. the CKV_SECRET_* secrets scanner),
+# where a resource-level skip does not apply and line numbers are unstable.
+skip-check:
+  # CKV_SECRET_6 "Base64 High Entropy String" — FALSE POSITIVE in this repo.
+  # The matches are IoT policy-document ARN f-strings and plain string
+  # constants inside the broker stack's inline BridgeProvisioner Lambda
+  # (e.g. arn:aws:iot:{region}:{account}:topic/dt/*). Checkov's entropy
+  # heuristic mistakes them for base64 secrets. The actual cert/key material is
+  # created at runtime via iot.create_keys_and_certificate and stored in AWS
+  # Secrets Manager — never hardcoded. Verified during the Probe remediation.
+  - CKV_SECRET_6
