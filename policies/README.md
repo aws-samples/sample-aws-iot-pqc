@@ -1,19 +1,25 @@
 # IAM Policies
 
-Externalized IAM policy documents for the PQC workshop.
+Reference copies of the key IAM policy documents used in the PQC workshop.
 
-These JSON files are referenced by CloudFormation templates and uploaded to S3 during the packaging step. They are kept as separate files so policies can be reviewed, audited, and modified independently of the infrastructure templates.
+These JSON files are **reference extracts** — they capture the *permission shape*
+of the Lambda/role policies so they can be reviewed and audited independently.
+The policies that are actually deployed are defined **inline in the
+CloudFormation templates** (e.g. `broker-container/cloudformation/broker-container-stack.yaml`,
+`raw_device_builder/cloudformation/device-builder-stack.yaml`,
+`dashboard/infrastructure/dashboard-stack.yaml`); those are the source of truth.
 
-| Policy | Used By | Purpose |
-|--------|---------|---------|
-| `auto-register-policy.json` | Auto-Register Lambda Role | IoT Thing create/describe/group |
-| `cert-provisioner-policy.json` | Cert Provisioner Lambda Role | IoT cert + Secrets Manager |
-| `command-publisher-policy.json` | Command Publisher Lambda Role | IoT Publish to cmd topics |
-| `device-iot-policy.json` | ESP32 devices (via bridge) | Connect, publish, subscribe per device |
-| `greengrass-bridge-iot-policy.json` | Greengrass core bridge | Bridge all dt/cmd topics |
-| `greengrass-token-exchange-policy.json` | Greengrass Token Exchange Role | Logs + S3 + IoT |
-| `telemetry-processor-policy.json` | Telemetry Processor Lambda Role | DynamoDB + AppSync |
+| Policy | Role | Purpose |
+|--------|------|---------|
+| `auto-register-policy.json` | Auto-Register Lambda | IoT Thing create/describe/group |
+| `cert-provisioner-policy.json` | Cert Provisioner Lambda | IoT cert + Secrets Manager |
+| `command-publisher-policy.json` | Command Publisher Lambda | IoT Publish to `cmd/` topics |
+| `device-iot-policy.json` | ESP32 devices (via broker bridge) | Connect, publish, subscribe per device |
+| `telemetry-processor-policy.json` | Telemetry Processor Lambda | DynamoDB + AppSync |
 
 ## Note on Resource ARNs
 
-These policies use wildcard ARNs (`*`) for portability across accounts and regions. The CloudFormation templates scope them further using `Fn::Sub` when creating the actual IAM roles. The JSON files here represent the *permission shape*; the actual deployed policies may be more restrictive.
+These reference copies use wildcard ARNs (`*`) for portability. The deployed
+policies in the CloudFormation templates scope them further with `Fn::Sub`. The
+JSON files here represent the *permission shape*; the deployed policies may be
+more restrictive.

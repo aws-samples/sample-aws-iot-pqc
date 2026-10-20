@@ -1,6 +1,16 @@
-# CloudFormation: AWS IoT Core Setup
+# CloudFormation: AWS IoT Core Setup (standalone single-device template)
 
-This CloudFormation template provisions all the AWS IoT Core infrastructure needed to work with the ESP32 PQC device sketch.
+> **This is not the workshop deployment.** This page documents
+> `iot-core-setup.yaml`, a small **standalone** template that registers **one**
+> device straight against **AWS IoT Core** (no PQC broker, no NLB, no Private
+> CA) — useful for a quick single-device connectivity test or a home-lab
+> direct-to-IoT-Core connection. The full workshop deploys the PQC broker +
+> device-builder + dashboard via the master template; see
+> [`DEPLOYMENT.md`](DEPLOYMENT.md) for that. In the workshop data path a device
+> connects to the Mosquitto broker (which bridges to IoT Core), not to IoT Core
+> directly.
+
+This CloudFormation template provisions the AWS IoT Core infrastructure needed to connect a single ESP32 device directly to AWS IoT Core.
 
 ## What it creates
 

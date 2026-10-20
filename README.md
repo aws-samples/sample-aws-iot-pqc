@@ -45,26 +45,14 @@ For more detail, see the [AWS Post-Quantum Cryptography Migration Plan](https://
 
 ## How it works
 
-```
-ESP32 Device                                    AWS Cloud
-+---------------------------+                   +----------------------------+
-|                           |     WiFi          |                            |
-|  [WiFi FreeRTOS Task]     |===================|                            |
-|    - Auto connect         |                   |                            |
-|    - Auto reconnect       |   TLS 1.3         |   AWS IoT Core             |
-|    - Health monitoring    |   Hybrid PQC      |                            |
-|                           | (P-256 + ML-KEM-768)|  - MQTT Broker            |
-|  [MQTT FreeRTOS Task]     |<================>|   - Rules Engine           |
-|    - wolfSSL TLS client   |   mTLS (X.509)    |   - Device Shadow          |
-|    - PubSubClient MQTT    |   MQTT 3.1.1      |   - Lambda, DynamoDB, ...  |
-|    - Publish telemetry    |                   |                            |
-|    - Subscribe commands   |                   |                            |
-|                           |                   |                            |
-|  [Main Loop]              |                   |                            |
-|    - Status reporting     |                   |                            |
-|    - Watchdog             |                   |                            |
-+---------------------------+                   +----------------------------+
-```
+An ESP32 device does not talk to AWS IoT Core directly. It connects over
+post-quantum TLS to a Mosquitto broker we run (on ECS Fargate, behind a Network
+Load Balancer), and the broker bridges the traffic up to AWS IoT Core over a
+classical mTLS connection:
+
+![How a field device reaches AWS IoT Core: an ESP32-S3 device connects over MQTT-over-PQC-TLS (hybrid ML-KEM) to the internet-facing pqc-broker-nlb Network Load Balancer (8883 classical / 8884 ML-DSA, TCP passthrough), which passes TCP 8883 through to the ECS Fargate Mosquitto PQC broker (OpenSSL 3.5 + ML-KEM, private subnet, no public IP), which bridges over classical mTLS to the AWS IoT Core MQTT data endpoint](docs/images/broker-path.png)
+
+On the device side, the firmware runs two independent FreeRTOS tasks plus a main loop:
 
 1. The **WiFi task** manages the wireless connection on FreeRTOS core 0. It connects to the configured network, monitors the link, and automatically reconnects on failure.
 
@@ -80,33 +68,7 @@ If WiFi drops, the WiFi task reconnects automatically. The MQTT task detects the
 
 For the re:Invent builders session, the PQC-enabled Mosquitto broker runs as a **container on ECS Fargate** behind a Network Load Balancer — there is no Raspberry Pi gateway and no AWS IoT Greengrass in the data path. ESP32 devices connect straight to the load balancer over PQC TLS 1.3, and the broker bridges their traffic up to AWS IoT Core. A separate Raspberry Pi (the "builder-pi") is used only to flash devices, not to route MQTT.
 
-```
-ESP32 Devices (x8)          AWS Cloud (us-east-1)
-+-------------------+       +--------------------------------------------------------------+
-|                   |       |                                                              |
-| [OTA_0 / app0]    | TLS   |   Network Load        ECS Fargate                            |
-|  Classical FW     | 1.3   |   Balancer            +--------------------------+           |
-|  (wolfSSL)        |=====> |   pqc-broker-nlb ====> |  Mosquitto PQC broker    |           |
-|                   | :8883 |   (TCP passthrough)   |   - OpenSSL 3.5 + ML-KEM |           |
-| [OTA_1 / app1]    |       |                       |   - port 8883, mTLS      |           |
-|  PQC FW           | TLS   |                       |   - certs from Private CA|           |
-|  (wolfSSL)        | 1.3   |                       +-----------+--------------+           |
-|                   | +ML-  |                                   | MQTT bridge (mTLS)       |
-|                   | KEM   |                                   v                          |
-+-------------------+       |   AWS IoT Core <----------- (pqc-workshop-broker-bridge)      |
-        ^                   |     |  IoT Rules                                             |
-        | flash (USB)       |     +--> telemetry-processor / message-logger Lambdas        |
-        |                   |            |                                                 |
-+-------+---------+         |            v                                                 |
-| Builder-Pi      |         |   DynamoDB (pqc-workshop-devices, -message-log)              |
-| workshop-builder|-- API ->|     |                                                        |
-| CLI + Flask GUI |  (IAM)  |     v                                                        |
-| (SSM instance)  |         |   AppSync GraphQL API  <-- Cognito (unauth)                  |
-+-----------------+         |     |                                                        |
-                            |     v                                                        |
-                            |   CloudFront + S3  (v2 "PQC Firmware Manager" dashboard)      |
-                            +--------------------------------------------------------------+
-```
+![End-to-end architecture of the PQC IoT migration solution: the re:Invent physical room (Builder-Pi flashing/WiFi-AP station and ESP32-S3 devices), the VPC with the internet-facing Network Load Balancer in public subnets and the ECS Fargate Mosquitto PQC broker in private subnets (egress via NAT gateway), the two AWS Private CAs and Secrets Manager, the MQTT bridge to AWS IoT Core, IoT Rules feeding the telemetry-processor/message-logger Lambdas into DynamoDB and AppSync, Cognito, and the CloudFront+S3 v2 dashboard](docs/images/architecture.png)
 
 ### PQC key exchange: SecP256r1MLKEM768
 
@@ -164,7 +126,7 @@ Sample-aws-iot-pqc/
 |   +-- infrastructure/dashboard-stack.yaml AppSync, DynamoDB, Cognito, S3/CloudFront, IoT Rules
 |   +-- lambda/                            telemetry-processor, message-logger, broker-log-reader, command-publisher
 +-- cloudformation/
-    +-- pqc-workshop-main.yaml             Master template (nests all 5 child stacks)
+    +-- pqc-workshop-main.yaml             Master template (nests all 6 child stacks)
     +-- device-provisioning-stack.yaml     JIT device auto-registration
     +-- ssm-hybrid-activation-stack.yaml   Builder-Pi SSM hybrid activation
     +-- deploy-workshop.sh                 One-command deploy (self-hosted)
@@ -181,7 +143,7 @@ Sample-aws-iot-pqc/
 | `broker-container/` | The containerized PQC Mosquitto broker: CloudFormation (ECS Fargate, NLB, Private CA, ECR/CodeBuild image build) and the Docker image sources. |
 | `raw_device_builder/` | Device build/registration pipeline: builder API + firmware CodeBuild, the PQC-migration Step Functions workflow, the builder-pi CLI/GUI, and the v2 dashboard frontend. |
 | `dashboard/` | Dashboard backend infrastructure and Lambdas (telemetry, message log, broker log, command publisher). |
-| `cloudformation/pqc-workshop-main.yaml` | Single master template that nests all five child stacks for one-command / Workshop Studio deployment. |
+| `cloudformation/pqc-workshop-main.yaml` | Single master template that nests all six child stacks (network, broker, device-builder, device-provisioning, SSM activation, dashboard) for one-command / Workshop Studio deployment. |
 
 ---
 
@@ -995,7 +957,36 @@ With the new topic structure, your IoT policy should be:
 
 ## PQC migration techniques
 
-This section describes three approaches for migrating an IoT device from classical TLS to post-quantum TLS via over-the-air (OTA) firmware update. The project includes a pre-PQC firmware (v1.0) and the PQC firmware (v2.0) to demonstrate the migration live.
+### The full migration journey
+
+The hands-on workshop walks a field device through a staged migration to
+post-quantum cryptography, entirely over the air. Each stage is a firmware
+variant delivered by the same OTA pipeline, so a fleet migrates gradually rather
+than in a single flag-day cutover:
+
+| Stage | What migrates | Key exchange | Device certificate | Firmware |
+|---|---|---|---|---|
+| **Classical** (factory) | — baseline | Classical ECDHE (TLS 1.3) | ECDSA P-256 (classical) | `1.0.0-classical` |
+| **Key exchange → PQC** | the TLS key exchange | Hybrid **ML-KEM** (SecP256r1MLKEM768) | ECDSA P-256 (still classical) | `2.0.0-pqc` |
+| **Certificate → PQC** | the certificate signature | Hybrid ML-KEM | **ML-DSA-44** (FIPS 204), broker port 8884 | `3.0.0-mldsa` |
+| **Firmware signing → PQC** | the OTA trust anchor | Hybrid ML-KEM | ML-DSA-44 | `4.0.0-signer` / `5.0.0-verified` |
+
+Migrating the **key exchange** first closes the "harvest now, decrypt later"
+risk; migrating the **certificate** to ML-DSA-44 then removes the
+classical-signature forgery risk; and the **firmware-signing** stage makes each
+OTA update itself verifiable against a post-quantum trust anchor.
+
+> The **Workshop Studio content is the authoritative, step-by-step walkthrough**
+> of this journey (review risks → review architecture → migrate key exchange →
+> migrate certificates → migrate firmware signing). This repository holds the
+> code those stages deploy; see `cloudformation/DEPLOYMENT.md` for the deploy and
+> `cloudformation/DEPLOYMENT.md` §7 for the ML-DSA-44 certificate step.
+
+The rest of this section describes the OTA delivery mechanism that every stage
+above uses. It compares three approaches for pushing a firmware update to a
+device in the field.
+
+The project includes a pre-PQC firmware (v1.0) and the PQC firmware (v2.0) to demonstrate the first migration live.
 
 ### Overview
 

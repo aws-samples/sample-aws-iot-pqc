@@ -23,18 +23,29 @@ AWS IoT Core (via MQTT bridge)
 ## Components
 
 - **Docker image**: Mosquitto 2.0 compiled against OpenSSL 3.5 + oqs-provider
-- **NLB**: TCP passthrough on port 8883 (no TLS termination — PQC handshake preserved)
+- **NLB**: TCP passthrough on ports 8883 (classical cert) and 8884 (ML-DSA-44 cert) — no TLS termination, so the PQC handshake runs end to end
 - **ECS Fargate**: Single task, auto-restart on failure
-- **Private CA**: Issues broker + device certificates (ECDSA P-256 sigs, PQC key exchange)
-- **Secrets Manager**: Stores broker private key
-- **EFS**: Shared config and cert storage
+- **Private CAs**: Two — a classical CA (ECDSA P-256 certs) and an ML-DSA-44 CA
+  (FIPS 204 PQC signatures) — issuing the broker's and devices' certificates
+- **Secrets Manager**: Stores broker private keys and the IoT Core bridge credentials
 - **CloudWatch**: Broker logs
 
 ## Certificate Strategy
 
-AWS Private CA issues ECDSA P-256 certificates. PQC protection comes from the TLS 1.3 key exchange (ML-KEM-768), not the certificate signature. This is the NIST-recommended migration path:
-1. ✅ PQC key exchange (ML-KEM) — protects data in transit today
-2. ⏳ PQC signatures (ML-DSA) — when Private CA supports it
+This follows the NIST-recommended staged migration path, and **both stages are
+deployed in this workshop**:
+
+1. ✅ **PQC key exchange (ML-KEM)** — the classical CA issues ECDSA P-256
+   certificates, and quantum resistance comes from the TLS 1.3 hybrid ML-KEM-768
+   key exchange on the **8883** listener. This closes "harvest now, decrypt
+   later" today.
+2. ✅ **PQC signatures (ML-DSA-44)** — a second Private CA issues ML-DSA-44
+   (FIPS 204) certificates, presented on a parallel **8884** listener. Devices
+   migrated to the `pqc-mldsa` firmware variant connect here and present an
+   ML-DSA-44 certificate, so the certificate signature is post-quantum too.
+
+Both listeners run in parallel under the same broker/NLB, so devices migrate
+from 8883 (classical cert) to 8884 (ML-DSA-44 cert) gradually over OTA.
 
 ## Deployment
 
@@ -59,10 +70,10 @@ broker-container/
 ├── README.md
 ├── docker/
 │   ├── Dockerfile              # Mosquitto + OpenSSL 3.5 + oqs-provider
-│   ├── entrypoint.sh           # Fetches certs from Secrets Manager on start
-│   └── mosquitto.conf          # Base broker config
-├── config/
-│   └── bridge-iotcore.conf     # IoT Core bridge configuration
+│   ├── entrypoint.sh           # Fetches certs from Secrets Manager + writes the
+│   │                           #   IoT Core bridge config at runtime
+│   ├── mosquitto.conf          # Broker config (8883 + 8884 listeners)
+│   └── buildspec.yml           # CodeBuild spec for the image build
 ├── scripts/
 │   └── build-and-push.sh       # Build Docker image and push to ECR
 └── cloudformation/

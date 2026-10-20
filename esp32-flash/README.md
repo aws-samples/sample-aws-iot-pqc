@@ -1,8 +1,20 @@
-# ESP32 dual-boot flash guide
+# ESP32 dual-boot flash guide (legacy / alternative manual path)
 
-Instructions for flashing the XIAO ESP32S3 devices with both firmware images (classical TLS on partition 0, PQC TLS on partition 1) for the workshop.
+> **This is not the workshop flow.** The workshop flashes devices through the
+> **Builder-Pi GUI**, which registers the device, builds its firmware in
+> CodeBuild, and flashes it over USB in one click — see
+> [`cloudformation/DEPLOYMENT.md`](../cloudformation/DEPLOYMENT.md) (Builder-Pi
+> provisioning) and the "Register and flash the first device" step. Use that
+> path for the workshop.
+>
+> This guide documents an **alternative, manual laptop-based** way to pre-flash
+> devices with `esptool` directly (no Builder-Pi, no CodeBuild). It is kept for
+> advanced/offline use. Where it differs from the current architecture it is
+> called out inline.
 
-This is done on **your laptop** before the workshop session. Each device takes about 30 seconds to flash.
+Instructions for flashing the XIAO ESP32S3 devices with both firmware images (classical TLS on partition 0, PQC TLS on partition 1).
+
+This is done on **your laptop**. Each device takes about 30 seconds to flash.
 
 ## Prerequisites (laptop setup)
 
@@ -52,7 +64,7 @@ Install required libraries via **Sketch > Include Library > Manage Libraries**:
 ```bash
 # Clone into an explicit directory name so the next step's `cd` always matches,
 # regardless of the repository name's casing.
-git clone https://gitlab.aws.dev/Sample-aws-iot-pqc.git pqc-workshop
+git clone https://github.com/aws-samples/sample-aws-iot-pqc.git pqc-workshop
 cd pqc-workshop
 ```
 
@@ -73,7 +85,7 @@ You need to compile both firmwares into `.bin` files. The Arduino IDE does this 
 3. Select partition scheme: **Tools > Partition Scheme > No OTA (Large APP)**
    (This is just for compilation — we use our own partition table when flashing)
 4. Edit `secrets.h`:
-   - Set `MQTT_BROKER_ENDPOINT` to the Raspberry Pi's IP address
+   - Set `MQTT_BROKER_ENDPOINT` to the broker's NLB DNS name (the `BrokerEndpoint` stack output)
    - Paste the workshop CA cert, device cert, and device key
    (For batch flashing, you'll create a script that patches secrets.h per device — see below)
 5. Click **Sketch > Export Compiled Binary** (or Ctrl+Alt+S)
@@ -119,14 +131,23 @@ If the device doesn't enter download mode automatically, hold the **BOOT** butto
 
 For flashing 100 devices, each with unique credentials, use the batch script:
 
-### Step 1: Copy device certificates from the Pi
+### Step 1: Obtain the device certificate and CA
 
-The certificates were generated on the Raspberry Pi by `greengrass/certs/generate-broker-certs.sh`. Copy them to your laptop:
+Device and broker certificates are issued by the workshop's **AWS Private CA**
+(created by the broker stack) and stored in **AWS Secrets Manager** — they are
+**not** generated on the Pi. For this manual path, retrieve a device
+certificate/key and the CA certificate into a local `./device-certs/` directory
+from Secrets Manager (the secret names are shown in the broker/device-builder
+stack outputs), e.g.:
 
 ```bash
-# From your laptop
-scp -r pi@<raspberry-pi-ip>:~/Sample-aws-iot-pqc/greengrass/certs/output/devices ./device-certs/
-scp pi@<raspberry-pi-ip>:~/Sample-aws-iot-pqc/greengrass/certs/output/ca.crt ./device-certs/
+mkdir -p ./device-certs
+aws secretsmanager get-secret-value --secret-id <device-cert-secret> \
+  --query SecretString --output text > ./device-certs/device.crt
+aws secretsmanager get-secret-value --secret-id <device-key-secret> \
+  --query SecretString --output text > ./device-certs/device.key
+aws secretsmanager get-secret-value --secret-id <ca-cert-secret> \
+  --query SecretString --output text > ./device-certs/ca.crt
 ```
 
 ### Step 2: Generate the shared secrets.h file
@@ -203,7 +224,7 @@ The custom partition table (`partitions_pqc_workshop.csv`) divides the 8MB flash
 | `No serial port found` | USB driver missing or cable issue | Try different cable (data cable, not charge-only) |
 | `A fatal error occurred: Packet content transfer incomplete` | Flaky USB connection | Use shorter cable, try different port |
 | `Image too large for partition` | Firmware exceeds 3.5 MB | Remove debug symbols, check wolfSSL config |
-| Device boots but doesn't connect | Wrong broker IP or certs | Check `secrets.h` values match your Pi setup |
+| Device boots but doesn't connect | Wrong broker endpoint or certs | Check `secrets.h` — `MQTT_BROKER_ENDPOINT` must be the broker NLB DNS name and the cert/key/CA must be the Private CA-issued set |
 | `WOLFSSL_SECP256R1_MLKEM768 was not declared` | wolfSSL not configured for PQC | Copy `wolfssl_user_settings.h` into library's `user_settings.h` |
 
 ## Verification after flashing
@@ -212,7 +233,8 @@ After flashing, the device should:
 
 1. Power on (LED blinks)
 2. Connect to WiFi
-3. Connect to Mosquitto on the Pi via TLS 1.2 (classical firmware)
+3. Connect to the ECS Fargate Mosquitto broker (via the NLB) over TLS 1.3 — a
+   classical key exchange for the classical firmware, hybrid ML-KEM for the PQC firmware
 4. Appear on the dashboard within 30 seconds
 
 Open the Arduino Serial Monitor (115200 baud) to see connection logs if troubleshooting.

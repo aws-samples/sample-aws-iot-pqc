@@ -67,7 +67,7 @@ This module simulates a real-world IoT production line scenario. A "builder-pi" 
 
 2. **AWS Account** with permissions to deploy CloudFormation stack
 
-3. **Git repository** containing firmware source (this GitLab repo by default)
+3. **Git repository** containing firmware source (this GitHub repo by default)
 
 ## Setup
 
@@ -79,7 +79,7 @@ aws cloudformation deploy \
   --stack-name pqc-workshop-device-builder \
   --capabilities CAPABILITY_NAMED_IAM \
   --parameter-overrides \
-    GitRepoUrl=<your-gitlab-repo-url> \
+    GitRepoUrl=<your-github-repo-url> \
     FirmwareBucketName=<your-unique-firmware-bucket-name>
 ```
 
