@@ -104,9 +104,7 @@ See [`cloudformation/DEPLOYMENT.md`](cloudformation/DEPLOYMENT.md) for the full 
 ```
 Sample-aws-iot-pqc/
 +-- README.md                              This file
-+-- attendee_experience.md                 Workshop attendee flow document
 +-- check_setup_status.sh                  Validates AWS environment readiness
-+-- architecture.drawio                    Architecture + deployment-pipeline diagrams
 +-- aws_iot_pqc_esp32/
 |   +-- aws_iot_pqc_esp32.ino              PQC firmware (OTA_1 / app1)
 |   +-- secrets.h                          WiFi + credentials (build-time generated)
@@ -135,6 +133,10 @@ Sample-aws-iot-pqc/
     +-- deploy-workshop.sh                 One-command deploy (self-hosted)
     +-- package.sh                         Stage assets for Workshop Studio
     +-- DEPLOYMENT.md                      Deployment guide + manual steps
++-- docs/
+    +-- architecture.drawio                Architecture + deployment-pipeline diagram (editable source)
+    +-- architecture.drawio.png            Rendered architecture diagram
+    +-- images/                            Diagrams embedded in the README and DEPLOYMENT.md
 ```
 
 | Path | Description |

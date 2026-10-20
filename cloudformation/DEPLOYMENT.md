@@ -16,6 +16,8 @@ pqc-workshop-main.yaml (master)
 └── DashboardStack       — AppSync/DynamoDB/Cognito backend + v2 dashboard hosting
 ```
 
+![Deployment pipeline: the master CloudFormation stack nests the network, broker, device-builder, device, SSM-activation, and dashboard stacks; CodeBuild builds the broker and firmware container images and the dashboard frontend; the Builder-Pi is provisioned over SSM and flashes devices](../docs/images/deployment-pipeline.png)
+
 CloudFormation owns the ordering: the broker consumes the VPC from
 `NetworkStack` (when creating one), and `DeviceBuilderStack` references
 `BrokerStack.Outputs.PrivateCAArn` and `BrokerStack.Outputs.BrokerEndpoint`, so
