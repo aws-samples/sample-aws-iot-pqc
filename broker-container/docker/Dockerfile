@@ -154,17 +154,20 @@ RUN chmod +x /entrypoint.sh
 
 EXPOSE 8883 8884
 
+# Run as the non-root runtime user. The /mosquitto tree is owned by this user
+# (above), ports 8883/8884 are unprivileged, and AWS access uses the ECS task
+# role — so the healthcheck, the entrypoint's cert fetch + bridge-config write,
+# and mosquitto itself all run without root. USER is placed before HEALTHCHECK
+# and ENTRYPOINT so it is the last privilege-setting directive and applies to
+# every instruction that follows (and so static scanners see a non-root USER
+# governing the final CMD/HEALTHCHECK).
+USER mosquitto
+
 # TCP-connect check on the device-facing TLS listener (8883). 8883 is raw
 # MQTT-over-TLS, not HTTP, so we test only that the port accepts a connection
 # using bash's /dev/tcp (bash is present; no netcat/mosquitto_sub in this image).
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
     CMD bash -c 'exec 3<>/dev/tcp/localhost/8883' 2>/dev/null || exit 1
-
-# Run as the non-root runtime user. The /mosquitto tree is owned by this user
-# (above), ports 8883/8884 are unprivileged, and AWS access uses the ECS task
-# role — so the entrypoint's cert fetch + bridge-config write and mosquitto
-# itself all run without root.
-USER mosquitto
 
 ENTRYPOINT ["/entrypoint.sh"]
 CMD ["mosquitto", "-c", "/mosquitto/config/mosquitto.conf"]
