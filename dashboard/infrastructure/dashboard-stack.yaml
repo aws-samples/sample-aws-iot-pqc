@@ -873,7 +873,12 @@ Resources:
                   - logs:StartQuery
                   - logs:GetQueryResults
                 Resource:
-                  - !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/pqc-workshop/mosquitto-broker:*'
+                  # Must match the LIVE broker log group the Lambda queries
+                  # (LOG_GROUP_NAME below = /pqc-workshop/broker-container, the
+                  # ECS Fargate broker). The retired Pi group
+                  # /pqc-workshop/mosquitto-broker is no longer used; granting it
+                  # here left StartQuery denied on the real group.
+                  - !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/pqc-workshop/broker-container:*'
 
   BrokerLogReaderFunction:
     Type: AWS::Lambda::Function
