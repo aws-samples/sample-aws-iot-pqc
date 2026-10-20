@@ -5,7 +5,7 @@
  * post-quantum cryptography (PQC) via wolfSSL with TLS 1.3.
  *
  * Key features:
- *   - Hybrid PQC key exchange: P-521 + Kyber (ML-KEM) Level 5
+ *   - Hybrid PQC key exchange: P-256 + ML-KEM-768 (SecP256r1MLKEM768, NIST Level 3)
  *   - TLS 1.3 mutual authentication (mTLS) with X.509 certificates
  *   - WiFi managed as a FreeRTOS task with automatic recovery
  *   - MQTT publish/subscribe managed as a separate FreeRTOS task

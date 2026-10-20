@@ -2,10 +2,11 @@
 # ─────────────────────────────────────────────────────────────────────────────
 # deploy-workshop.sh — single-command deploy of the PQC workshop.
 #
-# The master template (pqc-workshop-main.yaml) nests all five stacks:
-#   BrokerStack → DeviceBuilderStack → DeviceStack, SSMActivationStack,
-#   DashboardStack. CloudFormation owns the ordering (DeviceBuilderStack
-#   consumes BrokerStack's Private CA + NLB endpoint via cross-stack refs), so
+# The master template (pqc-workshop-main.yaml) nests all six stacks:
+#   NetworkStack, BrokerStack → DeviceBuilderStack → DeviceStack,
+#   SSMActivationStack, DashboardStack. CloudFormation owns the ordering
+#   (DeviceBuilderStack consumes BrokerStack's Private CA + NLB endpoint via
+#   cross-stack refs; BrokerStack runs in NetworkStack's VPC/subnets), so
 #   this script just:
 #     1. packages each child template's Lambda code (aws cloudformation package)
 #        and uploads the packaged children to the templates bucket

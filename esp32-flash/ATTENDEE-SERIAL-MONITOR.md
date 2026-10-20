@@ -1,8 +1,8 @@
-# Viewing Your Device's Serial Output
+# Viewing your device's serial output
 
 When you plug in your ESP32 device, it outputs its **device name** and connection status to the USB serial port. You can view this output on your laptop without installing any additional software.
 
-## What You'll See
+## What you'll see
 
 ```
 ══════════════════════════════════════════════════
@@ -152,7 +152,7 @@ sudo cat /dev/ttyACM0
 | "Permission denied" | See platform-specific permissions section above |
 | Port disappears during use | Device rebooted (normal during firmware migration) — reconnect |
 
-## After Firmware Migration
+## After firmware migration
 
 When you click "Migrate to PQC" on the dashboard, the device reboots. The serial output will briefly disconnect, then reconnect with the new firmware banner:
 

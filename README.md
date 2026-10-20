@@ -1,10 +1,10 @@
-# ESP32 AWS IoT Core with Post-Quantum Cryptography (PQC)
+# ESP32 AWS IoT Core with post-quantum cryptography (PQC)
 
 An Arduino sketch that connects any ESP32 to AWS IoT Core using **post-quantum cryptography** via wolfSSL. The connection uses TLS 1.3 with a hybrid Kyber/ML-KEM key exchange, protecting data against both classical and future quantum computer attacks.
 
 WiFi and MQTT run as independent FreeRTOS tasks with automatic failure recovery.
 
-## Table of Contents
+## Table of contents
 
 - [Why Post-Quantum Cryptography?](#why-post-quantum-cryptography)
 - [How It Works](#how-it-works)
@@ -27,12 +27,13 @@ WiFi and MQTT run as independent FreeRTOS tasks with automatic failure recovery.
 - [Troubleshooting](#troubleshooting)
 - [Automatic Registration and Certificate Provisioning](#automatic-registration-and-certificate-provisioning)
 - [Security Considerations](#security-considerations)
+- [Cleanup and teardown](#cleanup-and-teardown)
 - [References](#references)
 - [License](#license)
 
 ---
 
-## Why Post-Quantum Cryptography?
+## Why post-quantum cryptography?
 
 Current public-key algorithms (RSA, ECDSA, ECDHE) are vulnerable to future large-scale quantum computers. The "harvest now, decrypt later" (HNDL) threat means an adversary can capture encrypted traffic today and decrypt it later once a cryptographically relevant quantum computer (CRQC) exists.
 
@@ -42,7 +43,7 @@ For more detail, see the [AWS Post-Quantum Cryptography Migration Plan](https://
 
 ---
 
-## How It Works
+## How it works
 
 ```
 ESP32 Device                                    AWS Cloud
@@ -52,7 +53,7 @@ ESP32 Device                                    AWS Cloud
 |    - Auto connect         |                   |                            |
 |    - Auto reconnect       |   TLS 1.3         |   AWS IoT Core             |
 |    - Health monitoring    |   Hybrid PQC      |                            |
-|                           |   (P521 + Kyber)  |   - MQTT Broker            |
+|                           | (P-256 + ML-KEM-768)|  - MQTT Broker            |
 |  [MQTT FreeRTOS Task]     |<================>|   - Rules Engine           |
 |    - wolfSSL TLS client   |   mTLS (X.509)    |   - Device Shadow          |
 |    - PubSubClient MQTT    |   MQTT 3.1.1      |   - Lambda, DynamoDB, ...  |
@@ -75,7 +76,7 @@ If WiFi drops, the WiFi task reconnects automatically. The MQTT task detects the
 
 ---
 
-## Workshop Architecture (Containerized PQC Broker)
+## Workshop architecture (containerized PQC broker)
 
 For the re:Invent builders session, the PQC-enabled Mosquitto broker runs as a **container on ECS Fargate** behind a Network Load Balancer — there is no Raspberry Pi gateway and no AWS IoT Greengrass in the data path. ESP32 devices connect straight to the load balancer over PQC TLS 1.3, and the broker bridges their traffic up to AWS IoT Core. A separate Raspberry Pi (the "builder-pi") is used only to flash devices, not to route MQTT.
 
@@ -107,7 +108,7 @@ ESP32 Devices (x8)          AWS Cloud (us-east-1)
                             +--------------------------------------------------------------+
 ```
 
-### PQC Key Exchange: SecP256r1MLKEM768
+### PQC key exchange: SecP256r1MLKEM768
 
 Both the ESP32 and Mosquitto negotiate the **IANA-standardized** hybrid key exchange `SecP256r1MLKEM768` (code point 4587). This combines classical ECDHE P-256 with quantum-resistant ML-KEM-768 in a single TLS 1.3 handshake. The broker gets ML-KEM support from OpenSSL 3.5 with the oqs-provider.
 
@@ -121,7 +122,7 @@ Both the ESP32 and Mosquitto negotiate the **IANA-standardized** hybrid key exch
 
 An **AWS Private CA** (ACM Private CA) created by the broker stack is the single trust root for the workshop. It issues both the broker's server certificate and every device certificate, so device ↔ broker mTLS validates against one CA. The broker's cert/key and the IoT Core bridge credentials are stored in Secrets Manager.
 
-### Workshop Flow
+### Workshop flow
 
 1. **Pre-session:** Facilitator deploys the single master CloudFormation stack, runs the one-time firmware image build, and registers the builder-pi. Devices are flashed with classical firmware (OTA_0).
 2. **Attendee plugs in ESP32:** Device boots OTA_0 (classical TLS 1.3), connects to the container broker via the NLB, and appears on the dashboard.
@@ -133,7 +134,7 @@ See [`cloudformation/DEPLOYMENT.md`](cloudformation/DEPLOYMENT.md) for the full 
 
 ---
 
-## Project Structure
+## Project structure
 
 ```
 Sample-aws-iot-pqc/
@@ -184,7 +185,7 @@ Sample-aws-iot-pqc/
 
 ---
 
-## Supported Hardware
+## Supported hardware
 
 This sketch works with any ESP32 variant that has WiFi:
 
@@ -216,7 +217,7 @@ Before starting, you need:
 
 The [Arduino Cloud Editor](https://app.arduino.cc/sketches/) is a browser-based IDE that stores your sketches online. It includes most popular libraries and all board packages without downloading. However, wolfSSL requires a custom configuration for PQC, so you need to import a modified version of the library.
 
-### Step 1: Install the Arduino Cloud Agent
+### Step 1: Install the Arduino cloud agent
 
 The Cloud Agent is a browser plugin that lets the editor communicate with your USB-connected board.
 
@@ -224,14 +225,14 @@ The Cloud Agent is a browser plugin that lets the editor communicate with your U
 2. Download and install the agent for your operating system
 3. After installation, the agent runs in the background (look for its icon in your system tray)
 
-### Step 2: Select Your ESP32 Board
+### Step 2: Select your ESP32 board
 
 1. Open the [Cloud Editor](https://app.arduino.cc/sketches/)
 2. Connect your ESP32 board via USB
 3. The board and port should appear automatically in the board selector at the top of the editor
 4. If it does not appear, click the board selector and choose your ESP32 variant manually
 
-### Step 3: Prepare the wolfSSL Library with PQC Support
+### Step 3: Prepare the wolfSSL library with PQC support
 
 The Cloud Editor includes wolfSSL in its library index, but the default configuration does not enable PQC. You need to import a modified version:
 
@@ -272,7 +273,7 @@ The custom library will be stored under your Arduino Cloud account and will over
 2. Search for **PubSubClient** by Nick O'Leary
 3. Click **Include** to add it to your sketch (or it will be resolved automatically at compile time)
 
-### Step 5: Import the Sketch
+### Step 5: Import the sketch
 
 1. Download this repository as a `.zip` file
 2. In the Cloud Editor, click **Create** (top right) then **Import local file**
@@ -283,7 +284,7 @@ Alternatively, create a new sketch and copy the contents of each file manually:
 - Copy `aws_iot_pqc_esp32.ino` into the main editor
 - Click the **+** tab button to add a new file named `secrets.h`, then paste its contents
 
-### Step 6: Configure and Upload
+### Step 6: Configure and upload
 
 Follow the [Configure the Sketch](#configure-the-sketch) and [Upload and Run](#upload-and-run) sections below.
 
@@ -295,7 +296,7 @@ Follow the [Configure the Sketch](#configure-the-sketch) and [Upload and Run](#u
 
 Download and install from [https://www.arduino.cc/en/software](https://www.arduino.cc/en/software) (version 2.x recommended).
 
-### Step 2: Install the ESP32 Board Package
+### Step 2: Install the ESP32 board package
 
 1. Open **File > Preferences**
 2. In **Additional Board Manager URLs**, add:
@@ -306,7 +307,7 @@ Download and install from [https://www.arduino.cc/en/software](https://www.ardui
 4. Search for **esp32** by Espressif Systems
 5. Click **Install**
 
-### Step 3: Install Required Libraries
+### Step 3: Install required libraries
 
 Open **Sketch > Include Library > Manage Libraries** and install:
 
@@ -359,7 +360,7 @@ For the full recommended configuration (including memory tuning, disabled legacy
 
 After editing, do a **clean build**: in the Arduino IDE, hold Shift and click the Upload button, or delete the build cache folder.
 
-### Step 5: Open the Sketch
+### Step 5: Open the sketch
 
 1. Open the Arduino IDE
 2. Go to **File > Open** and navigate to `aws_iot_pqc_esp32/aws_iot_pqc_esp32.ino`
@@ -367,17 +368,17 @@ After editing, do a **clean build**: in the Arduino IDE, hold Shift and click th
 
 ---
 
-## AWS IoT Core Setup
+## AWS IoT Core setup
 
 You can set up the AWS IoT Core infrastructure either automatically using CloudFormation or manually through the console.
 
-### Option A: Automated Setup with CloudFormation (Recommended)
+### Option A: Automated setup with CloudFormation (recommended)
 
 The `cloudformation/` folder contains a template that creates everything you need in one command.
 
 **Prerequisites:** AWS CLI installed and configured with permissions for IoT, IAM, and CloudWatch.
 
-#### Step 1: Deploy the Stack
+#### Step 1: Deploy the stack
 
 ```bash
 aws cloudformation deploy \
@@ -395,7 +396,7 @@ This creates:
 - IoT Rules routing telemetry and lifecycle events to CloudWatch Logs
 - IAM Role for the IoT Rules
 
-#### Step 2: Get Your IoT Endpoint
+#### Step 2: Get your IoT endpoint
 
 ```bash
 aws iot describe-endpoint --endpoint-type iot:Data-ATS --query 'endpointAddress' --output text
@@ -403,7 +404,7 @@ aws iot describe-endpoint --endpoint-type iot:Data-ATS --query 'endpointAddress'
 
 Save this value — you will paste it into `secrets.h` as `AWS_IOT_ENDPOINT`.
 
-#### Step 3: Download the Certificate and Private Key
+#### Step 3: Download the certificate and private key
 
 The CloudFormation stack creates a certificate, but you need to retrieve the credentials:
 
@@ -447,7 +448,7 @@ aws iot attach-thing-principal --thing-name my-esp32-pqc-thing --principal $CERT
 curl -o AmazonRootCA1.pem https://www.amazontrust.com/repository/AmazonRootCA1.pem
 ```
 
-#### Step 5: View Stack Outputs
+#### Step 5: View stack outputs
 
 ```bash
 aws cloudformation describe-stacks \
@@ -467,9 +468,9 @@ aws cloudformation delete-stack --stack-name esp32-pqc-iot
 
 ---
 
-### Option B: Manual Setup via AWS Console
+### Option B: Manual setup via AWS Console
 
-#### Step 1: Create a Thing
+#### Step 1: Create a thing
 
 1. Open the [AWS IoT Console](https://console.aws.amazon.com/iot/)
 2. In the left navigation, go to **Manage > All devices > Things**
@@ -477,7 +478,7 @@ aws cloudformation delete-stack --stack-name esp32-pqc-iot
 4. Enter the Thing name: `my-esp32-pqc-thing` (must match `THINGNAME` in `secrets.h`)
 5. Leave other settings as default and click **Next**
 
-#### Step 2: Generate Certificates
+#### Step 2: Generate certificates
 
 1. On the certificate page, select **Auto-generate a new certificate**
 2. Click **Next**
@@ -494,7 +495,7 @@ aws cloudformation delete-stack --stack-name esp32-pqc-iot
 
 If you missed the Root CA download, get it from: [https://www.amazontrust.com/repository/AmazonRootCA1.pem](https://www.amazontrust.com/repository/AmazonRootCA1.pem)
 
-#### Step 3: Create and Attach an IoT Policy
+#### Step 3: Create and attach an IoT policy
 
 1. In the IoT Console, go to **Security > Policies**
 2. Click **Create policy**
@@ -543,7 +544,7 @@ Replace `REGION` with your AWS region (e.g., `us-east-1`) and `ACCOUNT_ID` with 
 6. Go to **Security > Certificates**, find the certificate you created, click on it
 7. Click **Actions > Attach policy** and select `esp32-pqc-policy`
 
-#### Step 4: Find Your IoT Endpoint
+#### Step 4: Find your IoT endpoint
 
 1. In the IoT Console, go to **Settings** (bottom of the left navigation)
 2. Copy the **Device data endpoint** (looks like `xxxxxxxxxxxxxx-ats.iot.us-east-1.amazonaws.com`)
@@ -555,7 +556,7 @@ aws iot describe-endpoint --endpoint-type iot:Data-ATS
 
 ---
 
-## Validate Environment Readiness
+## Validate environment readiness
 
 After deploying the CloudFormation stacks (or at any time before/during the workshop), run the readiness check script to confirm all AWS resources are correctly provisioned:
 
@@ -565,7 +566,7 @@ After deploying the CloudFormation stacks (or at any time before/during the work
 - Valid AWS credentials in the session (environment variables or named profile)
 - Read-only access to: IoT, Lambda, DynamoDB, AppSync, CloudFormation, CloudFront, S3, Cognito, ECS, ELB, ACM-PCA, SSM, SecretsManager
 
-### Run the Check
+### Run the check
 
 ```bash
 # From the project root
@@ -585,7 +586,7 @@ After deploying the CloudFormation stacks (or at any time before/during the work
 ./check_setup_status.sh --help
 ```
 
-### What It Checks
+### What it checks
 
 | # | Component | What's Validated |
 |---|-----------|-----------------|
@@ -602,7 +603,7 @@ After deploying the CloudFormation stacks (or at any time before/during the work
 | 11 | SSM Hybrid Instance | Builder-Pi registered and online via Systems Manager |
 | 12 | ESP32 Devices | Auto-registered devices (warning if none yet — expected pre-workshop) |
 
-### Expected Output (Pre-Workshop)
+### Expected output (pre-workshop)
 
 A fully deployed environment that hasn't yet connected the builder-Pi or ESP32 devices will show:
 
@@ -622,18 +623,18 @@ Once the builder-Pi is online and devices connect, all checks pass with zero war
 
 ---
 
-## Configure the Sketch
+## Configure the sketch
 
 Open `secrets.h` and fill in your values:
 
-### WiFi Credentials
+### WiFi credentials
 
 ```c
 #define WIFI_SSID     "MyHomeNetwork"
 #define WIFI_PASSWORD "MyWiFiPassword123"
 ```
 
-### Log Level
+### Log level
 
 ```c
 #define LOG_LEVEL  3   // 0=NONE, 1=ERROR, 2=WARN, 3=INFO, 4=DEBUG, 5=VERBOSE
@@ -641,7 +642,7 @@ Open `secrets.h` and fill in your values:
 
 Set to `4` (DEBUG) during initial setup to see detailed diagnostics. Switch to `3` (INFO) for normal operation.
 
-### AWS IoT Configuration
+### AWS IoT configuration
 
 ```c
 #define AWS_IOT_ENDPOINT "a1b2c3d4e5f6g7-ats.iot.us-east-1.amazonaws.com"
@@ -675,7 +676,7 @@ ADA5MQswCQYDVQQGEwJVUzEPMA0GA1UEChMGQW1hem9uMRkwFwYDVQQDExBBbWF6
 
 ---
 
-## Upload and Run
+## Upload and run
 
 ### Arduino Cloud IDE
 
@@ -696,7 +697,7 @@ The first compilation will take several minutes because wolfSSL with PQC is a la
 
 ---
 
-## Expected Serial Output
+## Expected serial output
 
 With `LOG_LEVEL` set to 3 (INFO):
 
@@ -743,9 +744,9 @@ I (main) ───────────────────────�
 I (mqtt) Published telemetry #2 → dt/my-esp32-pqc-thing/telemetry
 ```
 
-### Verifying the Connection in AWS
+### Verifying the connection in AWS
 
-#### Using the MQTT Test Client
+#### Using the MQTT test client
 
 1. In the AWS IoT Console, go to **Test > MQTT test client**
 2. Subscribe to `dt/my-esp32-pqc-thing/#` (wildcard for all device topics)
@@ -784,7 +785,7 @@ I (mqtt) Published telemetry #2 → dt/my-esp32-pqc-thing/telemetry
 {"action": "reboot", "delay_sec": 5}
 ```
 
-#### Using CloudWatch Logs (if IoT Rules are enabled)
+#### Using CloudWatch Logs (if IoT rules are enabled)
 
 ```bash
 # Stream telemetry logs in real time
@@ -794,7 +795,7 @@ aws logs tail /aws/iot/my-esp32-pqc-thing/telemetry --follow
 aws logs tail /aws/iot/my-esp32-pqc-thing/lifecycle --follow
 ```
 
-#### Testing the LWT (Last Will)
+#### Testing the LWT (last will)
 
 1. Subscribe to `dt/my-esp32-pqc-thing/lifecycle` in the MQTT test client
 2. Power off the ESP32 abruptly (pull the USB cable)
@@ -805,9 +806,9 @@ aws logs tail /aws/iot/my-esp32-pqc-thing/lifecycle --follow
 
 ---
 
-## Code Walkthrough
+## Code walkthrough
 
-### WolfSSLClient Class (TLS Layer)
+### WolfSSLClient class (TLS layer)
 
 The core of this sketch is the `WolfSSLClient` class, which wraps a plain Arduino `WiFiClient` (TCP only) with wolfSSL to add TLS 1.3 + PQC. It implements the Arduino `Client` interface so that `PubSubClient` can use it transparently.
 
@@ -821,14 +822,14 @@ The core of this sketch is the `WolfSSLClient` class, which wraps a plain Arduin
 6. **TLS handshake** - `wolfSSL_connect()` performs the full TLS 1.3 handshake with a 30-second timeout. The handshake loop handles non-blocking I/O (`WANT_READ`/`WANT_WRITE`) by yielding to FreeRTOS.
 7. **Verify** - On success, the protocol version and cipher suite are printed to Serial
 
-### wolfSSL I/O Callbacks
+### wolfSSL I/O callbacks
 
 wolfSSL does not know about Arduino's `WiFiClient`. The `wolfssl_send_cb` and `wolfssl_recv_cb` functions bridge the gap:
 
 - **Send callback**: Takes a buffer from wolfSSL and writes it to `WiFiClient::write()`
 - **Receive callback**: Reads from `WiFiClient::read()` into wolfSSL's buffer. Returns `WOLFSSL_CBIO_ERR_WANT_READ` when no data is available (non-blocking behavior).
 
-### wolfSSL Context Setup
+### wolfSSL context setup
 
 `setupWolfSSLContext()` runs once and creates a shared `WOLFSSL_CTX` that all connections use:
 
@@ -838,7 +839,7 @@ wolfSSL does not know about Arduino's `WiFiClient`. The `wolfssl_send_cb` and `w
 4. Loads the device certificate and private key for client authentication (mTLS)
 5. Enables peer verification (`WOLFSSL_VERIFY_PEER`)
 
-### WiFi FreeRTOS Task
+### WiFi FreeRTOS task
 
 `wifiTask()` runs on core 0 in an infinite loop:
 
@@ -847,7 +848,7 @@ wolfSSL does not know about Arduino's `WiFiClient`. The `wolfssl_send_cb` and `w
 3. Updates the `g_wifiConnected` flag (protected by a mutex for thread safety)
 4. On success, prints the IP address and RSSI
 
-### MQTT FreeRTOS Task
+### MQTT FreeRTOS task
 
 `mqttTask()` runs on core 1 (or core 0 on single-core chips):
 
@@ -859,17 +860,17 @@ wolfSSL does not know about Arduino's `WiFiClient`. The `wolfssl_send_cb` and `w
 6. In the main loop: calls `mqttClient.loop()` to process incoming messages, publishes telemetry every 30 seconds
 7. If WiFi drops, disconnects MQTT and waits for WiFi to return before reconnecting
 
-### Main Loop
+### Main loop
 
 `loop()` prints a status report every 60 seconds showing uptime, WiFi/MQTT state, and heap usage. All real work happens in the FreeRTOS tasks.
 
 ---
 
-## MQTT Best Practices
+## MQTT best practices
 
 This sketch implements several IoT MQTT best practices that are essential for production-quality device firmware.
 
-### Topic Structure
+### Topic structure
 
 Topics follow a structured hierarchy for clean IoT policy rules and Rules Engine routing:
 
@@ -891,7 +892,7 @@ The `dt/` prefix means "device telemetry" (outbound data). The `cmd/` prefix mea
 
 Topics are built dynamically from `THINGNAME` at runtime, so changing the Thing name in `secrets.h` automatically updates all topics.
 
-### Last Will and Testament (LWT)
+### Last will and testament (LWT)
 
 The MQTT LWT is a message the broker holds and publishes automatically if the device disconnects unexpectedly (network loss, crash, keepalive timeout). This sketch configures:
 
@@ -902,7 +903,7 @@ The MQTT LWT is a message the broker holds and publishes automatically if the de
 
 This means cloud services always know when a device goes offline, even if the device cannot send a graceful disconnect message.
 
-### Lifecycle Events
+### Lifecycle events
 
 On successful MQTT connection, the device publishes a retained "online" event:
 
@@ -924,7 +925,7 @@ Combined with the LWT, this creates a complete presence system:
 
 New subscribers to the lifecycle topic immediately receive the retained message showing the current device state.
 
-### Exponential Backoff with Jitter
+### Exponential backoff with jitter
 
 When a connection attempt fails, the sketch does not retry immediately or at a fixed interval. Instead, it uses exponential backoff with full jitter to prevent the "thundering herd" problem (many devices reconnecting simultaneously after an outage).
 
@@ -955,7 +956,7 @@ The random number generator is seeded with hardware entropy (analog pin noise XO
 
 For more detail on this pattern, see the [AWS Architecture Blog: Exponential Backoff and Jitter](https://aws.amazon.com/blogs/architecture/exponential-backoff-and-jitter/).
 
-### Updated IoT Policy
+### Updated IoT policy
 
 With the new topic structure, your IoT policy should be:
 
@@ -992,7 +993,7 @@ With the new topic structure, your IoT policy should be:
 
 ---
 
-## PQC Migration Techniques
+## PQC migration techniques
 
 This section describes three approaches for migrating an IoT device from classical TLS to post-quantum TLS via over-the-air (OTA) firmware update. The project includes a pre-PQC firmware (v1.0) and the PQC firmware (v2.0) to demonstrate the migration live.
 
@@ -1005,7 +1006,7 @@ Before (v1.0):  {"pqc_algorithm":"none", "tls_version":"TLS 1.2", "firmware_vers
 After  (v2.0):  {"pqc_algorithm":"SECP256R1_MLKEM768", "tls_version":"TLS 1.3", "firmware_version":"2.0.0"}
 ```
 
-### Option A: HTTPS OTA Pull (Simple) ← Used in Builders Session
+### Option A: HTTPS OTA pull (simple) ← used in builders session
 
 The device listens for an OTA command on its MQTT command topic, then downloads the new firmware binary from an HTTPS URL (e.g., S3 bucket).
 
@@ -1031,7 +1032,7 @@ The device listens for an OTA command on its MQTT command topic, then downloads 
 
 **Best for:** Demos where showing the actual download process is important.
 
-### Option B: AWS IoT Jobs (Production-Grade)
+### Option B: AWS IoT Jobs (production-grade)
 
 AWS IoT Jobs provides a managed OTA framework with status tracking, rollback, and fleet-wide deployment.
 
@@ -1056,7 +1057,7 @@ AWS IoT Jobs provides a managed OTA framework with status tracking, rollback, an
 
 **Best for:** Showing the production architecture in slides/diagrams, or longer workshops.
 
-### Option C: Dual-Partition Switch (Instant Demo)
+### Option C: Dual-partition switch (instant demo)
 
 Both firmware versions are pre-flashed to the ESP32's two OTA partitions before the demo. A command on the MQTT topic triggers an instant boot partition switch — no download needed. (This was an earlier approach; the builders session now uses the real OTA pull in Option A.)
 
@@ -1081,7 +1082,7 @@ Both firmware versions are pre-flashed to the ESP32's two OTA partitions before 
 
 **Best for:** Live stage demos where reliability and speed are critical.
 
-### Pre-Flashing for Option C
+### Pre-flashing for Option C
 
 ```bash
 # Build both sketches and export their binaries from Arduino IDE
@@ -1101,7 +1102,7 @@ The exact partition offsets depend on your partition table. The default ESP32 Ar
 
 Verify with: `esptool.py --chip esp32s3 read_flash_status`
 
-### Project Structure for Migration Demo
+### Project structure for migration demo
 
 ```
 aws_iot_pqc_esp32/              ← v2.0 (PQC) - the main sketch
@@ -1118,14 +1119,14 @@ The sketch uses **hybrid key exchange**, combining a classical and a post-quantu
 | Classical | ECDHE P-256 | ~128-bit equivalent | 65 bytes | Protection against classical attacks |
 | Post-Quantum | ML-KEM-768 (FIPS 203) | Level 3 | 1184 bytes public key | Protection against quantum attacks |
 
-### Why Hybrid?
+### Why hybrid?
 
 The hybrid approach provides defense in depth:
-- If Kyber is found to have a weakness, ECDHE P-521 still protects the session
+- If ML-KEM is found to have a weakness, ECDHE P-256 still protects the session
 - If a quantum computer breaks ECDHE, Kyber still protects the session
 - Both algorithms must be broken simultaneously to compromise the key exchange
 
-### Fallback Behavior
+### Fallback behavior
 
 The sketch tries two PQC key exchange options in order:
 
@@ -1134,7 +1135,7 @@ The sketch tries two PQC key exchange options in order:
 
 If the server does not support either hybrid option, the TLS 1.3 handshake will still succeed using classical key exchange only (the server selects the best mutually-supported option). The device is "PQC-ready" regardless.
 
-### wolfSSL Key Share Constants
+### wolfSSL key share constants
 
 This project uses the **IANA-standardized ML-KEM hybrid groups** (section B-8 of the wolfSSL manual). These are interoperable with OpenSSL 3.5+.
 
@@ -1148,9 +1149,9 @@ The legacy Kyber Round 3 constants (`WOLFSSL_P521_KYBER_LEVEL5` etc.) use experi
 
 ---
 
-## Memory and Performance
+## Memory and performance
 
-### RAM Usage
+### RAM usage
 
 The PQC handshake requires significantly more memory than classical TLS due to larger key sizes.
 
@@ -1164,7 +1165,7 @@ The PQC handshake requires significantly more memory than classical TLS due to l
 
 **Minimum recommended free heap before connecting: 80 KB**
 
-### Flash Usage
+### Flash usage
 
 | Component | Approximate Size |
 |-----------|-----------------|
@@ -1176,7 +1177,7 @@ The PQC handshake requires significantly more memory than classical TLS due to l
 
 Most ESP32 boards have 4 MB flash, so this fits comfortably.
 
-### Handshake Time
+### Handshake time
 
 | Key Exchange | Typical Handshake Time |
 |-------------|----------------------|
@@ -1186,7 +1187,7 @@ Most ESP32 boards have 4 MB flash, so this fits comfortably.
 
 Times depend on WiFi latency, server load, and ESP32 clock speed (240 MHz recommended).
 
-### Reducing Memory Usage
+### Reducing memory usage
 
 If you are tight on memory:
 
@@ -1200,7 +1201,7 @@ If you are tight on memory:
 
 ## Troubleshooting
 
-### Build Errors
+### Build errors
 
 | Error | Cause | Solution |
 |-------|-------|----------|
@@ -1211,7 +1212,7 @@ If you are tight on memory:
 | `WOLFSSL_SECP256R1_MLKEM768 was not declared` | wolfSSL version too old or ML-KEM not enabled | Update wolfSSL to 5.7.0+ and verify `user_settings.h` |
 | Compilation takes very long (5+ minutes) | Normal for first build with wolfSSL PQC | Subsequent builds use cache and are faster |
 
-### Runtime Errors
+### Runtime errors
 
 | Symptom | Cause | Solution |
 |---------|-------|----------|
@@ -1226,9 +1227,9 @@ If you are tight on memory:
 | `[MQTT] Connection failed, rc=-2` | TLS connection dropped | Usually a certificate or policy issue. Check the AWS IoT Console logs. |
 | `[MQTT] Connection failed, rc=-4` | MQTT keepalive timeout | Increase `MQTT_KEEPALIVE_SEC` or check for network instability. |
 | Stack overflow / crash / reboot loop | MQTT task stack too small | Increase `MQTT_TASK_STACK_SIZE` to 20480 or higher. |
-| `Guru Meditation Error: Core 1 panic'ed (LoadProhibited)` | Out of heap memory | Use Kyber Level 1 instead of Level 5. Use a board with PSRAM. |
+| `Guru Meditation Error: Core 1 panic'ed (LoadProhibited)` | Out of heap memory | Use a board with PSRAM, or a smaller ML-KEM parameter set (e.g. ML-KEM-512). |
 
-### Debugging Tips
+### Debugging tips
 
 1. **Enable wolfSSL debug logging**: Uncomment `wolfSSL_Debugging_ON()` in `setupWolfSSLContext()` and add `#define DEBUG_WOLFSSL` to `user_settings.h`. This produces verbose TLS handshake output.
 
@@ -1242,11 +1243,11 @@ If you are tight on memory:
 
 ---
 
-## Automatic Registration and Certificate Provisioning
+## Automatic registration and certificate provisioning
 
 This project uses manually-created certificates for simplicity (appropriate for a 60-minute builders session). However, for production deployments or larger workshops, AWS IoT supports **Fleet Provisioning by Claim** — a mechanism where devices automatically register themselves and obtain unique certificates on first boot.
 
-### How Fleet Provisioning Works
+### How Fleet Provisioning works
 
 Instead of creating a certificate per device in the AWS Console, you bake a shared "claim certificate" into the firmware. On first boot, the device uses this claim cert to connect with limited permissions, requests its own unique certificate, registers as a Thing, and then reconnects with its permanent identity.
 
@@ -1272,16 +1273,16 @@ Subsequent Boots:
 └──────────┘                              └─────────────────┘
 ```
 
-### When to Use Fleet Provisioning
+### When to use Fleet Provisioning
 
 | Scenario | Approach | Reason |
 |----------|----------|--------|
 | Builders session (60 min) | Manual certs | Simpler, fewer failure points, focus stays on PQC |
-| Workshop (2+ hours) | Fleet Provisioning | "Just flash and go" experience, no cert copy/paste |
+| Workshop (2+ hours) | Fleet Provisioning | Flash the device and it connects automatically, no cert copy/paste |
 | Production (100+ devices) | Fleet Provisioning | Scales without per-device manual steps |
 | Manufacturing line | Fleet Provisioning | Same firmware image for all units |
 
-### AWS Resources Required
+### AWS resources required
 
 To enable Fleet Provisioning, you would add these to the CloudFormation template:
 
@@ -1369,7 +1370,7 @@ ProvisioningRole:
       - arn:aws:iam::aws:policy/service-role/AWSIoTThingsRegistration
 ```
 
-### Device Firmware Changes (Sample Code)
+### Device firmware changes (sample code)
 
 Below is a reference implementation of the provisioning flow for the ESP32. This would run once on first boot, before the normal MQTT task starts.
 
@@ -1528,7 +1529,7 @@ void runProvisioningFlow(PubSubClient& mqttClient) {
 }
 ```
 
-### Integration with the Main Sketch
+### Integration with the main sketch
 
 The provisioning flow would be integrated into the MQTT task like this:
 
@@ -1556,7 +1557,7 @@ void mqttTask(void* pvParameters) {
 }
 ```
 
-### Attendee Experience with Fleet Provisioning
+### Attendee experience with Fleet Provisioning
 
 If implemented, the builders session flow would simplify to:
 
@@ -1565,23 +1566,23 @@ If implemented, the builders session flow would simplify to:
 3. Device powers on, auto-provisions in ~5-10 seconds
 4. Telemetry appears on the dashboard — no certificate copy/paste needed
 
-### Why We Don't Use It in This Session
+### Why we don't use it in this session
 
 For a 60-minute builders session, manual certificate provisioning is preferred because:
 
 - Fewer moving parts to debug in a room of attendees
 - Attendees learn the certificate model explicitly (educational value)
-- The PQC migration story stays front and center
+- The PQC migration story stays the primary focus
 - Fleet Provisioning adds ~200 lines of code unrelated to PQC
 - If provisioning fails for one attendee, it's harder to troubleshoot than a cert paste error
 
-Fleet Provisioning is the right choice for production deployments or workshops longer than 2 hours where the "just flash and go" experience justifies the additional infrastructure setup.
+Fleet Provisioning is the right choice for production deployments or workshops longer than 2 hours where the experience of flashing a device and having it connect automatically justifies the additional infrastructure setup.
 
 ---
 
-## Security Considerations
+## Security considerations
 
-### Certificate Storage
+### Certificate storage
 
 The certificates in `secrets.h` are stored in flash memory (`PROGMEM`). For production deployments, consider:
 
@@ -1589,22 +1590,48 @@ The certificates in `secrets.h` are stored in flash memory (`PROGMEM`). For prod
 - Implementing **certificate rotation** via AWS IoT Jobs or Fleet Provisioning
 - Using an **ATECC608** secure element for hardware-protected private keys
 
-### Network Security
+### Network security
 
 - The sketch uses **mutual TLS (mTLS)**: both the device and server authenticate each other with X.509 certificates
 - **Server certificate verification** is enabled (`WOLFSSL_VERIFY_PEER`), preventing man-in-the-middle attacks
 - **SNI** (Server Name Indication) is set, which is required by AWS IoT Core
 
-### PQC Readiness
+### PQC readiness
 
 - AWS IoT Core is progressively adding PQC support. If your endpoint does not yet support hybrid PQC key exchange, the TLS handshake will still succeed using classical algorithms. The device is "PQC-ready" and will automatically use PQC once the server supports it.
 - The hybrid approach means there is **no security downgrade** compared to classical TLS, only an upgrade path.
 
-### wolfSSL Licensing
+### wolfSSL licensing
 
 wolfSSL is dual-licensed under GPLv2 and a commercial license. The Kyber/ML-KEM implementation is included free for commercial customers. For open-source projects, GPLv2 applies. See [wolfSSL licensing](https://www.wolfssl.com/license/) for details.
 
 ---
+
+## Cleanup and teardown
+
+To avoid ongoing charges, tear down everything the workshop created when you are
+done.
+
+- **Full workshop deployment** (the `deploy-workshop.sh` stack — ECS Fargate,
+  ECR, CodeBuild, DynamoDB, AppSync, CloudFront, Cognito, AWS Private CA, NLB,
+  Secrets Manager, S3, Lambda, Step Functions, SSM): run the teardown script,
+  which empties the versioned S3 buckets and ECR repositories and deletes the
+  nested stacks:
+
+  ```bash
+  CONFIRM_TEARDOWN=yes ./cloudformation/teardown-workshop.sh <region> --wait
+  ```
+
+  See [`cloudformation/DEPLOYMENT.md`](cloudformation/DEPLOYMENT.md) for the full
+  teardown runbook, including the handful of resources (versioned buckets, ECR
+  images, the IoT Thing Type) that need attention around deletion.
+
+- **Simple single-device stack** (the `esp32-pqc-iot` CloudFormation stack from
+  the "AWS IoT Core Setup" section above): delete it with
+
+  ```bash
+  aws cloudformation delete-stack --stack-name esp32-pqc-iot
+  ```
 
 ## References
 
@@ -1615,7 +1642,7 @@ wolfSSL is dual-licensed under GPLv2 and a commercial license. The Kyber/ML-KEM 
 - [AWS IoT ESP32 Arduino Examples (GitHub)](https://github.com/aws-samples/aws-iot-esp32-arduino-examples) - Official AWS sample sketches for ESP32
 - [NIST Post-Quantum Cryptography Standards](https://csrc.nist.gov/projects/post-quantum-cryptography) - FIPS 203 (ML-KEM), FIPS 204 (ML-DSA)
 - [Arduino Cloud Editor Documentation](https://docs.arduino.cc/arduino-cloud/guides/cloud-editor/) - Guide to using the Arduino Cloud IDE
-- [PubSubClient Library](https://pubsubclient.knolleary.net/) - MQTT client documentation
+- [PubSubClient Library](https://github.com/knolleary/pubsubclient) - MQTT client documentation
 
 ---
 

@@ -542,12 +542,13 @@ Outputs:
     Description: IoT Thing ARN
     Value: !Sub 'arn:aws:iot:${AWS::Region}:${AWS::AccountId}:thing/${ThingName}'
 
-  IoTEndpoint:
+  IoTEndpointCommand:
     Description: >
-      IoT Data-ATS endpoint. Use this as AWS_IOT_ENDPOINT in secrets.h.
-      Note: This is the account-level endpoint, retrieve it with:
-      aws iot describe-endpoint --endpoint-type iot:Data-ATS
-    Value: !Sub '${AWS::AccountId}-ats.iot.${AWS::Region}.amazonaws.com'
+      Your account's IoT Data-ATS endpoint is NOT derivable from the account ID
+      (it uses a random account-specific prefix). Retrieve the real value with
+      the command in this output's Value, then use it as AWS_IOT_ENDPOINT in
+      secrets.h.
+    Value: !Sub 'aws iot describe-endpoint --endpoint-type iot:Data-ATS --region ${AWS::Region} --query endpointAddress --output text'
 
   CertificateArn:
     Description: >

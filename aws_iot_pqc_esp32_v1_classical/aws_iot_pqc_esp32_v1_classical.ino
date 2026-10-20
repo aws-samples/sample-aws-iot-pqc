@@ -1,11 +1,13 @@
 /*
- * aws_iot_pqc_esp32.ino
+ * aws_iot_pqc_esp32_v1_classical.ino
  *
  * ESP32 Arduino sketch demonstrating a connection to AWS IoT Core using
- * post-quantum cryptography (PQC) via wolfSSL with TLS 1.3.
+ * CLASSICAL TLS 1.3 via wolfSSL. This is the v1 baseline firmware (Step 1 of
+ * the migration story): it performs a classical key exchange (no PQC) so the
+ * workshop can later migrate it to the hybrid ML-KEM firmware over OTA.
  *
  * Key features:
- *   - Hybrid PQC key exchange: P-521 + Kyber (ML-KEM) Level 5
+ *   - Classical TLS 1.3 key exchange (ECDHE P-256 / X25519 — no PQC)
  *   - TLS 1.3 mutual authentication (mTLS) with X.509 certificates
  *   - WiFi managed as a FreeRTOS task with automatic recovery
  *   - MQTT publish/subscribe managed as a separate FreeRTOS task
@@ -82,7 +84,7 @@ static const char* TAG_OTA     = "ota";
 
 // ─── FreeRTOS Task Configuration ────────────────────────────────────────────
 #define WIFI_TASK_STACK_SIZE    4096
-#define MQTT_TASK_STACK_SIZE    32768   // PQC handshake needs significant stack
+#define MQTT_TASK_STACK_SIZE    32768   // TLS handshake needs significant stack
 #define BLINK_TASK_STACK_SIZE   2048
 #define OTA_TASK_STACK_SIZE     32768   // OTA download over TLS needs large stack
 #define WIFI_TASK_PRIORITY      1
@@ -452,9 +454,9 @@ public:
         }
 
         // Step 6: Perform TLS 1.3 handshake with timeout
-        ESP_LOGI(TAG_TLS, "Starting TLS 1.3 PQC handshake...");
+        ESP_LOGI(TAG_TLS, "Starting classical TLS 1.3 handshake...");
         unsigned long handshakeStart = millis();
-        const unsigned long handshakeTimeout = 30000; // 30s for PQC handshake
+        const unsigned long handshakeTimeout = 30000; // 30s for TLS handshake
 
         do {
             ret = wolfSSL_connect(_ssl);
@@ -712,7 +714,7 @@ bool setupWolfSSLContext() {
     wolfSSL_CTX_SetIOSend(g_wolfCtx, wolfssl_send_cb);
     ESP_LOGD(TAG_WOLFSSL, "I/O callbacks registered at context level");
 
-    ESP_LOGI(TAG_WOLFSSL, "TLS 1.3 PQC context ready (heap free: %u bytes)", ESP.getFreeHeap());
+    ESP_LOGI(TAG_WOLFSSL, "Classical TLS 1.3 context ready (heap free: %u bytes)", ESP.getFreeHeap());
     return true;
 }
 

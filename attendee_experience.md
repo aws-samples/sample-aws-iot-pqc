@@ -1,6 +1,6 @@
 This is being built for a workshop at re:Invent.  The time limit is 60 minutes, the attendees work on tables of 8 people with 1 AWS staff member as the facilitator.
 
-The user will walk into the room and the single AWS account will already be created by the facilitator.  The AWS account will have all the AWS cloud side configuration created to facilitate the ESP-32 IoT devices connecting to AWS IOT Core.  The AWS Account will also have a dashboard app that shows the state of the IoT devices connected to it, so the attendees can see the state of their device without needing to login.  
+The user will walk into the room and the single AWS account will already be created by the facilitator.  The AWS account will have all the AWS cloud side configuration created to facilitate the ESP-32 IoT devices connecting to AWS IoT Core.  The AWS Account will also have a dashboard app that shows the state of the IoT devices connected to it, so the attendees can see the state of their device without needing to login.  
 
 The single account will have a builder-pi, that is a raspberry pi, that will have the tool chain for deploying the fireware v0.1.0, and it will be running the gui app for detecting and flashing devices.  The single account will have the mosquitto broker container running, that is ready for PQC and classical coinnections from the IoT devices.  The certificates will be provisioned by the Private CA, and devices and the broker will have the CA in common.
 

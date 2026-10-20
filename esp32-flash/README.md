@@ -1,10 +1,10 @@
-# ESP32 Dual-Boot Flash Guide
+# ESP32 dual-boot flash guide
 
 Instructions for flashing the XIAO ESP32S3 devices with both firmware images (classical TLS on partition 0, PQC TLS on partition 1) for the workshop.
 
 This is done on **your laptop** before the workshop session. Each device takes about 30 seconds to flash.
 
-## Prerequisites (Laptop Setup)
+## Prerequisites (laptop setup)
 
 ### 1. Python 3.8+
 
@@ -50,15 +50,17 @@ Install required libraries via **Sketch > Include Library > Manage Libraries**:
 ### 4. Clone this repository
 
 ```bash
-git clone https://gitlab.aws.dev/Sample-aws-iot-pqc.git
-cd Sample-aws-iot-pqc
+# Clone into an explicit directory name so the next step's `cd` always matches,
+# regardless of the repository name's casing.
+git clone https://gitlab.aws.dev/Sample-aws-iot-pqc.git pqc-workshop
+cd pqc-workshop
 ```
 
 ### 5. USB driver (if needed)
 
 The XIAO ESP32S3 uses a USB CDC serial interface. Most systems detect it automatically. If not:
 - **macOS/Linux:** Should work out of the box (shows as `/dev/ttyACM0` or `/dev/cu.usbmodem*`)
-- **Windows:** Install the [CP210x driver](https://www.silabs.com/developers/usb-to-uart-bridge-vcp-drivers) if the device doesn't appear in Device Manager
+- **Windows:** Install the [CP210x driver](https://www.silabs.com/products/development-tools/software/usb-to-uart-bridge-vcp-drivers) if the device doesn't appear in Device Manager
 
 ## Compilation
 
@@ -95,7 +97,7 @@ You need to compile both firmwares into `.bin` files. The Arduino IDE does this 
 
 The PQC firmware takes **5-10 minutes** on first compile because wolfSSL with ML-KEM is a large library. Subsequent builds are much faster (cached).
 
-## Flashing a Single Device
+## Flashing a single device
 
 ```bash
 cd esp32-flash
@@ -113,7 +115,7 @@ cd esp32-flash
 
 If the device doesn't enter download mode automatically, hold the **BOOT** button while pressing **RESET** (or while plugging in USB).
 
-## Batch Flashing (Workshop Prep)
+## Batch flashing (workshop prep)
 
 For flashing 100 devices, each with unique credentials, use the batch script:
 
@@ -127,14 +129,20 @@ scp -r pi@<raspberry-pi-ip>:~/Sample-aws-iot-pqc/greengrass/certs/output/devices
 scp pi@<raspberry-pi-ip>:~/Sample-aws-iot-pqc/greengrass/certs/output/ca.crt ./device-certs/
 ```
 
-### Step 2: Generate per-device secrets.h files
+### Step 2: Generate the shared secrets.h file
+
+All devices share one firmware binary and one fleet certificate — device
+identity is derived from the ESP32 MAC address at runtime — so only a single
+`secrets.h` is needed for the whole fleet. The script takes the broker endpoint
+and (optionally) the directory holding the copied certificates:
 
 ```bash
-# Generate 100 secrets.h files (one per device)
-./generate-secrets.sh <raspberry-pi-ip> 100
+# Usage: ./generate-secrets.sh <broker-ip> [certs-dir]
+WIFI_SSID=reinvent-iot WIFI_PASSWORD=aws2026 ./generate-secrets.sh <broker-ip> ./device-certs
 ```
 
-This creates `secrets/esp32-pqc-device-001/secrets.h` through `secrets/esp32-pqc-device-100/secrets.h`, each with the correct device name, certificates, and broker IP.
+This creates one `secrets.h` containing the shared fleet certificate, key, CA,
+WiFi credentials, and broker endpoint — used to flash every device.
 
 ### Step 3: Compile per-device firmware
 
@@ -163,7 +171,7 @@ For the workshop, all devices share the same firmware binary — only `secrets.h
 # (auto-detects port, picks next unflashed device number)
 ```
 
-## Partition Layout
+## Partition layout
 
 The custom partition table (`partitions_pqc_workshop.csv`) divides the 8MB flash:
 
@@ -198,7 +206,7 @@ The custom partition table (`partitions_pqc_workshop.csv`) divides the 8MB flash
 | Device boots but doesn't connect | Wrong broker IP or certs | Check `secrets.h` values match your Pi setup |
 | `WOLFSSL_SECP256R1_MLKEM768 was not declared` | wolfSSL not configured for PQC | Copy `wolfssl_user_settings.h` into library's `user_settings.h` |
 
-## Verification After Flashing
+## Verification after flashing
 
 After flashing, the device should:
 
