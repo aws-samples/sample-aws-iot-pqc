@@ -3,5 +3,6 @@
   "region": "us-east-1",
   "firmware_bucket": "REPLACE_WITH_FIRMWARE_BUCKET",
   "serial_baud_rate": 115200,
-  "gui_port": 8080
+  "gui_port": 8080,
+  "gui_host": "0.0.0.0"
 }

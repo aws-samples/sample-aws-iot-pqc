@@ -26,6 +26,7 @@ FROM public.ecr.aws/ubuntu/ubuntu:22.04
 ENV DEBIAN_FRONTEND=noninteractive
 
 # Build toolchain for compiling OpenSSL from source + python/boto3 for the issuer.
+# nosemgrep: remove-package-cache -- false positive: this RUN cleans the apt cache in-layer (rm -rf /var/lib/apt/lists/* on its last line)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential perl wget ca-certificates python3 python3-pip \
     && rm -rf /var/lib/apt/lists/*

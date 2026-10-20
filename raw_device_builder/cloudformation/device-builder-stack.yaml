@@ -141,15 +141,15 @@ Resources:
       cfn_nag:
         rules_to_suppress:
           - id: W11
-            reason: "logs:Create*/PutLogEvents and ecr:GetAuthorizationToken require Resource:'*'; GetAuthorizationToken does not support resource-level scoping"
+            reason: "ecr:GetAuthorizationToken does not support resource-level scoping and requires Resource:'*' (logs are now scoped to the CodeBuild log group)"
           - id: W28
             reason: "workshop depends on fixed resource names referenced across stacks/scripts"
       checkov:
         skip:
           - id: CKV_AWS_111
-            comment: "logs:Create*/PutLogEvents and ecr:GetAuthorizationToken require Resource:'*'; GetAuthorizationToken does not support resource-level scoping"
+            comment: "ecr:GetAuthorizationToken does not support resource-level scoping and requires Resource:'*' (logs are now scoped to the CodeBuild log group)"
           - id: CKV_AWS_109
-            comment: "logs:Create*/PutLogEvents and ecr:GetAuthorizationToken require Resource:'*'; GetAuthorizationToken does not support resource-level scoping"
+            comment: "ecr:GetAuthorizationToken does not support resource-level scoping and requires Resource:'*' (logs are now scoped to the CodeBuild log group)"
     Properties:
       RoleName: pqc-workshop-image-builder
       AssumeRolePolicyDocument:
@@ -169,7 +169,9 @@ Resources:
                   - logs:CreateLogGroup
                   - logs:CreateLogStream
                   - logs:PutLogEvents
-                Resource: '*'
+                Resource:
+                  - !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/pqc-workshop-build-image'
+                  - !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/pqc-workshop-build-image:*'
               - Effect: Allow
                 Action:
                   - ecr:GetAuthorizationToken
@@ -271,6 +273,10 @@ Resources:
         rules_to_suppress:
           - id: W28
             reason: "workshop depends on fixed resource names referenced across stacks/scripts"
+      checkov:
+        skip:
+          - id: CKV_AWS_119
+            comment: "encrypted with the AWS-owned/managed DynamoDB key (SSEEnabled); a customer-managed CMK is out of scope for the workshop sample"
     Properties:
       TableName: pqc-workshop-device-registry
       BillingMode: PAY_PER_REQUEST
@@ -1222,6 +1228,8 @@ Resources:
         rules_to_suppress:
           - id: W45
             reason: "workshop sample internal API, no usage plan/access logging in scope"
+          - id: W68
+            reason: "workshop sample internal API (AWS_IAM auth); no usage plan in scope"
     DependsOn:
       - RegisterMethod
       - DeregisterMethod
@@ -1264,15 +1272,15 @@ Resources:
       cfn_nag:
         rules_to_suppress:
           - id: W11
-            reason: "logs:Create*/PutLogEvents and ecr:GetAuthorizationToken require Resource:'*'; GetAuthorizationToken does not support resource-level scoping"
+            reason: "ecr:GetAuthorizationToken does not support resource-level scoping and requires Resource:'*' (logs are now scoped to the CodeBuild log group)"
           - id: W28
             reason: "workshop depends on fixed resource names referenced across stacks/scripts"
       checkov:
         skip:
           - id: CKV_AWS_111
-            comment: "logs:Create*/PutLogEvents and ecr:GetAuthorizationToken require Resource:'*'; GetAuthorizationToken does not support resource-level scoping"
+            comment: "ecr:GetAuthorizationToken does not support resource-level scoping and requires Resource:'*' (logs are now scoped to the CodeBuild log group)"
           - id: CKV_AWS_109
-            comment: "logs:Create*/PutLogEvents and ecr:GetAuthorizationToken require Resource:'*'; GetAuthorizationToken does not support resource-level scoping"
+            comment: "ecr:GetAuthorizationToken does not support resource-level scoping and requires Resource:'*' (logs are now scoped to the CodeBuild log group)"
     Properties:
       RoleName: pqc-workshop-codebuild-firmware
       AssumeRolePolicyDocument:
@@ -1292,7 +1300,9 @@ Resources:
                   - logs:CreateLogGroup
                   - logs:CreateLogStream
                   - logs:PutLogEvents
-                Resource: '*'
+                Resource:
+                  - !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/pqc-workshop-firmware-build'
+                  - !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/pqc-workshop-firmware-build:*'
               - Effect: Allow
                 Action:
                   - s3:PutObject

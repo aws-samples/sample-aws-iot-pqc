@@ -1,10 +1,22 @@
-# ESP32 Dual-Boot Flash Guide
+# ESP32 dual-boot flash guide (legacy / alternative manual path)
 
-Instructions for flashing the XIAO ESP32S3 devices with both firmware images (classical TLS on partition 0, PQC TLS on partition 1) for the workshop.
+> **This is not the workshop flow.** The workshop flashes devices through the
+> **Builder-Pi GUI**, which registers the device, builds its firmware in
+> CodeBuild, and flashes it over USB in one click — see
+> [`cloudformation/DEPLOYMENT.md`](../cloudformation/DEPLOYMENT.md) (Builder-Pi
+> provisioning) and the "Register and flash the first device" step. Use that
+> path for the workshop.
+>
+> This guide documents an **alternative, manual laptop-based** way to pre-flash
+> devices with `esptool` directly (no Builder-Pi, no CodeBuild). It is kept for
+> advanced/offline use. Where it differs from the current architecture it is
+> called out inline.
 
-This is done on **your laptop** before the workshop session. Each device takes about 30 seconds to flash.
+Instructions for flashing the XIAO ESP32S3 devices with both firmware images (classical TLS on partition 0, PQC TLS on partition 1).
 
-## Prerequisites (Laptop Setup)
+This is done on **your laptop**. Each device takes about 30 seconds to flash.
+
+## Prerequisites (laptop setup)
 
 ### 1. Python 3.8+
 
@@ -50,15 +62,17 @@ Install required libraries via **Sketch > Include Library > Manage Libraries**:
 ### 4. Clone this repository
 
 ```bash
-git clone https://gitlab.aws.dev/Sample-aws-iot-pqc.git
-cd Sample-aws-iot-pqc
+# Clone into an explicit directory name so the next step's `cd` always matches,
+# regardless of the repository name's casing.
+git clone https://github.com/aws-samples/sample-aws-iot-pqc.git pqc-workshop
+cd pqc-workshop
 ```
 
 ### 5. USB driver (if needed)
 
 The XIAO ESP32S3 uses a USB CDC serial interface. Most systems detect it automatically. If not:
 - **macOS/Linux:** Should work out of the box (shows as `/dev/ttyACM0` or `/dev/cu.usbmodem*`)
-- **Windows:** Install the [CP210x driver](https://www.silabs.com/developers/usb-to-uart-bridge-vcp-drivers) if the device doesn't appear in Device Manager
+- **Windows:** Install the [CP210x driver](https://www.silabs.com/products/development-tools/software/usb-to-uart-bridge-vcp-drivers) if the device doesn't appear in Device Manager
 
 ## Compilation
 
@@ -71,7 +85,7 @@ You need to compile both firmwares into `.bin` files. The Arduino IDE does this 
 3. Select partition scheme: **Tools > Partition Scheme > No OTA (Large APP)**
    (This is just for compilation — we use our own partition table when flashing)
 4. Edit `secrets.h`:
-   - Set `MQTT_BROKER_ENDPOINT` to the Raspberry Pi's IP address
+   - Set `MQTT_BROKER_ENDPOINT` to the broker's NLB DNS name (the `BrokerEndpoint` stack output)
    - Paste the workshop CA cert, device cert, and device key
    (For batch flashing, you'll create a script that patches secrets.h per device — see below)
 5. Click **Sketch > Export Compiled Binary** (or Ctrl+Alt+S)
@@ -95,7 +109,7 @@ You need to compile both firmwares into `.bin` files. The Arduino IDE does this 
 
 The PQC firmware takes **5-10 minutes** on first compile because wolfSSL with ML-KEM is a large library. Subsequent builds are much faster (cached).
 
-## Flashing a Single Device
+## Flashing a single device
 
 ```bash
 cd esp32-flash
@@ -113,28 +127,43 @@ cd esp32-flash
 
 If the device doesn't enter download mode automatically, hold the **BOOT** button while pressing **RESET** (or while plugging in USB).
 
-## Batch Flashing (Workshop Prep)
+## Batch flashing (workshop prep)
 
 For flashing 100 devices, each with unique credentials, use the batch script:
 
-### Step 1: Copy device certificates from the Pi
+### Step 1: Obtain the device certificate and CA
 
-The certificates were generated on the Raspberry Pi by `greengrass/certs/generate-broker-certs.sh`. Copy them to your laptop:
-
-```bash
-# From your laptop
-scp -r pi@<raspberry-pi-ip>:~/Sample-aws-iot-pqc/greengrass/certs/output/devices ./device-certs/
-scp pi@<raspberry-pi-ip>:~/Sample-aws-iot-pqc/greengrass/certs/output/ca.crt ./device-certs/
-```
-
-### Step 2: Generate per-device secrets.h files
+Device and broker certificates are issued by the workshop's **AWS Private CA**
+(created by the broker stack) and stored in **AWS Secrets Manager** — they are
+**not** generated on the Pi. For this manual path, retrieve a device
+certificate/key and the CA certificate into a local `./device-certs/` directory
+from Secrets Manager (the secret names are shown in the broker/device-builder
+stack outputs), e.g.:
 
 ```bash
-# Generate 100 secrets.h files (one per device)
-./generate-secrets.sh <raspberry-pi-ip> 100
+mkdir -p ./device-certs
+aws secretsmanager get-secret-value --secret-id <device-cert-secret> \
+  --query SecretString --output text > ./device-certs/device.crt
+aws secretsmanager get-secret-value --secret-id <device-key-secret> \
+  --query SecretString --output text > ./device-certs/device.key
+aws secretsmanager get-secret-value --secret-id <ca-cert-secret> \
+  --query SecretString --output text > ./device-certs/ca.crt
 ```
 
-This creates `secrets/esp32-pqc-device-001/secrets.h` through `secrets/esp32-pqc-device-100/secrets.h`, each with the correct device name, certificates, and broker IP.
+### Step 2: Generate the shared secrets.h file
+
+All devices share one firmware binary and one fleet certificate — device
+identity is derived from the ESP32 MAC address at runtime — so only a single
+`secrets.h` is needed for the whole fleet. The script takes the broker endpoint
+and (optionally) the directory holding the copied certificates:
+
+```bash
+# Usage: ./generate-secrets.sh <broker-ip> [certs-dir]
+WIFI_SSID=reinvent-iot WIFI_PASSWORD=aws2026 ./generate-secrets.sh <broker-ip> ./device-certs
+```
+
+This creates one `secrets.h` containing the shared fleet certificate, key, CA,
+WiFi credentials, and broker endpoint — used to flash every device.
 
 ### Step 3: Compile per-device firmware
 
@@ -163,7 +192,7 @@ For the workshop, all devices share the same firmware binary — only `secrets.h
 # (auto-detects port, picks next unflashed device number)
 ```
 
-## Partition Layout
+## Partition layout
 
 The custom partition table (`partitions_pqc_workshop.csv`) divides the 8MB flash:
 
@@ -195,16 +224,17 @@ The custom partition table (`partitions_pqc_workshop.csv`) divides the 8MB flash
 | `No serial port found` | USB driver missing or cable issue | Try different cable (data cable, not charge-only) |
 | `A fatal error occurred: Packet content transfer incomplete` | Flaky USB connection | Use shorter cable, try different port |
 | `Image too large for partition` | Firmware exceeds 3.5 MB | Remove debug symbols, check wolfSSL config |
-| Device boots but doesn't connect | Wrong broker IP or certs | Check `secrets.h` values match your Pi setup |
+| Device boots but doesn't connect | Wrong broker endpoint or certs | Check `secrets.h` — `MQTT_BROKER_ENDPOINT` must be the broker NLB DNS name and the cert/key/CA must be the Private CA-issued set |
 | `WOLFSSL_SECP256R1_MLKEM768 was not declared` | wolfSSL not configured for PQC | Copy `wolfssl_user_settings.h` into library's `user_settings.h` |
 
-## Verification After Flashing
+## Verification after flashing
 
 After flashing, the device should:
 
 1. Power on (LED blinks)
 2. Connect to WiFi
-3. Connect to Mosquitto on the Pi via TLS 1.2 (classical firmware)
+3. Connect to the ECS Fargate Mosquitto broker (via the NLB) over TLS 1.3 — a
+   classical key exchange for the classical firmware, hybrid ML-KEM for the PQC firmware
 4. Appear on the dashboard within 30 seconds
 
 Open the Arduino Serial Monitor (115200 baud) to see connection logs if troubleshooting.

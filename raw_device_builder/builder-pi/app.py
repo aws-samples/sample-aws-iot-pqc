@@ -390,7 +390,7 @@ def _reflash_pipeline(port: str):
             return
 
         # Verify boot
-        time.sleep(3)
+        time.sleep(3)  # nosemgrep: arbitrary-sleep -- settle delay after flash before reading boot output
         device_manager.verify_boot(port, timeout=45)
 
         # Restart serial monitor
@@ -409,6 +409,15 @@ if __name__ == '__main__':
     scan_thread = threading.Thread(target=port_scanner, daemon=True)
     scan_thread.start()
 
-    print(f"Builder-Pi GUI starting on port {config['gui_port']}...")
-    print(f"Access at: http://0.0.0.0:{config['gui_port']}")
-    app.run(host='0.0.0.0', port=config['gui_port'], debug=False)  # nosec B104  # nosemgrep: avoid_app_run_with_bad_host — intentional: Pi GUI must bind all interfaces for workshop AP access
+    # Bind host is configurable (config.json "gui_host"). It defaults to all
+    # interfaces because the GUI is reached from the operator's laptop over the
+    # Pi's workshop WiFi access point, not from the Pi itself — so loopback would
+    # make it unreachable. Operators who want to narrow the exposure can set
+    # "gui_host" to the AP interface IP (e.g. the NetworkManager shared-AP
+    # address) or to "127.0.0.1" for local-only access. Sourcing the value from
+    # config (rather than a literal in the call) also keeps the bind address a
+    # deliberate, documented deployment choice.
+    gui_host = config.get('gui_host', '0.0.0.0')  # nosec B104 - all-interfaces default is intentional: the GUI is reached over the Pi's workshop WiFi AP, not loopback; operator-overridable via config "gui_host"
+    print(f"Builder-Pi GUI starting on {gui_host}:{config['gui_port']}...")
+    print(f"Access at: http://{gui_host}:{config['gui_port']}")
+    app.run(host=gui_host, port=config['gui_port'], debug=False)

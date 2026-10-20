@@ -1,4 +1,4 @@
-# Raw Device Builder — Production Device Registration Pipeline
+# Raw device builder — production device registration pipeline
 
 ## Overview
 
@@ -48,7 +48,7 @@ This module simulates a real-world IoT production line scenario. A "builder-pi" 
 └──────────────────────────────────────────────────────────────────────┘
 ```
 
-## Firmware Lifecycle
+## Firmware lifecycle
 
 | Phase | Mechanism | Description |
 |-------|-----------|-------------|
@@ -67,11 +67,11 @@ This module simulates a real-world IoT production line scenario. A "builder-pi" 
 
 2. **AWS Account** with permissions to deploy CloudFormation stack
 
-3. **Git repository** containing firmware source (this GitLab repo by default)
+3. **Git repository** containing firmware source (this GitHub repo by default)
 
 ## Setup
 
-### 1. Deploy AWS Infrastructure
+### 1. Deploy AWS infrastructure
 
 ```bash
 aws cloudformation deploy \
@@ -79,8 +79,8 @@ aws cloudformation deploy \
   --stack-name pqc-workshop-device-builder \
   --capabilities CAPABILITY_NAMED_IAM \
   --parameter-overrides \
-    GitRepoUrl=<your-gitlab-repo-url> \
-    FirmwareBucketName=pqc-workshop-firmware-087195661091
+    GitRepoUrl=<your-github-repo-url> \
+    FirmwareBucketName=<your-unique-firmware-bucket-name>
 ```
 
 ### 2. Setup Builder-Pi
@@ -105,7 +105,7 @@ unzip builder-pi-bundle.zip && cd builder-pi-bundle && sudo ./setup-ssm.sh
 http://<builder-pi-ip>:8080
 ```
 
-## Directory Structure
+## Directory structure
 
 ```
 raw_device_builder/
@@ -135,7 +135,7 @@ raw_device_builder/
         └── ota_updater.ino            # Firmware with S3 OTA download via wolfSSL
 ```
 
-## Security Notes
+## Security notes
 
 - Each device gets a unique X.509 certificate (not fleet-shared)
 - IoT policies are scoped per-device (connect/pub/sub only their topics)

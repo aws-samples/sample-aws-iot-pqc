@@ -16,7 +16,7 @@ RUN printf 'Acquire::Retries "5";\nAcquire::http::Timeout "30";\nAcquire::https:
     build-essential git cmake pkg-config \
     libcjson-dev libsystemd-dev \
     python3 python3-pip curl ca-certificates \
-    && rm -rf /var/lib/apt/lists/*
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # ─── Build OpenSSL 3.5 with PQC support ─────────────────────────────────────
 WORKDIR /tmp
@@ -59,7 +59,7 @@ RUN git clone --depth 1 --branch 0.6.1 https://github.com/open-quantum-safe/oqs-
 # This ensures the compiler finds openssl headers in the standard location,
 # and links ONLY against our PQC-enabled OpenSSL 3.5.
 RUN apt-get update && apt-get install -y --no-install-recommends libssl-dev && \
-    rm -rf /var/lib/apt/lists/* && \
+    apt-get clean && rm -rf /var/lib/apt/lists/* && \
     rm -rf /usr/include/openssl && \
     ln -sf /opt/openssl-pqc/include/openssl /usr/include/openssl && \
     rm -f /usr/lib/x86_64-linux-gnu/libssl.so* /usr/lib/x86_64-linux-gnu/libcrypto.so* && \
@@ -98,7 +98,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3 python3-pip curl ca-certificates libcjson1 \
     && pip3 install --no-cache-dir awscli boto3 \
-    && rm -rf /var/lib/apt/lists/*
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # Copy built artifacts
 COPY --from=builder /opt/openssl-pqc /opt/openssl-pqc
@@ -130,19 +130,39 @@ RUN mkdir -p /opt/openssl-pqc/ssl && \
     printf '[openssl_init]\nproviders = provider_sect\n\n[provider_sect]\ndefault = default_sect\noqsprovider = oqs_sect\n\n[default_sect]\nactivate = 1\n\n[oqs_sect]\nactivate = 1\nmodule = /opt/openssl-pqc/lib/ossl-modules/oqsprovider.so\n' \
     > /opt/openssl-pqc/ssl/openssl.cnf
 
-# Create mosquitto directories
-RUN mkdir -p /mosquitto/config/conf.d /mosquitto/data /mosquitto/log /mosquitto/certs
+# Create a non-root runtime user and the mosquitto directory tree.
+# The container runs as this user (see USER below). The entrypoint writes
+# TLS material fetched from Secrets Manager into /mosquitto/certs/{,bridge,mldsa}
+# and the generated bridge config into /mosquitto/config/conf.d, so the whole
+# /mosquitto tree is owned by the runtime user. Ports 8883/8884 are >1024, so no
+# privileged bind (and no CAP_NET_BIND_SERVICE) is required. AWS access is via
+# the ECS task role, which is independent of the Linux user.
+RUN groupadd -r mosquitto && \
+    useradd -r -g mosquitto -d /mosquitto -s /usr/sbin/nologin mosquitto && \
+    mkdir -p /mosquitto/config/conf.d /mosquitto/data /mosquitto/log \
+             /mosquitto/certs/bridge /mosquitto/certs/mldsa && \
+    chown -R mosquitto:mosquitto /mosquitto
 
-# Copy config and entrypoint
-COPY mosquitto.conf /mosquitto/config/mosquitto.conf
-COPY entrypoint.sh /entrypoint.sh
+# HOME must be set for the non-root user so the AWS CLI has a writable home for
+# its config/cache (otherwise it can fail with "$HOME is not defined").
+ENV HOME=/mosquitto
+
+# Copy config and entrypoint (owned by the runtime user).
+COPY --chown=mosquitto:mosquitto mosquitto.conf /mosquitto/config/mosquitto.conf
+COPY --chown=mosquitto:mosquitto entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
-EXPOSE 8883
+EXPOSE 8883 8884
 
-# checkov:skip=CKV_DOCKER_3:container requires root — entrypoint.sh fetches TLS
-# certs/keys from Secrets Manager and writes bridge config into root-owned
-# /mosquitto/{certs,config/conf.d} dirs created above, before exec'ing mosquitto.
+# Run as the non-root runtime user. The /mosquitto tree is owned by this user
+# (above), ports 8883/8884 are unprivileged, and AWS access uses the ECS task
+# role — so the healthcheck, the entrypoint's cert fetch + bridge-config write,
+# and mosquitto itself all run without root. USER is placed before HEALTHCHECK
+# and ENTRYPOINT so it is the last privilege-setting directive and applies to
+# every instruction that follows (and so static scanners see a non-root USER
+# governing the final CMD/HEALTHCHECK).
+USER mosquitto
+
 # TCP-connect check on the device-facing TLS listener (8883). 8883 is raw
 # MQTT-over-TLS, not HTTP, so we test only that the port accepts a connection
 # using bash's /dev/tcp (bash is present; no netcat/mosquitto_sub in this image).

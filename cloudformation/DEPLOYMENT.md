@@ -1,4 +1,4 @@
-# PQC Workshop — Deployment Guide
+# PQC workshop — deployment guide
 
 The workshop deploys from a **single master CloudFormation template**,
 `cloudformation/pqc-workshop-main.yaml`, which nests the workshop stacks:
@@ -15,6 +15,8 @@ pqc-workshop-main.yaml (master)
 ├── SSMActivationStack   — Builder-Pi SSM hybrid activation
 └── DashboardStack       — AppSync/DynamoDB/Cognito backend + v2 dashboard hosting
 ```
+
+![Deployment pipeline: the master CloudFormation stack nests the network, broker, device-builder, device, SSM-activation, and dashboard stacks; CodeBuild builds the broker and firmware container images and the dashboard frontend; the Builder-Pi is provisioned over SSM and flashes devices](../docs/images/deployment-pipeline.png)
 
 CloudFormation owns the ordering: the broker consumes the VPC from
 `NetworkStack` (when creating one), and `DeviceBuilderStack` references
@@ -147,7 +149,7 @@ served from CloudFront.
 > image build succeeds, just re-run register/flash — no need to re-register.
 
 `deploy-workshop.sh` has already staged the build source, so start the build (the
-project name is the `FirmwareImageBuilderProject` stack output —
+project name is the `ImageBuilderProjectName` stack output —
 `pqc-workshop-build-image`):
 
 ```bash
@@ -392,7 +394,7 @@ the classical 8883 path.
 Step 2 lets a device move its **certificate** from classical ECDSA to a
 post-quantum **ML-DSA-44** signature (FIPS 204), on top of the Step 1 ML-KEM key
 exchange. The classical and PQC paths run in parallel — nothing is a flag-day
-cutover — so a device migrates over the existing OTA process.
+(a single all-at-once cutover) — so a device migrates over the existing OTA process.
 
 There are three firmware variants, each built on demand and delivered over OTA:
 
@@ -458,7 +460,7 @@ and secrets over private AWS networking rather than depending on public egress.
 
 CloudFormation cannot upload a Docker build context, and the broker's image-build
 CodeBuild reads its source from a bucket the broker stack itself creates —
-a chicken-and-egg. So the master ships `BrokerTriggerBuild=false`: the stack
+a chicken-and-egg (circular dependency). So the master ships `BrokerTriggerBuild=false`: the stack
 creates all infrastructure (including the empty broker source bucket) with the
 broker ECS service at `DesiredCount: 0`, and `deploy-workshop.sh` step 3 then
 uploads the build context, builds the image, and scales the service to 1. This

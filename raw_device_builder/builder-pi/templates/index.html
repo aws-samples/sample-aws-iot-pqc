@@ -71,80 +71,90 @@
             }
         }
 
-        function renderDevices(devices) {
-            const grid = document.getElementById('device-grid');
-            if (devices.length === 0) {
-                grid.innerHTML = '<div class="empty-state"><p>No ESP32 devices detected. Plug in a device via USB.</p></div>';
-                return;
+        // Small DOM helpers so device-supplied values (serials, progress lines,
+        // error text) are set via textContent and never parsed as HTML. This
+        // avoids assigning untrusted strings through innerHTML (XSS-shaped).
+        function el(tag, className, text) {
+            const node = document.createElement(tag);
+            if (className) node.className = className;
+            if (text !== undefined && text !== null) node.textContent = text;
+            return node;
+        }
+
+        function actionButton(className, label, handler, port) {
+            const btn = el('button', className, label);
+            btn.addEventListener('click', () => handler(port));
+            return btn;
+        }
+
+        function buildDeviceCard(device) {
+            const card = el('div', `device-card ${device.status}`);
+
+            const header = el('div', 'device-header');
+            header.appendChild(el('span', 'port-badge', device.port));
+            header.appendChild(el('span', `status-badge ${device.status}`, device.status));
+            card.appendChild(header);
+
+            const info = el('div', 'device-info');
+            const addRow = (label, value) => {
+                const row = el('div', 'info-row');
+                row.appendChild(el('label', null, label));
+                row.appendChild(el('span', null, value));
+                info.appendChild(row);
+            };
+            addRow('Serial:', device.serialNumber || 'detecting...');
+            addRow('Thing Name:', device.thingName || '—');
+            addRow('Registered:', device.isRegistered ? '✅ Yes' : '❌ No');
+            card.appendChild(info);
+
+            if (device.status === 'ready' && !device.isRegistered) {
+                card.appendChild(
+                    actionButton('register-btn', '🚀 Register & Flash', registerDevice, device.port)
+                );
             }
 
-            <!-- nosemgrep: insecure-document-method -->
-            grid.innerHTML = devices.map(device => `
-                <div class="device-card ${device.status}">
-                    <div class="device-header">
-                        <span class="port-badge">${device.port}</span>
-                        <span class="status-badge ${device.status}">${device.status}</span>
-                    </div>
-                    <div class="device-info">
-                        <div class="info-row">
-                            <label>Serial:</label>
-                            <span>${device.serialNumber || 'detecting...'}</span>
-                        </div>
-                        <div class="info-row">
-                            <label>Thing Name:</label>
-                            <span>${device.thingName || '—'}</span>
-                        </div>
-                        <div class="info-row">
-                            <label>Registered:</label>
-                            <span>${device.isRegistered ? '✅ Yes' : '❌ No'}</span>
-                        </div>
-                    </div>
-                    ${device.status === 'ready' && !device.isRegistered ? `
-                        <button class="register-btn" onclick="registerDevice('${device.port}')">
-                            🚀 Register & Flash
-                        </button>
-                    ` : ''}
-                    ${device.isRegistered && (device.status === 'registered' || device.status === 'done') ? `
-                        <div class="device-actions">
-                            <button class="action-btn reflash" onclick="reflashDevice('${device.port}')">
-                                🔄 Reflash
-                            </button>
-                            <button class="action-btn serial" onclick="openSerial('${device.port}')">
-                                📟 Serial
-                            </button>
-                            <button class="action-btn deregister" onclick="deregisterDevice('${device.port}')">
-                                🗑️ Deregister
-                            </button>
-                        </div>
-                    ` : ''}
-                    ${device.status === 'error' ? `
-                        <div class="device-actions">
-                            ${device.isRegistered ? `
-                                <button class="action-btn reflash" onclick="reflashDevice('${device.port}')">
-                                    🔄 Retry Flash
-                                </button>
-                                <button class="action-btn serial" onclick="openSerial('${device.port}')">
-                                    📟 Serial
-                                </button>
-                                <button class="action-btn deregister" onclick="deregisterDevice('${device.port}')">
-                                    🗑️ Deregister
-                                </button>
-                            ` : `
-                                <button class="action-btn reflash" onclick="registerDevice('${device.port}')">
-                                    🚀 Retry Register & Flash
-                                </button>
-                                <button class="action-btn serial" onclick="openSerial('${device.port}')">
-                                    📟 Serial
-                                </button>
-                            `}
-                        </div>
-                    ` : ''}
-                    ${device.error ? `<div class="error-msg">❌ ${device.error}</div>` : ''}
-                    <div class="progress-log">
-                        ${(device.progress || []).map(line => `<div class="log-line">${line}</div>`).join('')}
-                    </div>
-                </div>
-            `).join('');
+            if (device.isRegistered && (device.status === 'registered' || device.status === 'done')) {
+                const actions = el('div', 'device-actions');
+                actions.appendChild(actionButton('action-btn reflash', '🔄 Reflash', reflashDevice, device.port));
+                actions.appendChild(actionButton('action-btn serial', '📟 Serial', openSerial, device.port));
+                actions.appendChild(actionButton('action-btn deregister', '🗑️ Deregister', deregisterDevice, device.port));
+                card.appendChild(actions);
+            }
+
+            if (device.status === 'error') {
+                const actions = el('div', 'device-actions');
+                if (device.isRegistered) {
+                    actions.appendChild(actionButton('action-btn reflash', '🔄 Retry Flash', reflashDevice, device.port));
+                    actions.appendChild(actionButton('action-btn serial', '📟 Serial', openSerial, device.port));
+                    actions.appendChild(actionButton('action-btn deregister', '🗑️ Deregister', deregisterDevice, device.port));
+                } else {
+                    actions.appendChild(actionButton('action-btn reflash', '🚀 Retry Register & Flash', registerDevice, device.port));
+                    actions.appendChild(actionButton('action-btn serial', '📟 Serial', openSerial, device.port));
+                }
+                card.appendChild(actions);
+            }
+
+            if (device.error) {
+                card.appendChild(el('div', 'error-msg', `❌ ${device.error}`));
+            }
+
+            const log = el('div', 'progress-log');
+            (device.progress || []).forEach(line => log.appendChild(el('div', 'log-line', line)));
+            card.appendChild(log);
+
+            return card;
+        }
+
+        function renderDevices(devices) {
+            const grid = document.getElementById('device-grid');
+            grid.replaceChildren();
+            if (devices.length === 0) {
+                const empty = el('div', 'empty-state');
+                empty.appendChild(el('p', null, 'No ESP32 devices detected. Plug in a device via USB.'));
+                grid.appendChild(empty);
+                return;
+            }
+            devices.forEach(device => grid.appendChild(buildDeviceCard(device)));
         }
 
         async function registerDevice(port) {
@@ -224,10 +234,16 @@
                 try {
                     const resp = await fetch('/api/serial/' + encodedPort);
                     const data = await resp.json();
-                    const el = serialWindow.document.getElementById('output');
-                    if (el && data.lines) {
-                        el.innerHTML = data.lines.map(l => `<div class="line">${l}</div>`).join('');
-                        el.scrollTop = el.scrollHeight;
+                    const outputEl = serialWindow.document.getElementById('output');
+                    if (outputEl && data.lines) {
+                        outputEl.replaceChildren();
+                        data.lines.forEach(l => {
+                            const lineEl = serialWindow.document.createElement('div');
+                            lineEl.className = 'line';
+                            lineEl.textContent = l;
+                            outputEl.appendChild(lineEl);
+                        });
+                        outputEl.scrollTop = outputEl.scrollHeight;
                     }
                 } catch (e) {}
             }, 1000);

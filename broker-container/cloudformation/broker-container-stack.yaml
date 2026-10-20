@@ -680,6 +680,8 @@ Resources:
         rules_to_suppress:
           - id: W28
             reason: "workshop depends on fixed resource names referenced across stacks/scripts"
+          - id: W76
+            reason: "comprehensive broker task policy (ECS exec, Secrets Manager cert fetch, scoped CloudWatch Logs); statement count is inherent to the broker's responsibilities"
     Properties:
       RoleName: pqc-workshop-broker-task
       AssumeRolePolicyDocument:
@@ -840,6 +842,10 @@ Resources:
             reason: "intentional: public MQTT broker fronted by internet-facing NLB; ESP32 devices connect from the public internet (device fleet has no fixed CIDR)"
           - id: W9
             reason: "intentional: public MQTT broker fronted by internet-facing NLB; ESP32 devices connect from the public internet (device fleet has no fixed CIDR)"
+          - id: W5
+            reason: "intentional: broker task needs broad egress to reach AWS APIs (IoT Core, ECR, Secrets Manager, CloudWatch Logs) via NAT/VPC endpoints; destinations are dynamic AWS service IPs"
+          - id: W40
+            reason: "intentional: broker egress to AWS APIs is not port-restricted (HTTPS to multiple services); destinations are dynamic AWS service IPs"
     Properties:
       GroupDescription: PQC MQTT Broker - allow ports 8883 (classical) and 8884 (ML-DSA-44)
       VpcId: !Ref VpcId
@@ -877,6 +883,16 @@ Resources:
           FromPort: 443
           ToPort: 443
           SourceSecurityGroupId: !Ref BrokerSecurityGroup
+          Description: "HTTPS from broker tasks to the VPC interface endpoints (ECR/Secrets Manager/Logs)"
+      # Explicit egress so there is no implicit allow-all (cfn_nag F1000). The
+      # interface endpoints only serve responses back to the broker tasks, so
+      # egress is scoped to the broker security group on 443.
+      SecurityGroupEgress:
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          DestinationSecurityGroupId: !Ref BrokerSecurityGroup
+          Description: "HTTPS responses to broker tasks"
 
   EcrApiEndpoint:
     Type: AWS::EC2::VPCEndpoint

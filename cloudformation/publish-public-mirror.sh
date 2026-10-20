@@ -202,7 +202,7 @@ sweep() {
     echo "  [ok]   $label — clean"
   fi
 }
-ACCT_ALT=$(IFS='|'; echo "${ACCOUNT_IDS[*]}")
+ACCT_ALT=$(IFS='|'; echo "${ACCOUNT_IDS[*]}")  # nosemgrep: ifs-tampering -- scoped/intentional: IFS is set only inside this command-substitution subshell to join the array with '|'; the parent shell's IFS is unaffected
 # .kiro path check — ls-files is authoritative for presence (a content regex
 # would false-positive on benign .kiro/ references in .gitignore/.gitattributes).
 if git ls-files .kiro/ | grep -q .; then

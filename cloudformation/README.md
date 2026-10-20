@@ -1,8 +1,18 @@
-# CloudFormation: AWS IoT Core Setup
+# CloudFormation: AWS IoT Core Setup (standalone single-device template)
 
-This CloudFormation template provisions all the AWS IoT Core infrastructure needed to work with the ESP32 PQC device sketch.
+> **This is not the workshop deployment.** This page documents
+> `iot-core-setup.yaml`, a small **standalone** template that registers **one**
+> device straight against **AWS IoT Core** (no PQC broker, no NLB, no Private
+> CA) — useful for a quick single-device connectivity test or a home-lab
+> direct-to-IoT-Core connection. The full workshop deploys the PQC broker +
+> device-builder + dashboard via the master template; see
+> [`DEPLOYMENT.md`](DEPLOYMENT.md) for that. In the workshop data path a device
+> connects to the Mosquitto broker (which bridges to IoT Core), not to IoT Core
+> directly.
 
-## What It Creates
+This CloudFormation template provisions the AWS IoT Core infrastructure needed to connect a single ESP32 device directly to AWS IoT Core.
+
+## What it creates
 
 | Resource | Type | Purpose |
 |----------|------|---------|
@@ -42,7 +52,7 @@ aws cloudformation deploy \
   --capabilities CAPABILITY_NAMED_IAM
 ```
 
-### Using a Custom Thing Name
+### Using a custom thing name
 
 ```bash
 aws cloudformation deploy \
@@ -52,7 +62,7 @@ aws cloudformation deploy \
   --capabilities CAPABILITY_NAMED_IAM
 ```
 
-### Disable IoT Rules (Minimal Setup)
+### Disable IoT rules (minimal setup)
 
 If you only need the Thing, certificate, and policy without CloudWatch routing:
 
@@ -67,9 +77,9 @@ aws cloudformation deploy \
   --capabilities CAPABILITY_NAMED_IAM
 ```
 
-## After Deployment
+## After deployment
 
-### 1. Get the IoT Endpoint
+### 1. Get the IoT endpoint
 
 ```bash
 aws iot describe-endpoint --endpoint-type iot:Data-ATS --query 'endpointAddress' --output text
@@ -77,7 +87,7 @@ aws iot describe-endpoint --endpoint-type iot:Data-ATS --query 'endpointAddress'
 
 Copy this value into `AWS_IOT_ENDPOINT` in your device's `secrets.h`.
 
-### 2. Retrieve the Device Certificate and Private Key
+### 2. Retrieve the device certificate and private key
 
 The stack automatically creates a certificate and stores both the certificate PEM and private key in AWS Secrets Manager. Retrieve them with:
 
@@ -157,7 +167,7 @@ And set:
 - `AWS_IOT_ENDPOINT` → the endpoint from step 1
 - `THINGNAME` → the Thing name you used (default: `my-esp32-pqc-thing`)
 
-### 5. Test the Connection
+### 5. Test the connection
 
 After uploading the sketch to your ESP32, verify messages in CloudWatch:
 
@@ -190,7 +200,7 @@ Or use the MQTT test client in the IoT Console:
 | `ThingName` | The created Thing name |
 | `ThingTypeName` | The Thing Type name for device grouping |
 | `ThingArn` | Full ARN of the Thing |
-| `IoTEndpoint` | Approximate IoT endpoint (use CLI for exact value) |
+| `IoTEndpointCommand` | The `aws iot describe-endpoint` command that prints your account's real IoT Data-ATS endpoint |
 | `CertificateArn` | ARN of the created certificate |
 | `CertificateId` | ID for CLI certificate operations |
 | `DeviceCredentialsSecret` | Secrets Manager secret containing cert + private key |
@@ -203,7 +213,7 @@ Or use the MQTT test client in the IoT Console:
 | `TelemetryLogGroup` | CloudWatch Log Group for telemetry |
 | `LifecycleLogGroup` | CloudWatch Log Group for lifecycle |
 
-## Clean Up
+## Clean up
 
 ```bash
 aws cloudformation delete-stack --stack-name esp32-pqc-iot
@@ -211,7 +221,7 @@ aws cloudformation delete-stack --stack-name esp32-pqc-iot
 
 This removes all created resources. The certificate will be deactivated and deleted, disconnecting the device.
 
-## IoT Policy Details
+## IoT policy details
 
 The policy follows least-privilege principles:
 
