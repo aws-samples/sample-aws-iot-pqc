@@ -130,27 +130,41 @@ RUN mkdir -p /opt/openssl-pqc/ssl && \
     printf '[openssl_init]\nproviders = provider_sect\n\n[provider_sect]\ndefault = default_sect\noqsprovider = oqs_sect\n\n[default_sect]\nactivate = 1\n\n[oqs_sect]\nactivate = 1\nmodule = /opt/openssl-pqc/lib/ossl-modules/oqsprovider.so\n' \
     > /opt/openssl-pqc/ssl/openssl.cnf
 
-# Create mosquitto directories
-RUN mkdir -p /mosquitto/config/conf.d /mosquitto/data /mosquitto/log /mosquitto/certs
+# Create a non-root runtime user and the mosquitto directory tree.
+# The container runs as this user (see USER below). The entrypoint writes
+# TLS material fetched from Secrets Manager into /mosquitto/certs/{,bridge,mldsa}
+# and the generated bridge config into /mosquitto/config/conf.d, so the whole
+# /mosquitto tree is owned by the runtime user. Ports 8883/8884 are >1024, so no
+# privileged bind (and no CAP_NET_BIND_SERVICE) is required. AWS access is via
+# the ECS task role, which is independent of the Linux user.
+RUN groupadd -r mosquitto && \
+    useradd -r -g mosquitto -d /mosquitto -s /usr/sbin/nologin mosquitto && \
+    mkdir -p /mosquitto/config/conf.d /mosquitto/data /mosquitto/log \
+             /mosquitto/certs/bridge /mosquitto/certs/mldsa && \
+    chown -R mosquitto:mosquitto /mosquitto
 
-# Copy config and entrypoint
-COPY mosquitto.conf /mosquitto/config/mosquitto.conf
-COPY entrypoint.sh /entrypoint.sh
+# HOME must be set for the non-root user so the AWS CLI has a writable home for
+# its config/cache (otherwise it can fail with "$HOME is not defined").
+ENV HOME=/mosquitto
+
+# Copy config and entrypoint (owned by the runtime user).
+COPY --chown=mosquitto:mosquitto mosquitto.conf /mosquitto/config/mosquitto.conf
+COPY --chown=mosquitto:mosquitto entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
-EXPOSE 8883
+EXPOSE 8883 8884
 
-# checkov:skip=CKV_DOCKER_3:container requires root — entrypoint.sh fetches TLS
-# certs/keys from Secrets Manager and writes bridge config into root-owned
-# /mosquitto/{certs,config/conf.d} dirs created above, before exec'ing mosquitto.
 # TCP-connect check on the device-facing TLS listener (8883). 8883 is raw
 # MQTT-over-TLS, not HTTP, so we test only that the port accepts a connection
 # using bash's /dev/tcp (bash is present; no netcat/mosquitto_sub in this image).
-# nosemgrep: missing-user -- container intentionally runs as root: entrypoint.sh
-# fetches TLS certs/keys from Secrets Manager and writes bridge config into
-# root-owned /mosquitto/{certs,config/conf.d} before exec'ing mosquitto.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
     CMD bash -c 'exec 3<>/dev/tcp/localhost/8883' 2>/dev/null || exit 1
+
+# Run as the non-root runtime user. The /mosquitto tree is owned by this user
+# (above), ports 8883/8884 are unprivileged, and AWS access uses the ECS task
+# role — so the entrypoint's cert fetch + bridge-config write and mosquitto
+# itself all run without root.
+USER mosquitto
 
 ENTRYPOINT ["/entrypoint.sh"]
 CMD ["mosquitto", "-c", "/mosquitto/config/mosquitto.conf"]
