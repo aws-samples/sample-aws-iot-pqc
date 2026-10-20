@@ -197,12 +197,25 @@ done
 
 # ─── 4. S3: empty the versioned workshop buckets (NOT the CFN bucket yet) ─────
 echo "[4/6] Empty workshop S3 buckets"
-# Discover every pqc-workshop bucket EXCEPT the CFN artifacts bucket, which
-# holds the nested templates the stack delete still needs. Covers both the
-# fixed-name buckets (…-<account>) and the CFN-generated dashboard bucket
-# (…-dashboardstac-…) without hardcoding the random suffix.
+# Discover every pqc-workshop bucket EXCEPT two classes we must NOT touch:
+#   1. The CFN artifacts bucket ($ARTIFACTS_BUCKET) — holds the nested templates
+#      the stack delete still needs; emptied LAST, in step 6.
+#   2. The Workshop Studio assets bucket (…-assets-…) — this is NOT a deploy
+#      artifact. Workshop Studio creates it when provisioning an event and
+#      uploads the workshop content/source zip there for the Code Editor IDE to
+#      pull. deploy-workshop.sh neither creates nor uses it. Emptying it would
+#      destroy the WS-provisioned content, so it is explicitly excluded here.
+# Covers both the fixed-name buckets (…-<account>) and the CFN-generated
+# dashboard bucket (…-dashboardstac-…) without hardcoding the random suffix.
 for b in $(aws s3api list-buckets --query "Buckets[?contains(Name,'pqc-workshop')].Name" --output text 2>/dev/null | tr '\t' '\n'); do
     [[ "$b" == "$ARTIFACTS_BUCKET" ]] && continue
+    # Skip the Workshop Studio assets bucket (pqc-workshop-assets-<acct>-<region>).
+    case "$b" in
+        *-assets-*)
+            echo "    (skipping Workshop Studio assets bucket $b — not a deploy artifact)"
+            continue
+            ;;
+    esac
     empty_versioned_bucket "$b"
 done
 

@@ -215,7 +215,7 @@ def _firmware_metadata(bucket, s3_key):
                         f"{attempt}/{FIRMWARE_WAIT_ATTEMPTS}; waiting "
                         f"{FIRMWARE_WAIT_SECONDS}s..."
                     )
-                    time.sleep(FIRMWARE_WAIT_SECONDS)
+                    time.sleep(FIRMWARE_WAIT_SECONDS)  # nosemgrep: arbitrary-sleep
                     continue
                 print(f"Firmware still absent after {attempt} attempts: {s3_key}")
                 return None
@@ -252,7 +252,7 @@ def _object_ready(bucket, s3_key):
                         f"Artifact not in S3 yet ({s3_key}) [{code or status}], attempt "
                         f"{attempt}/{FIRMWARE_WAIT_ATTEMPTS}; waiting {FIRMWARE_WAIT_SECONDS}s..."
                     )
-                    time.sleep(FIRMWARE_WAIT_SECONDS)
+                    time.sleep(FIRMWARE_WAIT_SECONDS)  # nosemgrep: arbitrary-sleep
                     continue
                 print(f"Artifact still absent after {attempt} attempts: {s3_key}")
                 return False

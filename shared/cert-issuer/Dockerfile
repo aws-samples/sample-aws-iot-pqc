@@ -19,6 +19,8 @@
 # in it. The broker cert provisioning moved from a container-image Lambda to a
 # CodeBuild job to fit the deploy model (stack first, images/values post-stack).
 # ─────────────────────────────────────────────────────────────────────────────
+# checkov:skip=CKV_DOCKER_3:short-lived CodeBuild image; CodeBuild runs the job as its own build user, no long-running process to drop privileges for
+# checkov:skip=CKV_DOCKER_2:short-lived task container, no long-running service to health-check
 FROM public.ecr.aws/ubuntu/ubuntu:22.04
 
 ENV DEBIAN_FRONTEND=noninteractive

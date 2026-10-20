@@ -53,6 +53,9 @@ export async function loadConfig() {
   if (!loaded.appSyncEndpoint || !loaded.apiEndpoint || !loaded.identityPoolId) {
     throw new Error('config.json is missing required endpoints');
   }
+  // nosemgrep: insecure-object-assign -- trusted static config merge: `loaded`
+  // is the app's own /config.json (deployed artifact), validated above, not
+  // user-controlled web input.
   Object.assign(config, loaded);
   return config;
 }

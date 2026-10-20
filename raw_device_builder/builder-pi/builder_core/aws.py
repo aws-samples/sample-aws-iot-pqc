@@ -36,4 +36,4 @@ def sigv4_post(api_url, payload, region, timeout=30):
         headers={"Content-Type": "application/json"},
     )
     SigV4Auth(credentials, "execute-api", region).add_auth(aws_request)
-    return requests.post(api_url, data=body, headers=dict(aws_request.headers), timeout=timeout)
+    return requests.post(api_url, data=body, headers=dict(aws_request.headers), timeout=timeout)  # nosemgrep: use-raise-for-status — caller-inspects-status

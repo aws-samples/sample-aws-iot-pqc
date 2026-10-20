@@ -78,6 +78,7 @@
                 return;
             }
 
+            <!-- nosemgrep: insecure-document-method -->
             grid.innerHTML = devices.map(device => `
                 <div class="device-card ${device.status}">
                     <div class="device-header">

@@ -34,7 +34,7 @@ def test_parser_has_all_subcommands():
     parser = cli.build_parser()
     # Parse a representative invocation of each subcommand without error.
     for argv in (["scan"], ["register", "--serial", "X"], ["reflash", "--port", "/dev/ttyACM0"],
-                 ["flash", "--port", "/dev/ttyACM0", "--bin", "/tmp/f.bin"],
+                 ["flash", "--port", "/dev/ttyACM0", "--bin", "/tmp/f.bin"],  # nosec B108 — test fixture
                  ["deregister", "--serial", "X"], ["serial", "--port", "/dev/ttyACM0"],
                  ["service", "status"]):
         args = parser.parse_args(argv)

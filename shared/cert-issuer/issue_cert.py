@@ -75,7 +75,7 @@ def _sanitize_token(raw):
 
 def _run(argv):
     """Run a subprocess, raising with captured stderr on failure."""
-    proc = subprocess.run(argv, capture_output=True, text=True)
+    proc = subprocess.run(argv, capture_output=True, text=True)  # nosemgrep: dangerous-subprocess-use-audit — argv list, no shell, inputs sanitized
     if proc.returncode != 0:
         raise RuntimeError(
             f"command failed ({proc.returncode}): {' '.join(argv)}\n{proc.stderr}"
@@ -133,7 +133,7 @@ def issue_certificate(
         key_path, csr_path = generate_key_and_csr(
             common_name, key_mode, subject_org, subject_ou, country, workdir
         )
-        with open(key_path) as f:
+        with open(key_path, encoding="utf-8") as f:
             key_pem = f.read()
         with open(csr_path, "rb") as f:
             csr_bytes = f.read()
@@ -159,7 +159,7 @@ def issue_certificate(
             break
         except acm_pca.exceptions.RequestInProgressException as e:
             last_err = e
-            time.sleep(3)
+            time.sleep(3)  # nosemgrep: arbitrary-sleep
     if cert_pem is None:
         raise RuntimeError(f"Certificate issuance timed out for {cert_arn}: {last_err}")
 
@@ -201,12 +201,12 @@ def main(argv=None):
     )
 
     os.makedirs(args.out_dir, exist_ok=True)
-    with open(os.path.join(args.out_dir, "ca.crt"), "w") as f:
+    with open(os.path.join(args.out_dir, "ca.crt"), "w", encoding="utf-8") as f:
         f.write(result["caCert"])
-    with open(os.path.join(args.out_dir, "cert.crt"), "w") as f:
+    with open(os.path.join(args.out_dir, "cert.crt"), "w", encoding="utf-8") as f:
         f.write(result["cert"])
     key_file = os.path.join(args.out_dir, "key.pem")
-    with open(key_file, "w") as f:
+    with open(key_file, "w", encoding="utf-8") as f:
         f.write(result["key"])
     os.chmod(key_file, 0o600)
 

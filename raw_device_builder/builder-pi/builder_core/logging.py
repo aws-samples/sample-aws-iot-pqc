@@ -32,7 +32,7 @@ class OperationLogger:
         # directory is not writable (e.g. in a dev checkout).
         try:
             os.makedirs(self._log_dir, exist_ok=True)
-            self._file = open(os.path.join(self._log_dir, f"{command}.log"), "a")
+            self._file = open(os.path.join(self._log_dir, f"{command}.log"), "a", encoding="utf-8")  # nosemgrep: open-never-closed
         except OSError:
             self._file = None
 

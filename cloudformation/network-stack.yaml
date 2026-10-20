@@ -61,6 +61,58 @@ Resources:
       VpcId: !Ref Vpc
       InternetGatewayId: !Ref InternetGateway
 
+  # ─── VPC Flow Logs (to CloudWatch) ──────────────────────────────────────────
+  # Capture all VPC traffic metadata for visibility/troubleshooting.
+  VpcFlowLogGroup:
+    Type: AWS::Logs::LogGroup
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W84
+            reason: "Workshop sample; relies on default CloudWatch Logs encryption. No customer-managed KMS key required."
+      checkov:
+        skip:
+          - id: CKV_AWS_158
+            comment: "Workshop sample; relies on default CloudWatch Logs encryption. No customer-managed KMS key required."
+    Properties:
+      LogGroupName: !Sub '/aws/vpc/pqc-workshop/${Vpc}/flowlogs'
+      RetentionInDays: 14
+
+  VpcFlowLogRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: vpc-flow-logs.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: FlowLogToCloudWatch
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                  - logs:DescribeLogStreams
+                Resource: !GetAtt VpcFlowLogGroup.Arn
+
+  VpcFlowLog:
+    Type: AWS::EC2::FlowLog
+    Properties:
+      ResourceType: VPC
+      ResourceId: !Ref Vpc
+      TrafficType: ALL
+      LogDestinationType: cloud-watch-logs
+      LogGroupName: !Ref VpcFlowLogGroup
+      DeliverLogsPermissionArn: !GetAtt VpcFlowLogRole.Arn
+      Tags:
+        - Key: Name
+          Value: pqc-workshop-vpc-flowlog
+
   # ─── VPC Block Public Access exclusion ──────────────────────────────────────
   # Some accounts (e.g. Workshop Studio / Control Tower) enable account-level VPC
   # Block Public Access = block-ingress, which drops IGW traffic and breaks BOTH
@@ -84,6 +136,11 @@ Resources:
   # ─── Two public subnets across two AZs (broker NLB + ECS tasks) ──────────────
   PublicSubnet1:
     Type: AWS::EC2::Subnet
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W33
+            reason: "Intentional: public subnets for the internet-facing broker NLB; devices connect from the public internet."
     Properties:
       VpcId: !Ref Vpc
       CidrBlock: !Ref Subnet1Cidr
@@ -95,6 +152,11 @@ Resources:
 
   PublicSubnet2:
     Type: AWS::EC2::Subnet
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W33
+            reason: "Intentional: public subnets for the internet-facing broker NLB; devices connect from the public internet."
     Properties:
       VpcId: !Ref Vpc
       CidrBlock: !Ref Subnet2Cidr

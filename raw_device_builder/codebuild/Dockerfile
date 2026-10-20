@@ -1,10 +1,16 @@
 # Copyright 2026 Amazon.com, Inc. or its affiliates. All Rights Reserved.
 # SPDX-License-Identifier: MIT-0
 
+# checkov:skip=CKV_DOCKER_3:short-lived CodeBuild firmware-builder image; CodeBuild runs the build as its own user, no long-running process to drop privileges for
+# checkov:skip=CKV_DOCKER_2:short-lived build container, no long-running service to health-check
 FROM public.ecr.aws/ubuntu/ubuntu:22.04
 
 # Avoid interactive prompts
 ENV DEBIAN_FRONTEND=noninteractive
+
+# Fail piped RUN steps if any stage of the pipe fails (e.g. curl ... | sh).
+# Ubuntu base ships bash, so a pipefail-enabled bash shell is available.
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
 # Install system dependencies
 # (build-essential/perl/wget added to compile OpenSSL 3.5 from source below)
