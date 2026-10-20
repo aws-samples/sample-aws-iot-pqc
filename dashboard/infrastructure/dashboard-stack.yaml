@@ -60,6 +60,11 @@ Resources:
 
   DeviceTable:
     Type: AWS::DynamoDB::Table
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W28
+            reason: "workshop depends on fixed resource names referenced across stacks/scripts"
     Properties:
       TableName: pqc-workshop-devices
       BillingMode: PAY_PER_REQUEST
@@ -72,6 +77,10 @@ Resources:
       TimeToLiveSpecification:
         AttributeName: ttl
         Enabled: true
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      SSESpecification:
+        SSEEnabled: true
 
   # ═══════════════════════════════════════════════════════════════════════════
   # Cognito — Unauthenticated Access for Dashboard
@@ -79,6 +88,15 @@ Resources:
 
   CognitoIdentityPool:
     Type: AWS::Cognito::IdentityPool
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W57
+            reason: "intentional: public read-only workshop dashboard uses unauthenticated Cognito identities with a restrictive unauth role"
+      checkov:
+        skip:
+          - id: CKV_AWS_366
+            comment: "intentional: public read-only workshop dashboard uses unauthenticated Cognito identities with a restrictive unauth role"
     Properties:
       IdentityPoolName: pqc_workshop_dashboard
       AllowUnauthenticatedIdentities: true
@@ -125,6 +143,15 @@ Resources:
 
   DeviceApi:
     Type: AWS::AppSync::GraphQLApi
+    Metadata:
+      checkov:
+        skip:
+          - id: CKV_AWS_193
+            comment: "workshop sample"
+          - id: CKV_AWS_194
+            comment: "workshop sample"
+          - id: CKV2_AWS_33
+            comment: "workshop sample"
     Properties:
       Name: pqc-workshop-device-api
       AuthenticationType: AWS_IAM
@@ -489,11 +516,25 @@ Resources:
 
   TelemetryProcessorFunction:
     Type: AWS::Lambda::Function
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W89
+            reason: "calls public AWS APIs (IoT/DynamoDB/AppSync), no VPC resources"
+      checkov:
+        skip:
+          - id: CKV_AWS_116
+            comment: "synchronous IoT-rule/AppSync invocations, no async DLQ needed"
+          - id: CKV_AWS_117
+            comment: "calls public AWS APIs (IoT/DynamoDB/AppSync), no VPC resources"
+          - id: CKV_AWS_173
+            comment: "env vars encrypted with AWS-managed key by default"
     Properties:
       FunctionName: pqc-workshop-telemetry-processor
       Runtime: python3.12
       Handler: index.handler
       Timeout: 10
+      ReservedConcurrentExecutions: 10
       Role: !GetAtt TelemetryProcessorRole.Arn
       Environment:
         Variables:
@@ -541,11 +582,25 @@ Resources:
 
   CommandPublisherFunction:
     Type: AWS::Lambda::Function
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W89
+            reason: "calls public AWS APIs (IoT/DynamoDB/AppSync), no VPC resources"
+      checkov:
+        skip:
+          - id: CKV_AWS_116
+            comment: "synchronous IoT-rule/AppSync invocations, no async DLQ needed"
+          - id: CKV_AWS_117
+            comment: "calls public AWS APIs (IoT/DynamoDB/AppSync), no VPC resources"
+          - id: CKV_AWS_173
+            comment: "env vars encrypted with AWS-managed key by default"
     Properties:
       FunctionName: pqc-workshop-command-publisher
       Runtime: python3.12
       Handler: index.handler
       Timeout: 10
+      ReservedConcurrentExecutions: 5
       Role: !GetAtt CommandPublisherRole.Arn
       Environment:
         Variables:
@@ -610,6 +665,11 @@ Resources:
 
   MessageLogTable:
     Type: AWS::DynamoDB::Table
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W28
+            reason: "workshop depends on fixed resource names referenced across stacks/scripts"
     Properties:
       TableName: pqc-workshop-message-log
       BillingMode: PAY_PER_REQUEST
@@ -626,6 +686,10 @@ Resources:
       TimeToLiveSpecification:
         AttributeName: ttl
         Enabled: true
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      SSESpecification:
+        SSEEnabled: true
 
   MessageLoggerRole:
     Type: AWS::IAM::Role
@@ -652,11 +716,25 @@ Resources:
 
   MessageLoggerFunction:
     Type: AWS::Lambda::Function
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W89
+            reason: "calls public AWS APIs (IoT/DynamoDB/AppSync), no VPC resources"
+      checkov:
+        skip:
+          - id: CKV_AWS_116
+            comment: "synchronous IoT-rule/AppSync invocations, no async DLQ needed"
+          - id: CKV_AWS_117
+            comment: "calls public AWS APIs (IoT/DynamoDB/AppSync), no VPC resources"
+          - id: CKV_AWS_173
+            comment: "env vars encrypted with AWS-managed key by default"
     Properties:
       FunctionName: pqc-workshop-message-logger
       Runtime: python3.12
       Handler: index.handler
       Timeout: 10
+      ReservedConcurrentExecutions: 10
       Role: !GetAtt MessageLoggerRole.Arn
       Environment:
         Variables:
@@ -791,11 +869,25 @@ Resources:
 
   BrokerLogReaderFunction:
     Type: AWS::Lambda::Function
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W89
+            reason: "calls public AWS APIs (IoT/DynamoDB/AppSync), no VPC resources"
+      checkov:
+        skip:
+          - id: CKV_AWS_116
+            comment: "synchronous IoT-rule/AppSync invocations, no async DLQ needed"
+          - id: CKV_AWS_117
+            comment: "calls public AWS APIs (IoT/DynamoDB/AppSync), no VPC resources"
+          - id: CKV_AWS_173
+            comment: "env vars encrypted with AWS-managed key by default"
     Properties:
       FunctionName: pqc-workshop-broker-log-reader
       Runtime: python3.12
       Handler: index.handler
       Timeout: 15
+      ReservedConcurrentExecutions: 5
       Role: !GetAtt BrokerLogReaderRole.Arn
       Environment:
         Variables:
@@ -872,6 +964,15 @@ Resources:
   # "Device Dashboard" frontend/hosting has been removed (superseded by v2).
   FirmwareDashboardBucket:
     Type: AWS::S3::Bucket
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W35
+            reason: "workshop sample; access logging adds a log bucket out of scope"
+      checkov:
+        skip:
+          - id: CKV_AWS_18
+            comment: "workshop sample; access logging adds a log bucket out of scope"
     Properties:
       # No explicit BucketName: let CloudFormation auto-generate a unique name.
       # A fixed name (pqc-workshop-firmware-dashboard-<acct>) tripped early
@@ -880,6 +981,12 @@ Resources:
       # blocking the whole master stack. Consumers read the real name from the
       # DashboardBucketName stack output (deploy-workshop.sh does), so nothing
       # depends on the literal name.
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      VersioningConfiguration:
+        Status: Enabled
       PublicAccessBlockConfiguration:
         BlockPublicAcls: true
         BlockPublicPolicy: true
@@ -914,6 +1021,21 @@ Resources:
 
   FirmwareDashboardDistribution:
     Type: AWS::CloudFront::Distribution
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W70
+            reason: "default CloudFront cert"
+          - id: W10
+            reason: "workshop sample dashboard; WAF/access-logging out of scope"
+      checkov:
+        skip:
+          - id: CKV_AWS_174
+            comment: "default CloudFront cert"
+          - id: CKV_AWS_86
+            comment: "workshop sample dashboard; WAF/access-logging out of scope"
+          - id: CKV_AWS_68
+            comment: "workshop sample dashboard; WAF/access-logging out of scope"
     Properties:
       DistributionConfig:
         Enabled: true
@@ -954,8 +1076,26 @@ Resources:
 
   DashboardSourceBucket:
     Type: AWS::S3::Bucket
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W35
+            reason: "workshop sample; access logging adds a log bucket out of scope"
+      checkov:
+        skip:
+          - id: CKV_AWS_18
+            comment: "workshop sample; access logging adds a log bucket out of scope"
     Properties:
       BucketName: !Sub 'pqc-workshop-dashboard-source-${AWS::AccountId}'
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
       VersioningConfiguration:
         Status: Enabled
       LifecycleConfiguration:
@@ -1097,10 +1237,24 @@ Resources:
   DashboardBuildTriggerFunction:
     Type: AWS::Lambda::Function
     Condition: ShouldTriggerDashboardBuild
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W89
+            reason: "calls public AWS APIs (IoT/DynamoDB/AppSync), no VPC resources"
+      checkov:
+        skip:
+          - id: CKV_AWS_116
+            comment: "synchronous IoT-rule/AppSync invocations, no async DLQ needed"
+          - id: CKV_AWS_117
+            comment: "calls public AWS APIs (IoT/DynamoDB/AppSync), no VPC resources"
+          - id: CKV_AWS_173
+            comment: "env vars encrypted with AWS-managed key by default"
     Properties:
       Runtime: python3.12
       Handler: index.handler
       Timeout: 900
+      ReservedConcurrentExecutions: 5
       Role: !GetAtt DashboardBuildTriggerRole.Arn
       Environment:
         Variables:

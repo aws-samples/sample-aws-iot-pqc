@@ -187,9 +187,9 @@ def trigger_pqc_build(serial_number, device):
                           f'/CN=esp32-{serial_number}/O=AWS PQC Workshop/OU=IoT Device PQC/C=US'],
                           check=True, capture_output=True)
 
-            with open(key_file) as f:
+            with open(key_file, encoding="utf-8") as f:
                 device_key = f.read()
-            with open(csr_file) as f:
+            with open(csr_file, encoding="utf-8") as f:
                 csr_pem = f.read()
 
         # Issue cert from Private CA
@@ -202,13 +202,13 @@ def trigger_pqc_build(serial_number, device):
         )
         cert_arn = issue_resp['CertificateArn']
 
-        time.sleep(3)
+        time.sleep(3)  # nosemgrep: arbitrary-sleep
         for _ in range(10):
             try:
                 cert_resp = acm_pca.get_certificate(CertificateAuthorityArn=ca_arn, CertificateArn=cert_arn)
                 break
             except acm_pca.exceptions.RequestInProgressException:
-                time.sleep(2)
+                time.sleep(2)  # nosemgrep: arbitrary-sleep
         else:
             raise Exception('PQC cert issuance timed out')
 
@@ -249,7 +249,7 @@ def wait_for_build(build_id, timeout=300):
         if status in ('FAILED', 'FAULT', 'TIMED_OUT', 'STOPPED'):
             print(f"Build failed: {status}")
             return False
-        time.sleep(10)
+        time.sleep(10)  # nosemgrep: arbitrary-sleep
     return False
 
 

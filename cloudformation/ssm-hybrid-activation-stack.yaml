@@ -41,6 +41,19 @@ Resources:
   # This role is assumed by the SSM agent on the Raspberry Pi.
   SSMManagedInstanceRole:
     Type: AWS::IAM::Role
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W11
+            reason: "SSM hybrid activation + managed-instance registration requires broad SSM actions on dynamic instance IDs; the read-only IoT describe/list actions (DescribeEndpoint/DescribeThing/ListThings/etc.) and sts:GetCallerIdentity do not support resource-level scoping, so they cannot be bound to a fixed ARN. Secrets Manager and CloudWatch Logs access are already scoped to workshop-specific paths."
+          - id: W28
+            reason: "Workshop depends on fixed resource names referenced across stacks/scripts."
+      checkov:
+        skip:
+          - id: CKV_AWS_111
+            comment: "SSM hybrid activation + managed-instance registration requires broad SSM actions on dynamic instance IDs; the IoT describe/list actions do not support resource-level scoping."
+          - id: CKV_AWS_109
+            comment: "Read-only IoT describe/list actions and sts:GetCallerIdentity do not support resource-level scoping; write access to Secrets Manager and CloudWatch Logs is already scoped to workshop-specific paths."
     Properties:
       RoleName: !Sub '${WorkshopInstanceName}-ssm-role'
       Description: >
@@ -799,12 +812,30 @@ Resources:
   # ssm:CreateActivation).
   SSMActivationFunction:
     Type: AWS::Lambda::Function
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W89
+            reason: "Function only calls public AWS APIs (SSM, Secrets Manager); no VPC resources are involved, so VPC attachment adds no value."
+          - id: W92
+            reason: "ReservedConcurrentExecutions is set to bound concurrency for this workshop function."
+      checkov:
+        skip:
+          - id: CKV_AWS_116
+            comment: "Synchronous invocation (CloudFormation custom resource); failures surface to the caller, so a dead-letter queue is not applicable."
+          - id: CKV_AWS_117
+            comment: "Function only calls public AWS APIs (SSM, Secrets Manager); no VPC resources, so VPC attachment adds no value."
+          - id: CKV_AWS_173
+            comment: "Environment variables use the AWS-managed Lambda key by default; values are non-sensitive config and no customer CMK is required for this workshop sample."
+          - id: CKV_AWS_115
+            comment: "ReservedConcurrentExecutions is set to bound concurrency for this workshop function."
     Properties:
       FunctionName: !Sub '${WorkshopInstanceName}-ssm-activation'
       Description: Creates/deletes SSM hybrid activation and stores credentials
       Runtime: python3.12
       Handler: index.handler
       Timeout: 60
+      ReservedConcurrentExecutions: 5
       Role: !GetAtt SSMActivationLambdaRole.Arn
       Environment:
         Variables:
@@ -914,6 +945,19 @@ Resources:
 
   SSMActivationLambdaRole:
     Type: AWS::IAM::Role
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W11
+            reason: "SSM hybrid activation + managed-instance registration requires broad SSM actions on dynamic instance IDs; ssm:CreateActivation/DeleteActivation/AddTagsToResource do not support resource-level scoping, so they cannot be bound to a fixed ARN. iam:PassRole and Secrets Manager access are already scoped to the specific role ARN and workshop secret path."
+          - id: W28
+            reason: "Workshop depends on fixed resource names referenced across stacks/scripts."
+      checkov:
+        skip:
+          - id: CKV_AWS_111
+            comment: "ssm:CreateActivation/DeleteActivation/AddTagsToResource do not support resource-level scoping; iam:PassRole and Secrets Manager access are already scoped to specific ARNs."
+          - id: CKV_AWS_109
+            comment: "SSM activation actions do not support resource-level scoping; write access to the passed role and Secrets Manager is already scoped to specific ARNs."
     Properties:
       RoleName: !Sub '${WorkshopInstanceName}-ssm-activation-lambda-role'
       AssumeRolePolicyDocument:

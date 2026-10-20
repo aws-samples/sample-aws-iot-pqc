@@ -140,5 +140,14 @@ RUN chmod +x /entrypoint.sh
 
 EXPOSE 8883
 
+# checkov:skip=CKV_DOCKER_3:container requires root — entrypoint.sh fetches TLS
+# certs/keys from Secrets Manager and writes bridge config into root-owned
+# /mosquitto/{certs,config/conf.d} dirs created above, before exec'ing mosquitto.
+# TCP-connect check on the device-facing TLS listener (8883). 8883 is raw
+# MQTT-over-TLS, not HTTP, so we test only that the port accepts a connection
+# using bash's /dev/tcp (bash is present; no netcat/mosquitto_sub in this image).
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+    CMD bash -c 'exec 3<>/dev/tcp/localhost/8883' 2>/dev/null || exit 1
+
 ENTRYPOINT ["/entrypoint.sh"]
 CMD ["mosquitto", "-c", "/mosquitto/config/mosquitto.conf"]

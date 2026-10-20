@@ -70,7 +70,7 @@ def port_scanner():
         except Exception as e:
             print(f"Port scan error: {e}")
 
-        time.sleep(3)
+        time.sleep(3)  # nosemgrep: arbitrary-sleep
 
 
 # ─── Routes ──────────────────────────────────────────────────────────────────
@@ -205,7 +205,7 @@ def deregister_device():
         if result['success']:
             slot.log('Device deregistered successfully')
             slot.status = 'ready'
-            slot.is_registered = False
+            slot.is_registered = False  # nosemgrep: is-function-without-parentheses
             return jsonify({'success': True, 'message': f'Deregistered {slot.thing_name}'})
         slot.log(f"Deregister failed: {result['message']}")
         return jsonify({'error': result['message']}), 500
@@ -287,7 +287,7 @@ def _registration_pipeline(port: str):
         result = response.json()
         slot.build_id = result.get('buildId')
         slot.log(f'Registered! Build ID: {slot.build_id}')
-        slot.is_registered = True
+        slot.is_registered = True  # nosemgrep: is-function-without-parentheses
 
         # Step 2: Wait for CodeBuild to complete
         slot.status = 'building'
@@ -314,7 +314,7 @@ def _registration_pipeline(port: str):
             return
 
         # Step 5: Verify boot
-        time.sleep(3)  # Wait for device to reset after flash
+        time.sleep(3)  # Wait for device to reset after flash  # nosemgrep: arbitrary-sleep
         device_manager.verify_boot(port, timeout=45)
 
         # Start serial monitor for ongoing observation
@@ -340,7 +340,7 @@ def _wait_for_build(slot, timeout: int = 600) -> bool:
             response = codebuild.batch_get_builds(ids=[slot.build_id])
             builds = response.get('builds', [])
             if not builds:
-                time.sleep(10)
+                time.sleep(10)  # nosemgrep: arbitrary-sleep
                 continue
 
             build = builds[0]
@@ -358,7 +358,7 @@ def _wait_for_build(slot, timeout: int = 600) -> bool:
         except Exception as e:
             slot.log(f'Build poll error: {e}')
 
-        time.sleep(15)
+        time.sleep(15)  # nosemgrep: arbitrary-sleep
 
     slot.log('Build timed out waiting')
     return False
@@ -411,4 +411,4 @@ if __name__ == '__main__':
 
     print(f"Builder-Pi GUI starting on port {config['gui_port']}...")
     print(f"Access at: http://0.0.0.0:{config['gui_port']}")
-    app.run(host='0.0.0.0', port=config['gui_port'], debug=False)
+    app.run(host='0.0.0.0', port=config['gui_port'], debug=False)  # nosec B104  # nosemgrep: avoid_app_run_with_bad_host — intentional: Pi GUI must bind all interfaces for workshop AP access

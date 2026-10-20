@@ -46,7 +46,7 @@ def _append_log_file(name: str, line: str):
     """
     try:
         os.makedirs(LOG_DIR, exist_ok=True)
-        with open(os.path.join(LOG_DIR, f"{name}.log"), "a") as f:
+        with open(os.path.join(LOG_DIR, f"{name}.log"), "a", encoding="utf-8") as f:
             f.write(line + "\n")
     except OSError:
         pass
@@ -87,7 +87,7 @@ class DeviceSlot:
             'thingName': self.thing_name,
             'buildId': self.build_id,
             'error': self.error,
-            'isRegistered': self.is_registered,
+            'isRegistered': self.is_registered,  # nosemgrep: is-function-without-parentheses
             'progress': self.progress[-20:]
         }
 
@@ -175,7 +175,7 @@ class DeviceManager:
 
             # Check if already registered
             if self._check_registration(serial_number):
-                slot.is_registered = True
+                slot.is_registered = True  # nosemgrep: is-function-without-parentheses
                 slot.status = 'registered'
                 slot.log('Device is already registered')
             else:
@@ -394,7 +394,7 @@ class DeviceManager:
                             slot.error = 'Device panic during boot'
                             return False
 
-                time.sleep(0.05)
+                time.sleep(0.05)  # nosemgrep: arbitrary-sleep
 
             ser.close()
 
@@ -449,7 +449,7 @@ class DeviceManager:
                                 buf.append(line)
                                 if len(buf) > 200:
                                     self._serial_buffers[port] = buf[-200:]
-                        time.sleep(0.05)
+                        time.sleep(0.05)  # nosemgrep: arbitrary-sleep
                     ser.close()
                     break
                 except serial.SerialException as e:
@@ -461,9 +461,9 @@ class DeviceManager:
                         buf.append(f'[monitor] serial port unavailable ({e}); retrying...')
                         self._serial_buffers[port] = buf[-200:]
                         busy_noted = True
-                    time.sleep(2)
+                    time.sleep(2)  # nosemgrep: arbitrary-sleep
                 except Exception:
-                    time.sleep(2)
+                    time.sleep(2)  # nosemgrep: arbitrary-sleep
 
         thread = threading.Thread(target=_reader, daemon=True)
         thread.start()

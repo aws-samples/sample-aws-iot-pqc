@@ -85,6 +85,17 @@ Resources:
 
   BrokerEcrRepository:
     Type: AWS::ECR::Repository
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W28
+            reason: "workshop depends on fixed resource names referenced across stacks/scripts"
+      checkov:
+        skip:
+          - id: CKV_AWS_51
+            comment: "deploy re-pushes latest tag; immutability breaks idempotent redeploy"
+          - id: CKV_AWS_136
+            comment: "default AES256 ECR encryption"
     Properties:
       RepositoryName: pqc-workshop-mosquitto-broker
       ImageScanningConfiguration:
@@ -96,8 +107,30 @@ Resources:
 
   BrokerSourceBucket:
     Type: AWS::S3::Bucket
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W28
+            reason: "workshop depends on fixed resource names referenced across stacks/scripts"
+          - id: W35
+            reason: "workshop sample; access-logging bucket out of scope"
+          - id: W51
+            reason: "workshop sample; access-logging bucket out of scope"
+      checkov:
+        skip:
+          - id: CKV_AWS_18
+            comment: "workshop sample; access-logging bucket out of scope"
     Properties:
       BucketName: !Sub 'pqc-workshop-broker-source-${AWS::AccountId}'
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
       VersioningConfiguration:
         Status: Enabled
       LifecycleConfiguration:
@@ -113,6 +146,19 @@ Resources:
 
   ImageBuilderRole:
     Type: AWS::IAM::Role
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W11
+            reason: "ecr:GetAuthorizationToken does not support resource-level permissions and requires Resource '*'"
+          - id: W28
+            reason: "workshop depends on fixed resource names referenced across stacks/scripts"
+      checkov:
+        skip:
+          - id: CKV_AWS_111
+            comment: "ecr:GetAuthorizationToken does not support resource-level permissions and requires Resource '*'"
+          - id: CKV_AWS_109
+            comment: "ecr:GetAuthorizationToken does not support resource-level permissions and requires Resource '*'"
     Properties:
       RoleName: pqc-workshop-broker-image-builder
       AssumeRolePolicyDocument:
@@ -159,6 +205,11 @@ Resources:
 
   BrokerBuildProject:
     Type: AWS::CodeBuild::Project
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W32
+            reason: "default AWS-managed CodeBuild encryption key"
     Properties:
       Name: pqc-workshop-broker-image-build
       Description: Builds the Mosquitto PQC broker container image
@@ -194,6 +245,11 @@ Resources:
 
   BuildTriggerRole:
     Type: AWS::IAM::Role
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W28
+            reason: "workshop depends on fixed resource names referenced across stacks/scripts"
     Properties:
       RoleName: pqc-workshop-broker-build-trigger
       AssumeRolePolicyDocument:
@@ -218,8 +274,24 @@ Resources:
 
   BuildTriggerFunction:
     Type: AWS::Lambda::Function
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W28
+            reason: "workshop depends on fixed resource names referenced across stacks/scripts"
+          - id: W89
+            reason: "calls public AWS APIs, no VPC resources"
+      checkov:
+        skip:
+          - id: CKV_AWS_116
+            comment: "synchronous/custom-resource invocation"
+          - id: CKV_AWS_117
+            comment: "calls public AWS APIs, no VPC resources"
+          - id: CKV_AWS_173
+            comment: "AWS-managed key default"
     Properties:
       FunctionName: pqc-workshop-broker-build-trigger
+      ReservedConcurrentExecutions: 5
       Runtime: python3.12
       Handler: index.handler
       Timeout: 900
@@ -378,18 +450,51 @@ Resources:
 
   BrokerCACertSecret:
     Type: AWS::SecretsManager::Secret
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W77
+            reason: "default AWS-managed KMS key for Secrets Manager; workshop sample"
+          - id: W28
+            reason: "workshop depends on fixed resource names referenced across stacks/scripts"
+      checkov:
+        skip:
+          - id: CKV_AWS_149
+            comment: "default AWS-managed KMS key for Secrets Manager; workshop sample"
     Properties:
       Name: pqc-broker/ca-cert
       Description: Private CA certificate for the PQC MQTT broker
 
   BrokerCertSecret:
     Type: AWS::SecretsManager::Secret
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W77
+            reason: "default AWS-managed KMS key for Secrets Manager; workshop sample"
+          - id: W28
+            reason: "workshop depends on fixed resource names referenced across stacks/scripts"
+      checkov:
+        skip:
+          - id: CKV_AWS_149
+            comment: "default AWS-managed KMS key for Secrets Manager; workshop sample"
     Properties:
       Name: pqc-broker/broker-cert
       Description: Broker TLS certificate (issued by Private CA)
 
   BrokerKeySecret:
     Type: AWS::SecretsManager::Secret
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W77
+            reason: "default AWS-managed KMS key for Secrets Manager; workshop sample"
+          - id: W28
+            reason: "workshop depends on fixed resource names referenced across stacks/scripts"
+      checkov:
+        skip:
+          - id: CKV_AWS_149
+            comment: "default AWS-managed KMS key for Secrets Manager; workshop sample"
     Properties:
       Name: pqc-broker/broker-key
       Description: Broker TLS private key
@@ -397,18 +502,51 @@ Resources:
   # ─── ML-DSA-44 broker cert secrets (Step 2, for the 8884 listener) ──────────
   MlDsaBrokerCACertSecret:
     Type: AWS::SecretsManager::Secret
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W77
+            reason: "default AWS-managed KMS key for Secrets Manager; workshop sample"
+          - id: W28
+            reason: "workshop depends on fixed resource names referenced across stacks/scripts"
+      checkov:
+        skip:
+          - id: CKV_AWS_149
+            comment: "default AWS-managed KMS key for Secrets Manager; workshop sample"
     Properties:
       Name: pqc-broker/mldsa-ca-cert
       Description: ML-DSA-44 Private CA certificate (device trust root for 8884)
 
   MlDsaBrokerCertSecret:
     Type: AWS::SecretsManager::Secret
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W77
+            reason: "default AWS-managed KMS key for Secrets Manager; workshop sample"
+          - id: W28
+            reason: "workshop depends on fixed resource names referenced across stacks/scripts"
+      checkov:
+        skip:
+          - id: CKV_AWS_149
+            comment: "default AWS-managed KMS key for Secrets Manager; workshop sample"
     Properties:
       Name: pqc-broker/mldsa-broker-cert
       Description: ML-DSA-44 broker TLS certificate (issued by ML-DSA-44 Private CA)
 
   MlDsaBrokerKeySecret:
     Type: AWS::SecretsManager::Secret
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W77
+            reason: "default AWS-managed KMS key for Secrets Manager; workshop sample"
+          - id: W28
+            reason: "workshop depends on fixed resource names referenced across stacks/scripts"
+      checkov:
+        skip:
+          - id: CKV_AWS_149
+            comment: "default AWS-managed KMS key for Secrets Manager; workshop sample"
     Properties:
       Name: pqc-broker/mldsa-broker-key
       Description: ML-DSA-44 broker TLS private key
@@ -423,36 +561,102 @@ Resources:
   # era (not per build/device), so the device trusts a single leaf per era.
   SignerClassicalCACertSecret:
     Type: AWS::SecretsManager::Secret
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W77
+            reason: "default AWS-managed KMS key for Secrets Manager; workshop sample"
+          - id: W28
+            reason: "workshop depends on fixed resource names referenced across stacks/scripts"
+      checkov:
+        skip:
+          - id: CKV_AWS_149
+            comment: "default AWS-managed KMS key for Secrets Manager; workshop sample"
     Properties:
       Name: pqc-broker/signer-classical-ca
       Description: Classical CA cert for the firmware signer (device trust root, 2.0.0/3.0.0 era)
 
   SignerClassicalCertSecret:
     Type: AWS::SecretsManager::Secret
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W77
+            reason: "default AWS-managed KMS key for Secrets Manager; workshop sample"
+          - id: W28
+            reason: "workshop depends on fixed resource names referenced across stacks/scripts"
+      checkov:
+        skip:
+          - id: CKV_AWS_149
+            comment: "default AWS-managed KMS key for Secrets Manager; workshop sample"
     Properties:
       Name: pqc-broker/signer-classical-cert
       Description: Classical ECDSA-P256 firmware signer certificate (leaf, ships with OTA)
 
   SignerClassicalKeySecret:
     Type: AWS::SecretsManager::Secret
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W77
+            reason: "default AWS-managed KMS key for Secrets Manager; workshop sample"
+          - id: W28
+            reason: "workshop depends on fixed resource names referenced across stacks/scripts"
+      checkov:
+        skip:
+          - id: CKV_AWS_149
+            comment: "default AWS-managed KMS key for Secrets Manager; workshop sample"
     Properties:
       Name: pqc-broker/signer-classical-key
       Description: Classical ECDSA-P256 firmware signer private key (read by the build to sign)
 
   SignerMlDsaCACertSecret:
     Type: AWS::SecretsManager::Secret
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W77
+            reason: "default AWS-managed KMS key for Secrets Manager; workshop sample"
+          - id: W28
+            reason: "workshop depends on fixed resource names referenced across stacks/scripts"
+      checkov:
+        skip:
+          - id: CKV_AWS_149
+            comment: "default AWS-managed KMS key for Secrets Manager; workshop sample"
     Properties:
       Name: pqc-broker/signer-mldsa-ca
       Description: ML-DSA-44 CA cert for the firmware signer (device trust root, 4.0.0+ era)
 
   SignerMlDsaCertSecret:
     Type: AWS::SecretsManager::Secret
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W77
+            reason: "default AWS-managed KMS key for Secrets Manager; workshop sample"
+          - id: W28
+            reason: "workshop depends on fixed resource names referenced across stacks/scripts"
+      checkov:
+        skip:
+          - id: CKV_AWS_149
+            comment: "default AWS-managed KMS key for Secrets Manager; workshop sample"
     Properties:
       Name: pqc-broker/signer-mldsa-cert
       Description: ML-DSA-44 firmware signer certificate (leaf, ships with OTA)
 
   SignerMlDsaKeySecret:
     Type: AWS::SecretsManager::Secret
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W77
+            reason: "default AWS-managed KMS key for Secrets Manager; workshop sample"
+          - id: W28
+            reason: "workshop depends on fixed resource names referenced across stacks/scripts"
+      checkov:
+        skip:
+          - id: CKV_AWS_149
+            comment: "default AWS-managed KMS key for Secrets Manager; workshop sample"
     Properties:
       Name: pqc-broker/signer-mldsa-key
       Description: ML-DSA-44 firmware signer private key (read by the build to sign)
@@ -471,6 +675,11 @@ Resources:
 
   BrokerTaskRole:
     Type: AWS::IAM::Role
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W28
+            reason: "workshop depends on fixed resource names referenced across stacks/scripts"
     Properties:
       RoleName: pqc-workshop-broker-task
       AssumeRolePolicyDocument:
@@ -503,10 +712,25 @@ Resources:
                 Action:
                   - logs:CreateLogStream
                   - logs:PutLogEvents
-                Resource: '*'
+                Resource:
+                  - !GetAtt BrokerLogGroup.Arn
+                  - !Sub '${BrokerLogGroup.Arn}:*'
 
   BrokerExecutionRole:
     Type: AWS::IAM::Role
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W11
+            reason: "ecr:GetAuthorizationToken does not support resource-level permissions and requires Resource '*'"
+          - id: W28
+            reason: "workshop depends on fixed resource names referenced across stacks/scripts"
+      checkov:
+        skip:
+          - id: CKV_AWS_111
+            comment: "ecr:GetAuthorizationToken does not support resource-level permissions and requires Resource '*'"
+          - id: CKV_AWS_109
+            comment: "ecr:GetAuthorizationToken does not support resource-level permissions and requires Resource '*'"
     Properties:
       RoleName: pqc-workshop-broker-execution
       AssumeRolePolicyDocument:
@@ -536,6 +760,15 @@ Resources:
 
   BrokerLogGroup:
     Type: AWS::Logs::LogGroup
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W84
+            reason: "workshop sample; default CloudWatch encryption, no CMK"
+      checkov:
+        skip:
+          - id: CKV_AWS_158
+            comment: "workshop sample; default CloudWatch encryption, no CMK"
     Properties:
       LogGroupName: /pqc-workshop/broker-container
       RetentionInDays: 7
@@ -600,6 +833,13 @@ Resources:
 
   BrokerSecurityGroup:
     Type: AWS::EC2::SecurityGroup
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W2
+            reason: "intentional: public MQTT broker fronted by internet-facing NLB; ESP32 devices connect from the public internet (device fleet has no fixed CIDR)"
+          - id: W9
+            reason: "intentional: public MQTT broker fronted by internet-facing NLB; ESP32 devices connect from the public internet (device fleet has no fixed CIDR)"
     Properties:
       GroupDescription: PQC MQTT Broker - allow ports 8883 (classical) and 8884 (ML-DSA-44)
       VpcId: !Ref VpcId
@@ -608,11 +848,17 @@ Resources:
           FromPort: 8883
           ToPort: 8883
           CidrIp: 0.0.0.0/0
+          Description: "ESP32 device MQTT-over-TLS (classical P-256) from public internet via NLB"
         # ML-DSA-44 device listener (Step 2). Same public reachability as 8883.
         - IpProtocol: tcp
           FromPort: 8884
           ToPort: 8884
           CidrIp: 0.0.0.0/0
+          Description: "ESP32 device MQTT-over-TLS (ML-DSA-44) from public internet via NLB"
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+          Description: "Broker egress to AWS APIs (IoT Core, ECR, Secrets Manager, CloudWatch Logs) via NAT/VPC endpoints"
 
   # ═══════════════════════════════════════════════════════════════════════════
   # VPC Endpoints — let the Fargate task reach ECR / Secrets Manager / Logs over
@@ -691,6 +937,17 @@ Resources:
 
   BrokerNLB:
     Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W52
+            reason: "workshop sample; NLB access logging (needs S3 log bucket) out of scope"
+          - id: W28
+            reason: "workshop depends on fixed resource names referenced across stacks/scripts"
+      checkov:
+        skip:
+          - id: CKV_AWS_91
+            comment: "workshop sample; NLB access logging (needs S3 log bucket) out of scope"
     Properties:
       Name: pqc-broker-nlb
       Type: network
@@ -789,6 +1046,17 @@ Resources:
   CertIssuerEcrRepository:
     Type: AWS::ECR::Repository
     DeletionPolicy: Delete
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W28
+            reason: "workshop depends on fixed resource names referenced across stacks/scripts"
+      checkov:
+        skip:
+          - id: CKV_AWS_51
+            comment: "deploy re-pushes latest tag; immutability breaks idempotent redeploy"
+          - id: CKV_AWS_136
+            comment: "default AES256 ECR encryption"
     Properties:
       RepositoryName: pqc-workshop-cert-issuer
       ImageScanningConfiguration:
@@ -796,6 +1064,19 @@ Resources:
 
   CertIssuerBuildRole:
     Type: AWS::IAM::Role
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W11
+            reason: "ecr:GetAuthorizationToken does not support resource-level permissions and requires Resource '*'"
+          - id: W28
+            reason: "workshop depends on fixed resource names referenced across stacks/scripts"
+      checkov:
+        skip:
+          - id: CKV_AWS_111
+            comment: "ecr:GetAuthorizationToken does not support resource-level permissions and requires Resource '*'"
+          - id: CKV_AWS_109
+            comment: "ecr:GetAuthorizationToken does not support resource-level permissions and requires Resource '*'"
     Properties:
       RoleName: pqc-workshop-cert-issuer-build
       AssumeRolePolicyDocument:
@@ -815,7 +1096,7 @@ Resources:
                   - logs:CreateLogGroup
                   - logs:CreateLogStream
                   - logs:PutLogEvents
-                Resource: '*'
+                Resource: !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/pqc-workshop-cert-issuer-image-build*'
               - Effect: Allow
                 Action:
                   - ecr:GetAuthorizationToken
@@ -841,6 +1122,11 @@ Resources:
 
   CertIssuerBuildProject:
     Type: AWS::CodeBuild::Project
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W32
+            reason: "default AWS-managed CodeBuild encryption key"
     Properties:
       Name: pqc-workshop-cert-issuer-image-build
       Description: Builds the shared cert-issuer container image (OpenSSL 3.5 + ACM PCA)
@@ -882,6 +1168,11 @@ Resources:
 
   CertIssuerBuildTriggerRole:
     Type: AWS::IAM::Role
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W28
+            reason: "workshop depends on fixed resource names referenced across stacks/scripts"
     Properties:
       RoleName: pqc-workshop-cert-issuer-build-trigger
       AssumeRolePolicyDocument:
@@ -906,8 +1197,24 @@ Resources:
 
   CertIssuerBuildTriggerFunction:
     Type: AWS::Lambda::Function
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W28
+            reason: "workshop depends on fixed resource names referenced across stacks/scripts"
+          - id: W89
+            reason: "calls public AWS APIs, no VPC resources"
+      checkov:
+        skip:
+          - id: CKV_AWS_116
+            comment: "synchronous/custom-resource invocation"
+          - id: CKV_AWS_117
+            comment: "calls public AWS APIs, no VPC resources"
+          - id: CKV_AWS_173
+            comment: "AWS-managed key default"
     Properties:
       FunctionName: pqc-workshop-cert-issuer-build-trigger
+      ReservedConcurrentExecutions: 5
       Runtime: python3.12
       Handler: index.handler
       Timeout: 900
@@ -962,6 +1269,21 @@ Resources:
   # registration Step Function via codebuild:startBuild.sync.
   CertProvisionerRole:
     Type: AWS::IAM::Role
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W11
+            reason: "ecr:GetAuthorizationToken does not support resource-level permissions and requires Resource '*'"
+          - id: W28
+            reason: "workshop depends on fixed resource names referenced across stacks/scripts"
+          - id: W76
+            reason: "comprehensive provisioning policy"
+      checkov:
+        skip:
+          - id: CKV_AWS_111
+            comment: "ecr:GetAuthorizationToken does not support resource-level permissions and requires Resource '*'"
+          - id: CKV_AWS_109
+            comment: "ecr:GetAuthorizationToken does not support resource-level permissions and requires Resource '*'"
     Properties:
       RoleName: pqc-workshop-cert-provisioner
       AssumeRolePolicyDocument:
@@ -981,7 +1303,7 @@ Resources:
                   - logs:CreateLogGroup
                   - logs:CreateLogStream
                   - logs:PutLogEvents
-                Resource: '*'
+                Resource: !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/pqc-workshop-broker-cert-provisioner*'
               - Effect: Allow
                 Action:
                   - ecr:GetAuthorizationToken
@@ -1032,6 +1354,11 @@ Resources:
 
   BrokerCertProvisionerProject:
     Type: AWS::CodeBuild::Project
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W32
+            reason: "default AWS-managed CodeBuild encryption key"
     Properties:
       Name: pqc-workshop-broker-cert-provisioner
       Description: Mints both broker server certs (classical + ML-DSA-44) into Secrets Manager
@@ -1095,18 +1422,51 @@ Resources:
   # Secrets to hold the IoT Core bridge credentials
   BridgeCertSecret:
     Type: AWS::SecretsManager::Secret
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W77
+            reason: "default AWS-managed KMS key for Secrets Manager; workshop sample"
+          - id: W28
+            reason: "workshop depends on fixed resource names referenced across stacks/scripts"
+      checkov:
+        skip:
+          - id: CKV_AWS_149
+            comment: "default AWS-managed KMS key for Secrets Manager; workshop sample"
     Properties:
       Name: pqc-broker/bridge-cert
       Description: IoT Core certificate for Mosquitto bridge
 
   BridgeKeySecret:
     Type: AWS::SecretsManager::Secret
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W77
+            reason: "default AWS-managed KMS key for Secrets Manager; workshop sample"
+          - id: W28
+            reason: "workshop depends on fixed resource names referenced across stacks/scripts"
+      checkov:
+        skip:
+          - id: CKV_AWS_149
+            comment: "default AWS-managed KMS key for Secrets Manager; workshop sample"
     Properties:
       Name: pqc-broker/bridge-key
       Description: IoT Core private key for Mosquitto bridge
 
   BridgeRootCASecret:
     Type: AWS::SecretsManager::Secret
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W77
+            reason: "default AWS-managed KMS key for Secrets Manager; workshop sample"
+          - id: W28
+            reason: "workshop depends on fixed resource names referenced across stacks/scripts"
+      checkov:
+        skip:
+          - id: CKV_AWS_149
+            comment: "default AWS-managed KMS key for Secrets Manager; workshop sample"
     Properties:
       Name: pqc-broker/bridge-root-ca
       Description: Amazon Root CA for IoT Core TLS
@@ -1114,6 +1474,21 @@ Resources:
   # Lambda to provision IoT Core Thing + Certificate + Policy and store in Secrets Manager
   BridgeProvisionerRole:
     Type: AWS::IAM::Role
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W11
+            reason: "per-device/bridge IoT thing/cert/policy create+cleanup with dynamic names; these IoT control-plane actions do not support resource-level scoping"
+          - id: W28
+            reason: "workshop depends on fixed resource names referenced across stacks/scripts"
+          - id: W76
+            reason: "comprehensive provisioning policy"
+      checkov:
+        skip:
+          - id: CKV_AWS_111
+            comment: "per-device/bridge IoT thing/cert/policy create+cleanup with dynamic names; these IoT control-plane actions do not support resource-level scoping"
+          - id: CKV_AWS_109
+            comment: "per-device/bridge IoT thing/cert/policy create+cleanup with dynamic names; these IoT control-plane actions do not support resource-level scoping"
     Properties:
       RoleName: pqc-workshop-bridge-provisioner
       AssumeRolePolicyDocument:
@@ -1158,8 +1533,26 @@ Resources:
 
   BridgeProvisionerFunction:
     Type: AWS::Lambda::Function
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W28
+            reason: "workshop depends on fixed resource names referenced across stacks/scripts"
+          - id: W89
+            reason: "calls public AWS APIs, no VPC resources"
+      checkov:
+        skip:
+          - id: CKV_AWS_116
+            comment: "synchronous/custom-resource invocation"
+          - id: CKV_AWS_117
+            comment: "calls public AWS APIs, no VPC resources"
+          - id: CKV_AWS_173
+            comment: "AWS-managed key default"
+          - id: CKV_SECRET_6
+            comment: "not a secret: inline Lambda source — IoT policy-document resource ARN f-strings and Python string constants, no credential material (certs/keys are fetched at runtime and never hardcoded)"
     Properties:
       FunctionName: pqc-workshop-bridge-provisioner
+      ReservedConcurrentExecutions: 5
       Runtime: python3.12
       Handler: index.handler
       Timeout: 60

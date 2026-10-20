@@ -54,7 +54,7 @@ def handler(event, context):
         # Poll for results (Logs Insights is async)
         results = None
         for _ in range(10):
-            time.sleep(0.5)
+            time.sleep(0.5)  # nosemgrep: arbitrary-sleep
             result_response = logs_client.get_query_results(queryId=query_id)
             if result_response['status'] == 'Complete':
                 results = result_response['results']

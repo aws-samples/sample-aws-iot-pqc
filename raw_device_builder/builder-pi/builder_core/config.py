@@ -17,10 +17,10 @@ def config_path():
 
 
 def load_config(path=None):
-    with open(path or config_path(), "r") as f:
+    with open(path or config_path(), "r", encoding="utf-8") as f:
         return json.load(f)
 
 
 def save_config(config, path=None):
-    with open(path or config_path(), "w") as f:
+    with open(path or config_path(), "w", encoding="utf-8") as f:
         json.dump(config, f, indent=2)

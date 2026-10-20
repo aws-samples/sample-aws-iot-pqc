@@ -79,6 +79,11 @@ Resources:
   # This custom resource uses a Lambda to call UpdateThing after creation.
   ThingTypeAssociationRole:
     Type: AWS::IAM::Role
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W28
+            reason: "Workshop depends on fixed resource names referenced across stacks/scripts."
     Properties:
       RoleName: !Sub '${ThingName}-thing-type-assoc-role'
       AssumeRolePolicyDocument:
@@ -102,11 +107,27 @@ Resources:
 
   ThingTypeAssociationFunction:
     Type: AWS::Lambda::Function
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W89
+            reason: "Function only calls public AWS APIs (IoT control plane); no VPC resources are involved, so VPC attachment adds no value."
+          - id: W92
+            reason: "ReservedConcurrentExecutions is set to bound concurrency for this workshop function."
+      checkov:
+        skip:
+          - id: CKV_AWS_116
+            comment: "Synchronous invocation (CloudFormation custom resource); failures surface to the caller, so a dead-letter queue is not applicable."
+          - id: CKV_AWS_117
+            comment: "Function only calls public AWS APIs (IoT control plane); no VPC resources, so VPC attachment adds no value."
+          - id: CKV_AWS_115
+            comment: "ReservedConcurrentExecutions is set to bound concurrency for this workshop function."
     Properties:
       FunctionName: !Sub '${ThingName}-thing-type-assoc'
       Runtime: python3.12
       Handler: index.handler
       Timeout: 30
+      ReservedConcurrentExecutions: 5
       Role: !GetAtt ThingTypeAssociationRole.Arn
       Code:
         ZipFile: |
@@ -184,6 +205,19 @@ Resources:
   # Secrets Manager so you can retrieve it after deployment.
   CertificateProvisionerRole:
     Type: AWS::IAM::Role
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W11
+            reason: "IoT certificate provisioning (CreateKeysAndCertificate/UpdateCertificate/DeleteCertificate/Detach*/List*) operates on certificate IDs generated at runtime by the IoT API; those ARNs are not known at policy-authoring time, so these actions cannot be scoped to a fixed resource ARN. Secrets Manager and SSM actions are already scoped to the thing-specific path."
+          - id: W28
+            reason: "Workshop depends on fixed resource names referenced across stacks/scripts."
+      checkov:
+        skip:
+          - id: CKV_AWS_111
+            comment: "IoT certificate provisioning operates on certificate IDs generated at runtime; the cert ARNs are not known at policy-authoring time, so write actions cannot be scoped to a fixed resource ARN."
+          - id: CKV_AWS_109
+            comment: "IoT certificate provisioning operates on certificate IDs generated at runtime; the cert ARNs are not known at policy-authoring time, so these actions cannot be scoped to a fixed resource ARN."
     Properties:
       RoleName: !Sub '${ThingName}-cert-provisioner-role'
       AssumeRolePolicyDocument:
@@ -227,11 +261,29 @@ Resources:
 
   CertificateProvisionerFunction:
     Type: AWS::Lambda::Function
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W89
+            reason: "Function only calls public AWS APIs (IoT, Secrets Manager, SSM); no VPC resources are involved, so VPC attachment adds no value."
+          - id: W92
+            reason: "ReservedConcurrentExecutions is set to bound concurrency for this workshop function."
+      checkov:
+        skip:
+          - id: CKV_AWS_116
+            comment: "Synchronous invocation (CloudFormation custom resource); failures surface to the caller, so a dead-letter queue is not applicable."
+          - id: CKV_AWS_117
+            comment: "Function only calls public AWS APIs (IoT, Secrets Manager, SSM); no VPC resources, so VPC attachment adds no value."
+          - id: CKV_AWS_173
+            comment: "Environment variables use the AWS-managed Lambda key by default; THING_NAME is non-sensitive and no customer CMK is required for this workshop sample."
+          - id: CKV_AWS_115
+            comment: "ReservedConcurrentExecutions is set to bound concurrency for this workshop function."
     Properties:
       FunctionName: !Sub '${ThingName}-cert-provisioner'
       Runtime: python3.12
       Handler: index.handler
       Timeout: 60
+      ReservedConcurrentExecutions: 5
       Role: !GetAtt CertificateProvisionerRole.Arn
       Environment:
         Variables:
@@ -375,6 +427,15 @@ Resources:
   TelemetryLogGroup:
     Type: AWS::Logs::LogGroup
     Condition: CreateTelemetryRule
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W84
+            reason: "Workshop sample; relies on default CloudWatch Logs encryption. No customer-managed KMS key required."
+      checkov:
+        skip:
+          - id: CKV_AWS_158
+            comment: "Workshop sample; relies on default CloudWatch Logs encryption. No customer-managed KMS key required."
     Properties:
       LogGroupName: !Sub '/aws/iot/${ThingName}/telemetry'
       RetentionInDays: !Ref TelemetryLogGroupRetentionDays
@@ -383,6 +444,15 @@ Resources:
   LifecycleLogGroup:
     Type: AWS::Logs::LogGroup
     Condition: CreateLifecycleRule
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W84
+            reason: "Workshop sample; relies on default CloudWatch Logs encryption. No customer-managed KMS key required."
+      checkov:
+        skip:
+          - id: CKV_AWS_158
+            comment: "Workshop sample; relies on default CloudWatch Logs encryption. No customer-managed KMS key required."
     Properties:
       LogGroupName: !Sub '/aws/iot/${ThingName}/lifecycle'
       RetentionInDays: !Ref TelemetryLogGroupRetentionDays
@@ -391,6 +461,11 @@ Resources:
   IoTRuleRole:
     Type: AWS::IAM::Role
     Condition: CreateTelemetryRule
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W28
+            reason: "Workshop depends on fixed resource names referenced across stacks/scripts."
     Properties:
       RoleName: !Sub '${ThingName}-iot-rule-role'
       AssumeRolePolicyDocument:

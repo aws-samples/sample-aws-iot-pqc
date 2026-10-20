@@ -57,6 +57,19 @@ Resources:
   # an unknown device. Creates the Thing and adds it to the group.
   AutoRegisterRole:
     Type: AWS::IAM::Role
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W11
+            reason: "IoT thing provisioning (CreateThing/AddThingToThingGroup/UpdateThing) targets dynamically named, MAC-derived devices (esp32-AABBCC) created at runtime; the thing ARNs are not known at policy-authoring time, so these actions cannot be scoped to a fixed resource ARN."
+          - id: W28
+            reason: "Workshop depends on fixed resource names referenced across stacks/scripts."
+      checkov:
+        skip:
+          - id: CKV_AWS_111
+            comment: "IoT thing provisioning targets dynamically named, MAC-derived devices created at runtime; thing ARNs are not known at policy-authoring time, so write actions cannot be scoped to a fixed resource ARN."
+          - id: CKV_AWS_109
+            comment: "IoT thing provisioning targets dynamically named, MAC-derived devices created at runtime; thing ARNs are not known at policy-authoring time, so these actions cannot be scoped to a fixed resource ARN."
     Properties:
       RoleName: pqc-workshop-auto-register
       AssumeRolePolicyDocument:
@@ -83,11 +96,29 @@ Resources:
 
   AutoRegisterFunction:
     Type: AWS::Lambda::Function
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W89
+            reason: "Function only calls public AWS APIs (IoT control plane); no VPC resources are involved, so VPC attachment adds no value."
+          - id: W92
+            reason: "ReservedConcurrentExecutions is set to bound concurrency for this workshop function."
+      checkov:
+        skip:
+          - id: CKV_AWS_116
+            comment: "Synchronous invocation (invoked by an IoT Rule); failures surface to the caller, so a dead-letter queue is not applicable."
+          - id: CKV_AWS_117
+            comment: "Function only calls public AWS APIs (IoT control plane); no VPC resources, so VPC attachment adds no value."
+          - id: CKV_AWS_173
+            comment: "Environment variables use the AWS-managed Lambda key by default; no sensitive data and no customer CMK required for this workshop sample."
+          - id: CKV_AWS_115
+            comment: "ReservedConcurrentExecutions is set to bound concurrency for this workshop function."
     Properties:
       FunctionName: pqc-workshop-auto-register
       Runtime: python3.12
       Handler: index.handler
       Timeout: 10
+      ReservedConcurrentExecutions: 5
       Role: !GetAtt AutoRegisterRole.Arn
       Code:
         ZipFile: |

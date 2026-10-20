@@ -112,10 +112,21 @@ Resources:
 
   BuildImageRepository:
     Type: AWS::ECR::Repository
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W28
+            reason: "workshop depends on fixed resource names referenced across stacks/scripts"
+      checkov:
+        skip:
+          - id: CKV_AWS_51
+            comment: "deploy re-pushes latest tag; immutability would break idempotent redeploy"
+          - id: CKV_AWS_136
+            comment: "default AES256 ECR encryption"
     Properties:
       RepositoryName: pqc-workshop-firmware-builder
       ImageScanningConfiguration:
-        ScanOnPush: false
+        ScanOnPush: true
       LifecyclePolicy:
         LifecyclePolicyText: |
           {"rules":[{"rulePriority":1,"selection":{"tagStatus":"untagged","countType":"sinceImagePushed","countUnit":"days","countNumber":30},"action":{"type":"expire"}}]}
@@ -126,6 +137,19 @@ Resources:
 
   ImageBuilderRole:
     Type: AWS::IAM::Role
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W11
+            reason: "logs:Create*/PutLogEvents and ecr:GetAuthorizationToken require Resource:'*'; GetAuthorizationToken does not support resource-level scoping"
+          - id: W28
+            reason: "workshop depends on fixed resource names referenced across stacks/scripts"
+      checkov:
+        skip:
+          - id: CKV_AWS_111
+            comment: "logs:Create*/PutLogEvents and ecr:GetAuthorizationToken require Resource:'*'; GetAuthorizationToken does not support resource-level scoping"
+          - id: CKV_AWS_109
+            comment: "logs:Create*/PutLogEvents and ecr:GetAuthorizationToken require Resource:'*'; GetAuthorizationToken does not support resource-level scoping"
     Properties:
       RoleName: pqc-workshop-image-builder
       AssumeRolePolicyDocument:
@@ -170,6 +194,11 @@ Resources:
 
   ImageBuilderProject:
     Type: AWS::CodeBuild::Project
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W32
+            reason: "default AWS-managed CodeBuild encryption key"
     Properties:
       Name: pqc-workshop-build-image
       Description: Builds Docker image with ESP32 arduino-cli toolchain (run once)
@@ -200,8 +229,28 @@ Resources:
 
   FirmwareBucket:
     Type: AWS::S3::Bucket
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W35
+            reason: "workshop sample; access-logging bucket out of scope"
+          - id: W51
+            reason: "workshop sample; access-logging bucket out of scope"
+      checkov:
+        skip:
+          - id: CKV_AWS_18
+            comment: "workshop sample; access-logging bucket out of scope"
     Properties:
       BucketName: !Sub '${FirmwareBucketName}-${AWS::AccountId}'
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
       VersioningConfiguration:
         Status: Enabled
       LifecycleConfiguration:
@@ -217,9 +266,18 @@ Resources:
 
   DeviceRegistryTable:
     Type: AWS::DynamoDB::Table
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W28
+            reason: "workshop depends on fixed resource names referenced across stacks/scripts"
     Properties:
       TableName: pqc-workshop-device-registry
       BillingMode: PAY_PER_REQUEST
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      SSESpecification:
+        SSEEnabled: true
       AttributeDefinitions:
         - AttributeName: serialNumber
           AttributeType: S
@@ -233,6 +291,19 @@ Resources:
 
   DeviceRegistrarRole:
     Type: AWS::IAM::Role
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W11
+            reason: "registrar provisions per-device IoT things/certs/policies with dynamic names; iot:CreateKeysAndCertificate does not support resource-level scoping, and kms:Decrypt is constrained by a kms:ViaService condition to SSM"
+          - id: W28
+            reason: "workshop depends on fixed resource names referenced across stacks/scripts"
+      checkov:
+        skip:
+          - id: CKV_AWS_111
+            comment: "registrar provisions per-device IoT things/certs/policies with dynamic names; iot:CreateKeysAndCertificate does not support resource-level scoping, and kms:Decrypt is constrained by a kms:ViaService condition to SSM"
+          - id: CKV_AWS_109
+            comment: "registrar provisions per-device IoT things/certs/policies with dynamic names; iot:CreateKeysAndCertificate does not support resource-level scoping, and kms:Decrypt is constrained by a kms:ViaService condition to SSM"
     Properties:
       RoleName: pqc-workshop-device-registrar
       AssumeRolePolicyDocument:
@@ -321,11 +392,25 @@ Resources:
 
   DeviceRegistrarFunction:
     Type: AWS::Lambda::Function
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W89
+            reason: "calls public AWS APIs, no VPC resources"
+      checkov:
+        skip:
+          - id: CKV_AWS_116
+            comment: "synchronous invocation"
+          - id: CKV_AWS_117
+            comment: "calls public AWS APIs, no VPC resources"
+          - id: CKV_AWS_173
+            comment: "AWS-managed key default"
     Properties:
       FunctionName: pqc-workshop-device-registrar
       Runtime: python3.12
       Handler: index.handler
       Timeout: 60
+      ReservedConcurrentExecutions: 5
       Role: !GetAtt DeviceRegistrarRole.Arn
       Environment:
         Variables:
@@ -362,11 +447,25 @@ Resources:
   # device-registrar role (acm-pca, codebuild, dynamodb, s3).
   PrepareBuildFunction:
     Type: AWS::Lambda::Function
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W89
+            reason: "calls public AWS APIs, no VPC resources"
+      checkov:
+        skip:
+          - id: CKV_AWS_116
+            comment: "synchronous invocation"
+          - id: CKV_AWS_117
+            comment: "calls public AWS APIs, no VPC resources"
+          - id: CKV_AWS_173
+            comment: "AWS-managed key default"
     Properties:
       FunctionName: pqc-workshop-prepare-build
       Runtime: python3.12
       Handler: index.handler
       Timeout: 60
+      ReservedConcurrentExecutions: 5
       Role: !GetAtt DeviceRegistrarRole.Arn
       Environment:
         Variables:
@@ -385,11 +484,25 @@ Resources:
   # Work step 2: presign regional S3 URL, publish cmd/<thing>/ota, mark registry.
   PublishOtaFunction:
     Type: AWS::Lambda::Function
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W89
+            reason: "calls public AWS APIs, no VPC resources"
+      checkov:
+        skip:
+          - id: CKV_AWS_116
+            comment: "synchronous invocation"
+          - id: CKV_AWS_117
+            comment: "calls public AWS APIs, no VPC resources"
+          - id: CKV_AWS_173
+            comment: "AWS-managed key default"
     Properties:
       FunctionName: pqc-workshop-publish-ota
       Runtime: python3.12
       Handler: index.handler
       Timeout: 30
+      ReservedConcurrentExecutions: 5
       Role: !GetAtt DeviceRegistrarRole.Arn
       Environment:
         Variables:
@@ -401,6 +514,11 @@ Resources:
   # AppSync target: starts the state machine and returns immediately.
   StartMigrationRole:
     Type: AWS::IAM::Role
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W28
+            reason: "workshop depends on fixed resource names referenced across stacks/scripts"
     Properties:
       RoleName: pqc-workshop-start-migration
       AssumeRolePolicyDocument:
@@ -423,11 +541,25 @@ Resources:
 
   StartMigrationFunction:
     Type: AWS::Lambda::Function
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W89
+            reason: "calls public AWS APIs, no VPC resources"
+      checkov:
+        skip:
+          - id: CKV_AWS_116
+            comment: "synchronous invocation"
+          - id: CKV_AWS_117
+            comment: "calls public AWS APIs, no VPC resources"
+          - id: CKV_AWS_173
+            comment: "AWS-managed key default"
     Properties:
       FunctionName: pqc-workshop-start-migration
       Runtime: python3.12
       Handler: index.handler
       Timeout: 10
+      ReservedConcurrentExecutions: 5
       Role: !GetAtt StartMigrationRole.Arn
       Environment:
         Variables:
@@ -437,6 +569,11 @@ Resources:
   # Allow AppSync (dashboard migrateFirmware resolver) to invoke StartMigration.
   StartMigrationAppSyncPermission:
     Type: AWS::Lambda::Permission
+    Metadata:
+      checkov:
+        skip:
+          - id: CKV_AWS_364
+            comment: "AppSync API is defined in the dashboard stack and not importable here; SourceArn cannot reference it without a cross-stack dependency that does not exist"
     Properties:
       FunctionName: !Ref StartMigrationFunction
       Action: lambda:InvokeFunction
@@ -446,6 +583,11 @@ Resources:
   # device table, run the build, invoke the two task Lambdas.
   PqcMigrationStateMachineRole:
     Type: AWS::IAM::Role
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W28
+            reason: "workshop depends on fixed resource names referenced across stacks/scripts"
     Properties:
       RoleName: pqc-workshop-pqc-migration
       AssumeRolePolicyDocument:
@@ -644,6 +786,19 @@ Resources:
 
   DeviceDeregistrarRole:
     Type: AWS::IAM::Role
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W11
+            reason: "deregistrar tears down per-device IoT things/certs/policies with dynamic names; resource cannot be statically scoped"
+          - id: W28
+            reason: "workshop depends on fixed resource names referenced across stacks/scripts"
+      checkov:
+        skip:
+          - id: CKV_AWS_111
+            comment: "deregistrar tears down per-device IoT things/certs/policies with dynamic names; resource cannot be statically scoped"
+          - id: CKV_AWS_109
+            comment: "deregistrar tears down per-device IoT things/certs/policies with dynamic names; resource cannot be statically scoped"
     Properties:
       RoleName: pqc-workshop-device-deregistrar
       AssumeRolePolicyDocument:
@@ -686,11 +841,25 @@ Resources:
 
   DeviceDeregistrarFunction:
     Type: AWS::Lambda::Function
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W89
+            reason: "calls public AWS APIs, no VPC resources"
+      checkov:
+        skip:
+          - id: CKV_AWS_116
+            comment: "synchronous invocation"
+          - id: CKV_AWS_117
+            comment: "calls public AWS APIs, no VPC resources"
+          - id: CKV_AWS_173
+            comment: "AWS-managed key default"
     Properties:
       FunctionName: pqc-workshop-device-deregistrar
       Runtime: python3.12
       Handler: index.handler
       Timeout: 30
+      ReservedConcurrentExecutions: 5
       Role: !GetAtt DeviceDeregistrarRole.Arn
       Environment:
         Variables:
@@ -718,6 +887,17 @@ Resources:
 
   FleetCleanupRole:
     Type: AWS::IAM::Role
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W11
+            reason: "teardown broom enumerates and deletes ALL esp32-* IoT things/certs/policies with dynamic names; resource cannot be statically scoped"
+      checkov:
+        skip:
+          - id: CKV_AWS_111
+            comment: "teardown broom enumerates and deletes ALL esp32-* IoT things/certs/policies with dynamic names; resource cannot be statically scoped"
+          - id: CKV_AWS_109
+            comment: "teardown broom enumerates and deletes ALL esp32-* IoT things/certs/policies with dynamic names; resource cannot be statically scoped"
     Properties:
       # No explicit RoleName (auto-generated) so repeat deploys in a shared
       # account don't collide on a fixed name.
@@ -756,11 +936,25 @@ Resources:
 
   FleetCleanupFunction:
     Type: AWS::Lambda::Function
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W89
+            reason: "calls public AWS APIs, no VPC resources"
+      checkov:
+        skip:
+          - id: CKV_AWS_116
+            comment: "synchronous invocation"
+          - id: CKV_AWS_117
+            comment: "calls public AWS APIs, no VPC resources"
+          - id: CKV_AWS_173
+            comment: "AWS-managed key default"
     Properties:
       # No explicit FunctionName (auto-generated) to stay repeat-deploy safe.
       Runtime: python3.12
       Handler: index.handler
       Timeout: 300
+      ReservedConcurrentExecutions: 5
       Role: !GetAtt FleetCleanupRole.Arn
       Environment:
         Variables:
@@ -875,6 +1069,11 @@ Resources:
 
   FirmwarePusherRole:
     Type: AWS::IAM::Role
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W28
+            reason: "workshop depends on fixed resource names referenced across stacks/scripts"
     Properties:
       RoleName: pqc-workshop-firmware-pusher
       AssumeRolePolicyDocument:
@@ -912,11 +1111,25 @@ Resources:
 
   FirmwarePusherFunction:
     Type: AWS::Lambda::Function
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W89
+            reason: "calls public AWS APIs, no VPC resources"
+      checkov:
+        skip:
+          - id: CKV_AWS_116
+            comment: "synchronous invocation"
+          - id: CKV_AWS_117
+            comment: "calls public AWS APIs, no VPC resources"
+          - id: CKV_AWS_173
+            comment: "AWS-managed key default"
     Properties:
       FunctionName: pqc-workshop-firmware-pusher
       Runtime: python3.12
       Handler: index.handler
       Timeout: 15
+      ReservedConcurrentExecutions: 5
       Role: !GetAtt FirmwarePusherRole.Arn
       Environment:
         Variables:
@@ -931,6 +1144,13 @@ Resources:
 
   BuilderApi:
     Type: AWS::ApiGateway::RestApi
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W68
+            reason: "workshop sample internal API, no usage plan/access logging in scope"
+          - id: W45
+            reason: "workshop sample internal API, no usage plan/access logging in scope"
     Properties:
       Name: pqc-workshop-device-builder-api
       Description: API for device registration, deregistration, and firmware management
@@ -997,6 +1217,11 @@ Resources:
 
   ApiDeployment:
     Type: AWS::ApiGateway::Deployment
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W45
+            reason: "workshop sample internal API, no usage plan/access logging in scope"
     DependsOn:
       - RegisterMethod
       - DeregisterMethod
@@ -1035,6 +1260,19 @@ Resources:
 
   CodeBuildRole:
     Type: AWS::IAM::Role
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W11
+            reason: "logs:Create*/PutLogEvents and ecr:GetAuthorizationToken require Resource:'*'; GetAuthorizationToken does not support resource-level scoping"
+          - id: W28
+            reason: "workshop depends on fixed resource names referenced across stacks/scripts"
+      checkov:
+        skip:
+          - id: CKV_AWS_111
+            comment: "logs:Create*/PutLogEvents and ecr:GetAuthorizationToken require Resource:'*'; GetAuthorizationToken does not support resource-level scoping"
+          - id: CKV_AWS_109
+            comment: "logs:Create*/PutLogEvents and ecr:GetAuthorizationToken require Resource:'*'; GetAuthorizationToken does not support resource-level scoping"
     Properties:
       RoleName: pqc-workshop-codebuild-firmware
       AssumeRolePolicyDocument:
@@ -1101,6 +1339,11 @@ Resources:
 
   FirmwareBuildProject:
     Type: AWS::CodeBuild::Project
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W32
+            reason: "default AWS-managed CodeBuild encryption key"
     Properties:
       Name: pqc-workshop-firmware-build
       Description: Compiles classical ESP32 firmware with device-specific credentials
@@ -1170,6 +1413,19 @@ Resources:
 
   BuilderPiSsmRole:
     Type: AWS::IAM::Role
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W11
+            reason: "kms:Decrypt on key/* is constrained by a kms:ViaService condition to SSM so the decrypt key cannot be statically identified"
+          - id: W28
+            reason: "workshop depends on fixed resource names referenced across stacks/scripts"
+      checkov:
+        skip:
+          - id: CKV_AWS_111
+            comment: "kms:Decrypt on key/* is constrained by a kms:ViaService condition to SSM so the decrypt key cannot be statically identified"
+          - id: CKV_AWS_109
+            comment: "kms:Decrypt on key/* is constrained by a kms:ViaService condition to SSM so the decrypt key cannot be statically identified"
     Properties:
       RoleName: pqc-workshop-builder-pi-ssm
       AssumeRolePolicyDocument:

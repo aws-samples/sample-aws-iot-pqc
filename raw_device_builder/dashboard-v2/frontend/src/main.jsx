@@ -19,7 +19,9 @@ async function bootstrap() {
     console.error('Failed to load runtime config:', err);
     root.render(
       <div style={{ padding: '2rem', fontFamily: 'sans-serif', color: '#b00' }}>
+        {/* nosemgrep: jsx-not-internationalized */}
         <h1>Dashboard configuration error</h1>
+        {/* nosemgrep: jsx-not-internationalized */}
         <p>The dashboard could not load its runtime configuration (config.json).</p>
         <pre style={{ whiteSpace: 'pre-wrap' }}>{String(err && err.message ? err.message : err)}</pre>
       </div>

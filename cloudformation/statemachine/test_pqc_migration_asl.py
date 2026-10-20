@@ -27,7 +27,7 @@ ASL_PATH = os.path.join(HERE, "pqc-migration.asl.json")
 
 @pytest.fixture(scope="module")
 def asl():
-    with open(ASL_PATH) as f:
+    with open(ASL_PATH, encoding="utf-8") as f:
         return json.load(f)
 
 
@@ -150,7 +150,7 @@ def _load_inline_definition():
     """Extract + parse the inline Step Functions DefinitionString from the
     device-builder stack. Returns the parsed ASL dict (the ${...} substitution
     tokens are quoted strings, so it is valid JSON)."""
-    with open(_STACK_YAML) as f:
+    with open(_STACK_YAML, encoding="utf-8") as f:
         txt = f.read()
     # The block runs from 'DefinitionString: |' to the next blank line + comment.
     m = re.search(r"DefinitionString:\s*\|\n(.*?)\n\n\s*#", txt, re.DOTALL)
