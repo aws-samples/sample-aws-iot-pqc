@@ -60,16 +60,8 @@ Resources:
     Metadata:
       cfn_nag:
         rules_to_suppress:
-          - id: W11
-            reason: "IoT thing provisioning (CreateThing/AddThingToThingGroup/UpdateThing) targets dynamically named, MAC-derived devices (esp32-AABBCC) created at runtime; the thing ARNs are not known at policy-authoring time, so these actions cannot be scoped to a fixed resource ARN."
           - id: W28
             reason: "Workshop depends on fixed resource names referenced across stacks/scripts."
-      checkov:
-        skip:
-          - id: CKV_AWS_111
-            comment: "IoT thing provisioning targets dynamically named, MAC-derived devices created at runtime; thing ARNs are not known at policy-authoring time, so write actions cannot be scoped to a fixed resource ARN."
-          - id: CKV_AWS_109
-            comment: "IoT thing provisioning targets dynamically named, MAC-derived devices created at runtime; thing ARNs are not known at policy-authoring time, so these actions cannot be scoped to a fixed resource ARN."
     Properties:
       RoleName: pqc-workshop-auto-register
       AssumeRolePolicyDocument:
@@ -86,13 +78,21 @@ Resources:
           PolicyDocument:
             Version: '2012-10-17'
             Statement:
+              # Workshop devices are always named esp32-<MAC> — scope the thing
+              # actions to that prefix rather than all Things in the account.
               - Effect: Allow
                 Action:
                   - iot:CreateThing
                   - iot:DescribeThing
-                  - iot:AddThingToThingGroup
                   - iot:UpdateThing
-                Resource: '*'
+                Resource: !Sub 'arn:aws:iot:${AWS::Region}:${AWS::AccountId}:thing/esp32-*'
+              # AddThingToThingGroup needs both the thing and the target group.
+              - Effect: Allow
+                Action:
+                  - iot:AddThingToThingGroup
+                Resource:
+                  - !Sub 'arn:aws:iot:${AWS::Region}:${AWS::AccountId}:thing/esp32-*'
+                  - !GetAtt WorkshopThingGroup.Arn
 
   AutoRegisterFunction:
     Type: AWS::Lambda::Function
