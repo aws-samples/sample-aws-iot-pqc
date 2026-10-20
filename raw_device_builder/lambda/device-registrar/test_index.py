@@ -32,7 +32,7 @@ class _Ctx:
 
 REGISTRY_TABLE = "pqc-workshop-device-registry"
 DEVICE_TABLE = "pqc-workshop-devices"
-FIRMWARE_BUCKET = "pqc-workshop-firmware-569757034460"
+FIRMWARE_BUCKET = "pqc-workshop-firmware-123456789012"
 
 
 def _env():

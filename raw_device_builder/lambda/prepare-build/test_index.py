@@ -31,7 +31,7 @@ sys.path.insert(0, REPO_ROOT)
 from conftest import load_handler_module  # noqa: E402
 
 REGISTRY_TABLE = "pqc-workshop-device-registry"
-FIRMWARE_BUCKET = "pqc-workshop-firmware-087195661091"
+FIRMWARE_BUCKET = "pqc-workshop-firmware-123456789012"
 BUILD_PROJECT = "pqc-workshop-firmware-build"
 
 # Keep in sync with prepare-build/index.py VARIANT_CONFIG.

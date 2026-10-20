@@ -30,7 +30,7 @@ sys.path.insert(0, REPO_ROOT)
 from conftest import load_handler_module  # noqa: E402
 
 REGISTRY_TABLE = "pqc-workshop-device-registry"
-FIRMWARE_BUCKET = "pqc-workshop-firmware-087195661091"
+FIRMWARE_BUCKET = "pqc-workshop-firmware-123456789012"
 PQC_VERSION = "2.0.0-pqc"
 
 
