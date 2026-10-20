@@ -417,7 +417,7 @@ if __name__ == '__main__':
     # address) or to "127.0.0.1" for local-only access. Sourcing the value from
     # config (rather than a literal in the call) also keeps the bind address a
     # deliberate, documented deployment choice.
-    gui_host = config.get('gui_host', '0.0.0.0')
+    gui_host = config.get('gui_host', '0.0.0.0')  # nosec B104 - all-interfaces default is intentional: the GUI is reached over the Pi's workshop WiFi AP, not loopback; operator-overridable via config "gui_host"
     print(f"Builder-Pi GUI starting on {gui_host}:{config['gui_port']}...")
     print(f"Access at: http://{gui_host}:{config['gui_port']}")
-    app.run(host=gui_host, port=config['gui_port'], debug=False)  # nosec B104 - host is a documented, operator-overridable config value (defaults to all interfaces for workshop AP access)
+    app.run(host=gui_host, port=config['gui_port'], debug=False)

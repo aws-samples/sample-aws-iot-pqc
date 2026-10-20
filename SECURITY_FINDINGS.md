@@ -52,6 +52,27 @@ suppress it.
 
 ---
 
+## Accepted: Bandit `B104` — builder-Pi GUI binds all interfaces (by design)
+
+- **Scanner / rule:** Bandit `B104` "Possible binding to all interfaces"
+  (WARNING).
+- **File:** `raw_device_builder/builder-pi/app.py` — the `gui_host` default
+  (`config.get('gui_host', '0.0.0.0')`).
+- **Status:** Accepted — by design. Annotated `# nosec B104` in code; baseline
+  in the scanner UI (Probe/Bandit ignore inline `# nosec`).
+
+The builder-Pi Flask GUI is reached from the operator's laptop over the Pi's
+workshop WiFi access point, not from the Pi itself, so it must listen on the AP
+interface — a loopback bind would make it unreachable and break the workshop
+out of the box. The bind host is read from `config.json` (`gui_host`) and is
+operator-overridable: it can be narrowed to the AP interface IP or to
+`127.0.0.1`. The all-interfaces value is the documented default, not a
+hardcoded bind, and the exposure is limited to the Pi's own workshop LAN.
+(The companion Slingshot/Semgrep `avoid_app_run_with_bad_host` finding was
+resolved in source by sourcing the host from config — see the Slingshot
+section below — but Bandit's `B104` matches the `'0.0.0.0'` default literal
+wherever it appears, so it remains as this documented acceptance.)
+
 ## Accepted INFO-tier noise
 
 The remaining Probe findings are all INFO severity and are left as-is:
