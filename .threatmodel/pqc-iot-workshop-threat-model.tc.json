@@ -1,0 +1,18 @@
+{
+  "schema": 1,
+  "applicationInfo": {
+    "name": "Threat Model Export",
+    "description": "Post-Quantum Cryptography Migration for IoT workshop (AWS Workshop Studio / re:Invent builders session, also published as the public aws-samples/sample-aws-iot-pqc sample). ESP32-S3 field devices connect over MQTT/TLS 1.3 with a hybrid SecP256r1MLKEM768 key exchange to a containerized Mosquitto PQC broker (ECS Fargate in private subnets behind an internet-facing NLB on 8883 classical / 8884 ML-DSA-44), which bridges over classical mTLS to AWS IoT Core. Two Private CAs (classical ECDSA P-256 and ML-DSA-44) issue broker and device certificates. A cloud pipeline (API Gateway + Lambda registrar, CodeBuild firmware builder container, Step Functions PQC migration, S3 presigned-URL OTA) builds per-device firmware with embedded credentials and migrates devices classical -> PQC key exchange -> PQC certificates over the air. An on-site Raspberry Pi (Builder-Pi, managed via SSM hybrid activation) runs a Flask GUI that registers and USB-flashes devices and hosts the 2.4GHz workshop WiFi AP. A CloudFront + S3 React dashboard backed by AppSync, Cognito, DynamoDB and IoT Rules -> Lambdas shows live telemetry and sends LED/OTA commands. Deployed per event from a single master CloudFormation stack in a throwaway account. In scope: device firmware, broker, NLB, PKI, build/registration/OTA/migration pipeline, Builder-Pi, dashboard and their AWS resources. Out of scope: AWS-managed service internals, the physical venue network beyond the workshop AP, attendee laptops."
+  },
+  "architecture": {
+    "description": ""
+  },
+  "dataflow": {
+    "description": ""
+  },
+  "assumptions": [],
+  "mitigations": [],
+  "assumptionLinks": [],
+  "mitigationLinks": [],
+  "threats": []
+}

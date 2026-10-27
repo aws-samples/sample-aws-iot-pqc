@@ -1,0 +1,286 @@
+# Comprehensive Threat Model Report
+
+**Generated**: 2026-10-27 16:54:06
+**Current Phase**: 1 - Business Context Analysis
+**Overall Completion**: 30.0%
+
+## Table of Contents
+
+1. [Executive Summary](#executive-summary)
+2. [Business Context](#business-context)
+3. [Classification Profiles](#classification-profiles)
+4. [System Architecture](#system-architecture)
+5. [Threat Actors](#threat-actors)
+6. [Trust Boundaries](#trust-boundaries)
+7. [Assets and Flows](#assets-and-flows)
+8. [Threats](#threats)
+9. [Mitigations](#mitigations)
+10. [Assumptions](#assumptions)
+11. [Phase Progress](#phase-progress)
+
+## Executive Summary
+
+Post-Quantum Cryptography Migration for IoT workshop (AWS Workshop Studio / re:Invent builders session, also published as the public aws-samples/sample-aws-iot-pqc sample). ESP32-S3 field devices connect over MQTT/TLS 1.3 with a hybrid SecP256r1MLKEM768 key exchange to a containerized Mosquitto PQC broker (ECS Fargate in private subnets behind an internet-facing NLB on 8883 classical / 8884 ML-DSA-44), which bridges over classical mTLS to AWS IoT Core. Two Private CAs (classical ECDSA P-256 and ML-DSA-44) issue broker and device certificates. A cloud pipeline (API Gateway + Lambda registrar, CodeBuild firmware builder container, Step Functions PQC migration, S3 presigned-URL OTA) builds per-device firmware with embedded credentials and migrates devices classical -> PQC key exchange -> PQC certificates over the air. An on-site Raspberry Pi (Builder-Pi, managed via SSM hybrid activation) runs a Flask GUI that registers and USB-flashes devices and hosts the 2.4GHz workshop WiFi AP. A CloudFront + S3 React dashboard backed by AppSync, Cognito, DynamoDB and IoT Rules -> Lambdas shows live telemetry and sends LED/OTA commands. Deployed per event from a single master CloudFormation stack in a throwaway account. In scope: device firmware, broker, NLB, PKI, build/registration/OTA/migration pipeline, Builder-Pi, dashboard and their AWS resources. Out of scope: AWS-managed service internals, the physical venue network beyond the workshop AP, attendee laptops.
+
+### Key Statistics
+
+- **Total Threats**: 0
+- **Total Mitigations**: 0
+- **Total Assumptions**: 0
+- **System Components**: 30
+- **Assets**: 0
+- **Threat Actors**: 0
+
+## Business Context
+
+**Description**: Post-Quantum Cryptography Migration for IoT workshop (AWS Workshop Studio / re:Invent builders session, also published as the public aws-samples/sample-aws-iot-pqc sample). ESP32-S3 field devices connect over MQTT/TLS 1.3 with a hybrid SecP256r1MLKEM768 key exchange to a containerized Mosquitto PQC broker (ECS Fargate in private subnets behind an internet-facing NLB on 8883 classical / 8884 ML-DSA-44), which bridges over classical mTLS to AWS IoT Core. Two Private CAs (classical ECDSA P-256 and ML-DSA-44) issue broker and device certificates. A cloud pipeline (API Gateway + Lambda registrar, CodeBuild firmware builder container, Step Functions PQC migration, S3 presigned-URL OTA) builds per-device firmware with embedded credentials and migrates devices classical -> PQC key exchange -> PQC certificates over the air. An on-site Raspberry Pi (Builder-Pi, managed via SSM hybrid activation) runs a Flask GUI that registers and USB-flashes devices and hosts the 2.4GHz workshop WiFi AP. A CloudFront + S3 React dashboard backed by AppSync, Cognito, DynamoDB and IoT Rules -> Lambdas shows live telemetry and sends LED/OTA commands. Deployed per event from a single master CloudFormation stack in a throwaway account. In scope: device firmware, broker, NLB, PKI, build/registration/OTA/migration pipeline, Builder-Pi, dashboard and their AWS resources. Out of scope: AWS-managed service internals, the physical venue network beyond the workshop AP, attendee laptops.
+
+### Business Features
+
+- **Industry Sector**: Technology
+- **Data Sensitivity**: Confidential
+- **User Base Size**: Micro
+- **Geographic Scope**: National / Single-Country
+- **Regulatory Requirements**: None
+- **System Criticality**: Medium
+- **Financial Impact**: Low
+- **Authentication Requirement**: Basic
+- **Deployment Model**: Hybrid cloud
+- **User Base Metric**: Concurrent Users
+- **Revenue Band**: Enterprise
+- **Data Residency**: National / Single-Country
+- **Compute Location**: National / Single-Country
+- **User Base Location**: National / Single-Country
+- **Organizational HQ**: National / Single-Country
+
+## Classification Profiles
+
+### Software Profile
+
+- **Software Type**: Embedded / IoT / Firmware
+- **Deployment Model**: Hybrid cloud
+- **Architecture Style**: Event-driven
+- **Platform / Runtime**: Embedded device
+- **User Domain**: Education
+- **Licensing / Ownership**: Open source
+- **Modern Paradigms**: Cloud-native, Containerized, IoT, Edge computing, Event-driven architecture
+- **Description**: ESP32 Arduino firmware (wolfSSL TLS 1.3 + ML-KEM, FreeRTOS WiFi/MQTT tasks, dual-boot OTA) plus an AWS backend: ECS Fargate Mosquitto/OpenSSL 3.5 + oqs-provider broker, NLB, ACM Private CA, Lambda, Step Functions, CodeBuild, API Gateway, AppSync, Cognito, DynamoDB, S3, CloudFront, IoT Core, SSM, Secrets Manager. Raspberry Pi edge host running a Flask GUI and arduino-cli/esptool. MIT-0 licensed sample.
+
+### Data Asset Profiles
+
+| ID | Name | Asset | Category | Content Types | Sensitivity | Compliance | States | Volume | Lifecycle | Business Domain | Description |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| DP001 | Device private keys and certificates | DA-DEVICE-CREDS | Secrets and Credentials | Authentication credentials | Restricted | None | At rest, In transit, In use | Small | Active | Engineering | Per-device ECDSA P-256 and ML-DSA-44 key pairs and certificates issued by the shared cert-issuer CodeBuild job, compiled into each device's firmware image, stored in device flash, and used for device-to-broker mTLS. |
+| DP002 | Private CA signing keys | DA-CA-KEYS | Secrets and Credentials | Authentication credentials | Restricted | None | At rest, In use | Small | Active | Engineering | Signing keys of the two workshop trust roots (classical ECDSA P-256 Private CA and the ML-DSA-44 CA). Compromise allows minting trusted broker or device identities. |
+| DP003 | Broker server and IoT bridge credentials | DA-BROKER-CREDS | Secrets and Credentials | Authentication credentials | Restricted | None | At rest, In use | Small | Active | Engineering | Broker TLS server certificates/keys (classical and ML-DSA) and the AWS IoT Core bridge client certificate/key, stored in Secrets Manager and loaded by the Fargate broker task. |
+| DP004 | Workshop WiFi credentials | DA-WIFI | Secrets and Credentials | Authentication credentials | Confidential | None | At rest, In transit, In use | Small | Active | Operations | Workshop AP SSID and PSK. Source of truth is SSM SecureString /pqc-workshop/wifi/password; also compiled into firmware, configured on the Builder-Pi AP, and (known backlog item) still written in plaintext to the pqc-workshop-device-registry DynamoDB table by the registrar. |
+| DP005 | Firmware images | DA-FIRMWARE | Unstructured Data | Authentication credentials, Intellectual property / trade secrets | Restricted | None | At rest, In transit | Small | Active | Engineering | Per-device classical / PQC / PQC+ML-DSA firmware binaries in the versioned firmware S3 bucket under <serial>/<version>/, delivered to the Builder-Pi for USB flashing and to devices over OTA via presigned S3 URLs. Each image embeds that device's private key and the WiFi PSK, and integrity determines what code runs on the device. |
+| DP006 | Device telemetry and message log | DA-TELEMETRY | Semi-Structured Data | Operational / telemetry data | Internal | None | At rest, In transit | Streaming | Active | Engineering | JSON telemetry on dt/<thing>/telemetry (heap, RSSI, firmware version, negotiated PQC group, TLS version) plus lifecycle events, stored in DynamoDB (pqc-workshop-devices, pqc-workshop-message-log) and pushed to the dashboard. Its integrity is what proves to attendees that a device negotiated ML-KEM. |
+| DP007 | Device commands and OTA jobs | DA-COMMANDS | API Data | Operational / telemetry data | Internal | None | In transit | Small | Active | Engineering | Downlink messages on cmd/<thing>/+ (LED control, OTA trigger carrying a presigned firmware URL, revert-to-classical). A forged OTA command can make a device install attacker-chosen firmware. |
+| DP008 | Device registry and migration state | DA-REGISTRY | Structured Data | System metadata | Internal | None | At rest | Small | Active | Engineering | DynamoDB device registry (serial, thing name, cert metadata, firmware version, status) and dashboard device rows (migrationStatus), plus IoT Thing / per-device policy records. |
+| DP009 | Dashboard user accounts | DA-DASH-USERS | Secrets and Credentials | Authentication credentials, PII | Confidential | None | At rest, In transit | Small | Active | Operations | Cognito user pool identities (email address, password) and issued JWTs used to call the AppSync API that reads telemetry and sends device commands and migrations. |
+| DP010 | Infrastructure-as-code and deployment configuration | DA-IAC | Configuration Data | System metadata | Internal | None | At rest | Small | Active | Engineering | CloudFormation templates, buildspecs, Dockerfiles, SSM documents, deploy scripts and the Builder-Pi bundle (contains a 7-day SSM hybrid activation code). Public on GitHub after scrubbing; integrity determines what is deployed. |
+
+### User Personas
+
+| ID | Persona | Name | Privilege | Affiliation | Roles | Intent | Entity Type | Authentication | Threat Actor Overlay | In Scope | Description |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| UP001 | System Administrator | Workshop operator | Administrative | Employee | Administrator, Operator | Legitimate | Human | IAM Role | N/A | Yes | Deploys and tears down the master stack with Admin credentials, provisions the Builder-Pi over SSM, and runs readiness checks. |
+| UP002 | Authenticated Standard User | Workshop attendee | Low | Customer | End User | Legitimate | Human | Password | N/A | Yes | Plugs in and flashes a device at the Builder-Pi, joins the workshop WiFi, and uses the dashboard (Cognito) to watch telemetry and trigger PQC migrations. Physically present with access to the hardware and the venue network. |
+| UP003 | Non-Human Identity / Service Account | ESP32 field device | Low | Customer | Service Account | Legitimate | Non-Human | Certificate | N/A | Yes | Authenticates to the broker with an mTLS client certificate; publishes dt/<thing>/* and subscribes to cmd/<thing>/*; downloads OTA firmware from presigned S3 URLs. |
+| UP004 | Non-Human Identity / Service Account | Builder-Pi edge host | Elevated | Employee | Service Account, Operator | Legitimate | Non-Human | IAM Role | N/A | Yes | On-site Raspberry Pi registered as an SSM managed instance (pqc-workshop-builder-pi-ssm role). Calls the builder API to register devices, downloads firmware from S3, flashes over USB, and runs the open Flask GUI on :8080 and the workshop WiFi AP. |
+| UP005 | Non-Human Identity / Service Account | Mosquitto broker and IoT bridge | Medium | Employee | Service Account, Integration Endpoint | Legitimate | Non-Human | Certificate | N/A | Yes | Fargate task that terminates device PQC TLS and bridges to AWS IoT Core with its own client certificate (pqc-workshop-broker-bridge Thing). |
+| UP006 | Non-Human Identity / Service Account | Cloud workload roles | Elevated | Employee | Service Account | Legitimate | Non-Human | IAM Role | N/A | Yes | Lambda (registrar, deregistrar, prepare-build, publish-ota, start-migration, telemetry-processor, command-publisher, auto-register), CodeBuild (firmware build, image build, cert-issuer) and Step Functions roles that create IoT Things/policies, issue certificates and publish OTA. |
+| UP007 | Anonymous / Unauthenticated User | Unauthenticated internet or venue user | None | Public / Unknown | End User | Malicious | Human | None | N/A | Yes | Can reach the internet-facing NLB (8883/8884), the CloudFront dashboard and the builder API endpoint, and anyone in RF range or on the venue LAN can attempt the workshop AP and the Builder-Pi GUI. |
+| UP008 | Developer / DevOps User | Sample maintainer | Elevated | Employee | Developer | Legitimate | Human | Multi-factor | N/A | Yes | Commits to the internal GitLab repo and publishes the scrubbed public mirror to GitHub aws-samples and the Workshop Studio source zip. |
+
+### Non-Functional Requirements
+
+- **Resource Utilization**: Constrained — ESP32-S3 RAM/flash budget must fit wolfSSL with ML-KEM and ML-DSA plus dual OTA partitions.
+- **Availability**: 99% — Needed only for the duration of a workshop event; not a production service.
+- **Recoverability**: Hours — Recovery is a from-scratch redeploy of the master stack (roughly an hour).
+- **Installability**: Automated — Must deploy in one attempt from CloudFormation and scripts with minimal documented manual steps.
+- **Adaptability**: Multiple environments — Must work in accounts with and without VPC Block Public Access.
+- **Interoperability**: Standards-based — MQTT 3.1.1, TLS 1.3, IANA SecP256r1MLKEM768 group, FIPS 203/204 algorithms, X.509.
+- **Fault Tolerance**: Partial — Device WiFi/MQTT tasks auto-reconnect; single broker task and NLB.
+- **Fail-Safe Behaviour**: Revert to safe state — Dual-boot partitions allow rollback to classical firmware after a failed migration.
+- **Capacity**: Small — Tens of devices per workshop room.
+- **Safety Criticality**: Non-safety-related — Demo devices drive only an LED.
+
+## System Architecture
+
+### Components
+
+| ID | Name | Type | Service Provider | Description |
+|---|---|---|---|---|
+| C001 | ESP32 field device firmware | Compute | Other | Three variants: v1 classical (ECDHE + ECDSA cert, port 8883), pqc (SecP256r1MLKEM768 + ECDSA cert, 8883), v3 mldsa (ML-KEM + ML-DSA-44 cert, 8884). mTLS to the broker with WOLFSSL_VERIFY_PEER chain check only (no hostname/SAN check). Publishes dt/<thing>/telemetry and lifecycle, subscribes cmd/<thing>/+. Dual-boot OTA: downloads firmware over HTTPS from a presigned S3 URL, checks sha256 and (signed variants) an ECDSA-P256 or ML-DSA-44 signature chained to a baked signer CA root. |
+| C002 | Workshop WiFi access point | Network | On-Premise | 2.4GHz WPA2-PSK AP built by the configure-wifi-ap SSM document from /pqc-workshop/wifi/*. One shared PSK for every device and attendee; the same PSK is compiled into every firmware image. |
+| C003 | Builder-Pi edge host and Flask GUI | Compute | On-Premise | Flask GUI bound to 0.0.0.0:8080 with NO authentication or CSRF protection. Routes: /api/register, /api/reflash, /api/deregister, /api/serial/<port>, /api/scan, GET/POST /api/config (POST merges arbitrary JSON into config incl. API endpoint/bucket/region). Calls the builder API with SigV4 using SSM hybrid-activation role credentials, downloads merged firmware from S3, and USB-flashes devices. |
+| C004 | Broker Network Load Balancer | Network | AWS | Internet-facing NLB in public subnets. TCP listeners 8883 and 8884 pass TLS through to the broker (no termination). Broker SG allows 0.0.0.0/0 on both ports. VPC BPA exclusion (allow-bidirectional) lets IGW ingress through on BPA accounts. |
+| C005 | Mosquitto PQC broker | Container | AWS | Private subnets, no public IP, egress via NAT and VPC endpoints. Listener 8883 trusts the classical CA, 8884 the ML-DSA-44 CA; both require_certificate + use_identity_as_username, TLS 1.3 only. NO acl_file: any client holding any cert from the trusted CA can publish/subscribe to any topic. Loads broker and bridge credentials from Secrets Manager at startup. Logs connect/subscribe/publish events with client IDs and source IPs. |
+| C006 | Mosquitto to IoT Core bridge | Messaging | AWS | Bridge client pqc-workshop-broker-bridge connects to IoT Core 8883 with an IoT-issued X.509 cert (TLS 1.2, AmazonRootCA1). Bridges dt/+/telemetry out and cmd/# in; lifecycle is NOT bridged. Its IoT policy allows publish dt/* and shadow, subscribe/receive cmd/* and shadow wildcards: one identity speaks for every device. |
+| C007 | AWS IoT Core and rules | Messaging | AWS | Rules: pqc_workshop_telemetry (dt/+/telemetry) and pqc_workshop_lifecycle (dt/+/lifecycle) -> telemetry-processor; pqc_workshop_message_log_dt (dt/+/+) and _cmd (cmd/+/+) -> message-logger; pqc_workshop_auto_register (lifecycle online) -> auto-register. Also hosts the IoT Things, esp32-pqc-device ThingType and per-device policies (devices do not connect to IoT Core directly). |
+| C008 | Telemetry processor Lambda | Serverless | AWS | Updates pqc-workshop-devices only when the row already has serialNumber (registered-only guard), reconciles migrationStatus, and calls AppSync. Resource policy allows any IoT rule in the account (rule/*). |
+| C009 | Message logger Lambda | Serverless | AWS | Writes dt/+/+ and cmd/+/+ payloads to pqc-workshop-message-log (TTL) for the dashboard log view. cmd payloads include OTA commands with presigned URLs. |
+| C010 | Auto-register Lambda | Serverless | AWS | Creates IoT Things on a lifecycle 'online' event. Effectively dormant: lifecycle is not bridged from Mosquitto to IoT Core. |
+| C011 | Builder API | Network | AWS | Public edge endpoint. POST /register, /deregister, /firmware, all AuthorizationType AWS_IAM (SigV4). No resource policy, API key or usage plan. Caller is the Builder-Pi. |
+| C012 | Device registrar Lambda | Serverless | AWS | Creates the IoT Thing and per-device policy, writes the registry (including the WiFi password in plaintext), seeds the dashboard device row, and starts the firmware CodeBuild with WIFI_PASSWORD as a plaintext env override. Role: iot:Create*/Attach* on *, iot:Publish cmd/*, SSM /pqc-workshop/* read. |
+| C013 | Deregistrar and firmware-pusher Lambdas | Serverless | AWS | Behind /deregister (removes Thing/cert/policy/registry/dashboard row) and /firmware. |
+| C014 | Start-migration and prepare-build Lambdas | Serverless | AWS | start-migration (invoked by AppSync migrateFirmware) validates the variant and starts the state machine. prepare-build resolves variant/version/signer era and the per-device build env (including the WiFi password). |
+| C015 | PQC migration state machine | Serverless | AWS | SetStatusBuilding -> PrepareBuild -> WaitForBuild (codebuild:startBuild.sync, WIFI_PASSWORD passed as PLAINTEXT env, visible in execution history) -> SetStatusPushing -> PublishOta -> SetStatusRebooting; Catch -> SetStatusFailed. |
+| C016 | Publish-OTA Lambda | Serverless | AWS | Presigns firmware.bin (+ .sig and signer.crt for signed variants) for 900 s and publishes {action: ota-update, url, sha256, sigUrl, signerCertUrl} to cmd/<thing>/ota at QoS 1 via IoT Core. |
+| C017 | Firmware build CodeBuild | Compute | AWS | Generates the device key + CSR in-container, issues the cert from the variant's ACM PCA, writes key, cert, WiFi SSID/PSK and broker endpoint into secrets.h, compiles with arduino-cli, signs firmware.bin with the era signer key from Secrets Manager, uploads all artifacts to s3://firmware/<serial>/<version>/. WIFI_PASSWORD is also a plaintext project env var. |
+| C018 | Broker and signer cert provisioner CodeBuild | Compute | AWS | Mints the classical and ML-DSA broker server certs and the classical and ML-DSA OTA signer identities from the two CAs and stores keys/certs in 12 Secrets Manager secrets. |
+| C019 | Bridge provisioner Lambda | Serverless | AWS | Creates the pqc-workshop-broker-bridge Thing, IoT keys/cert and wildcard bridge policy, downloads AmazonRootCA1, stores cert/key/root in Secrets Manager. Role has iot Create/Delete/Attach on *. |
+| C020 | Classical Private CA | Security | AWS | Trust root for the 8883 listener: issues the classical broker cert, classical/pqc device certs, and the classical OTA signer. |
+| C021 | ML-DSA-44 Private CA | Security | AWS | Trust root for the 8884 listener: issues the ML-DSA broker cert, pqc-mldsa device certs and the ML-DSA OTA signer. Key held by ACM PCA (not self-managed). |
+| C022 | Dashboard AppSync API | Other | AWS | Queries listDevices/getDevice (devices table), getDeviceLog (message log), getBrokerLog (broker-log-reader). Mutations updateDevice (SETs arbitrary input fields on the device row), migrateFirmware (start-migration -> full build + OTA). sendCommand and deleteDevice are in the schema with NO resolvers. Subscription onDeviceUpdate. |
+| C023 | Cognito identity pool | Security | AWS | No user pool. Anyone with the pool ID (shipped in the public dashboard config.json) gets guest credentials for CognitoUnauthRole, which allows appsync:GraphQL on the whole API. |
+| C024 | Dashboard CloudFront distribution | Network | AWS | Public HTTPS (redirect-to-https, default cert), GET/HEAD only, no WAF, no access logging. Serves the Vite/React dashboard and its runtime config.json. |
+| C025 | Dashboard web client | Compute | Other | Gets guest credentials from Cognito, SigV4-signs AppSync calls, polls every 5 s, offers the firmware picker / migrate button. |
+| C026 | Broker log reader Lambda | Serverless | AWS | Reads /pqc-workshop/broker-container for the getBrokerLog query (client IDs, source IPs, topics). |
+| C027 | SSM fleet management for the Builder-Pi | Security | AWS | Hybrid activation (7-day code, in the Builder-Pi bundle and Secrets Manager iot/<instance>/*) registers the Pi. Run Command documents install the toolchain, deploy the app, configure services and the WiFi AP (decrypting the PSK). Two candidate Pi roles exist (<instance>-ssm-role and pqc-workshop-builder-pi-ssm). |
+| C028 | Operator deploy workstation | Compute | Other | Holds Admin credentials; deploys the master CloudFormation stack, writes /pqc-workshop/* SSM params, starts image builds, generates the Pi bundle and orchestrates SSM provisioning. |
+| C029 | Image and dashboard build CodeBuild projects | Compute | AWS | Build the broker, cert-issuer and firmware-builder container images (apt/Ubuntu mirror, oqs-provider) into ECR, and the Vite dashboard into the hosting bucket with a CloudFront invalidation. Supply-chain entry point. |
+| C030 | NAT gateway and VPC endpoints | Network | AWS | Egress path for the private broker task to IoT Core, ECR, Secrets Manager and CloudWatch Logs. VPC flow logs enabled (14 days). |
+
+### Connections
+
+| ID | Source | Destination | Protocol | Port | Encrypted | Description |
+|---|---|---|---|---|---|---|
+| CN001 | ESP32 field device firmware (C001) | Workshop WiFi access point (C002) | Other | N/A | Yes | Device joins the workshop AP with the shared WPA2 PSK baked into its firmware. |
+| CN002 | ESP32 field device firmware (C001) | Broker Network Load Balancer (C004) | MQTT | 8883 | Yes | classical / pqc firmware: MQTT over TLS 1.3 (SecP256r1MLKEM768 for pqc, ECDHE for classical) with mTLS client cert from the classical CA. Device verifies the broker chain only, no hostname check. |
+| CN003 | ESP32 field device firmware (C001) | Broker Network Load Balancer (C004) | MQTT | 8884 | Yes | pqc-mldsa / signer / verified firmware: MQTT over TLS 1.3 with ML-KEM and an ML-DSA-44 client cert; broker presents an ML-DSA-44 server cert. |
+| CN004 | Broker Network Load Balancer (C004) | Mosquitto PQC broker (C005) | TCP | 8883 | Yes | NLB TCP passthrough of 8883 and 8884 to the Fargate task IPs in private subnets; TLS terminates at Mosquitto. |
+| CN005 | Mosquitto PQC broker (C005) | Mosquitto to IoT Core bridge (C006) | Other | N/A | No | In-process: broker hands dt/+/telemetry to the bridge client in the same container. |
+| CN006 | Mosquitto PQC broker (C005) | ESP32 field device firmware (C001) | MQTT | 8883 | Yes | Downlink to devices over their established TLS sessions via the NLB: cmd/<thing>/ota (presigned firmware URLs), LED/control and revert commands. No per-device topic ACL, so any connected client can also publish to these topics. |
+| CN007 | Mosquitto to IoT Core bridge (C006) | NAT gateway and VPC endpoints (C030) | MQTT | 8883 | Yes | Bridge MQTT/TLS 1.2 to IoT Core leaves the private subnet via the NAT gateway. |
+| CN008 | NAT gateway and VPC endpoints (C030) | AWS IoT Core and rules (C007) | MQTT | 8883 | Yes | NAT egress to the IoT Core ATS data endpoint; bridge authenticates with its IoT X.509 cert and publishes dt/+/telemetry. |
+| CN009 | AWS IoT Core and rules (C007) | Mosquitto to IoT Core bridge (C006) | MQTT | 8883 | Yes | IoT Core delivers cmd/# (OTA and control commands) to the bridge subscription. |
+| CN010 | Mosquitto PQC broker (C005) | NAT gateway and VPC endpoints (C030) | HTTPS | 443 | Yes | Broker task reaches ECR, Secrets Manager and CloudWatch Logs via VPC endpoints (or NAT). |
+| CN011 | NAT gateway and VPC endpoints (C030) | Secrets Manager secrets (D005) | HTTPS | 443 | Yes | GetSecretValue for broker classical/ML-DSA certs and keys and the bridge cert/key/root CA at task start. |
+| CN012 | NAT gateway and VPC endpoints (C030) | ECR repositories (D007) | HTTPS | 443 | Yes | Fargate pulls pqc-workshop-mosquitto-broker:latest. |
+| CN013 | NAT gateway and VPC endpoints (C030) | CloudWatch log groups (D010) | HTTPS | 443 | Yes | awslogs driver ships broker logs (client IDs, source IPs, topics) to /pqc-workshop/broker-container. |
+| CN014 | AWS IoT Core and rules (C007) | Telemetry processor Lambda (C008) | Other | N/A | Yes | Rules pqc_workshop_telemetry and pqc_workshop_lifecycle invoke the telemetry processor. |
+| CN015 | AWS IoT Core and rules (C007) | Message logger Lambda (C009) | Other | N/A | Yes | Rules pqc_workshop_message_log_dt (dt/+/+) and _cmd (cmd/+/+) invoke the message logger. |
+| CN016 | AWS IoT Core and rules (C007) | Auto-register Lambda (C010) | Other | N/A | Yes | Rule pqc_workshop_auto_register on dt/+/lifecycle status=online (receives nothing because lifecycle is not bridged). |
+| CN017 | Auto-register Lambda (C010) | AWS IoT Core and rules (C007) | HTTPS | 443 | Yes | Auto-register calls iot CreateThing. |
+| CN018 | Telemetry processor Lambda (C008) | Dashboard devices table (D003) | HTTPS | 443 | Yes | Conditional UpdateItem (attribute_exists(serialNumber)) and migrationStatus reconcile on pqc-workshop-devices. |
+| CN019 | Telemetry processor Lambda (C008) | Dashboard AppSync API (C022) | HTTPS | 443 | Yes | Telemetry processor calls AppSync (IAM) to push updates to subscribers. |
+| CN020 | Message logger Lambda (C009) | Message log table (D004) | HTTPS | 443 | Yes | PutItem of MQTT payloads into pqc-workshop-message-log. |
+| CN021 | Dashboard web client (C025) | Dashboard CloudFront distribution (C024) | HTTPS | 443 | Yes | Browser loads the SPA and config.json (identity pool ID, AppSync URL). Public, no WAF. |
+| CN022 | Dashboard CloudFront distribution (C024) | Dashboard hosting bucket (D008) | HTTPS | 443 | Yes | CloudFront OAC (SigV4) GetObject from the hosting bucket. |
+| CN023 | Dashboard web client (C025) | Cognito identity pool (C023) | HTTPS | 443 | Yes | GetId / GetCredentialsForIdentity as an UNAUTHENTICATED guest; no sign-in exists. |
+| CN024 | Dashboard web client (C025) | Dashboard AppSync API (C022) | HTTPS | 443 | Yes | SigV4-signed GraphQL with guest credentials: listDevices/getDevice/getDeviceLog/getBrokerLog queries and updateDevice/migrateFirmware mutations. Reachable by anyone holding the public identity pool ID. |
+| CN025 | Dashboard AppSync API (C022) | Dashboard devices table (D003) | HTTPS | 443 | Yes | Resolvers listDevices/getDevice/updateDevice (arbitrary field SET) on pqc-workshop-devices. |
+| CN026 | Dashboard AppSync API (C022) | Message log table (D004) | HTTPS | 443 | Yes | getDeviceLog resolver queries the message log (includes OTA command payloads). |
+| CN027 | Dashboard AppSync API (C022) | Broker log reader Lambda (C026) | HTTPS | 443 | Yes | getBrokerLog resolver invokes the broker log reader. |
+| CN028 | Broker log reader Lambda (C026) | CloudWatch log groups (D010) | HTTPS | 443 | Yes | FilterLogEvents on /pqc-workshop/broker-container. |
+| CN029 | Dashboard AppSync API (C022) | Start-migration and prepare-build Lambdas (C014) | HTTPS | 443 | Yes | migrateFirmware resolver invokes start-migration with {thingName, variant}. |
+| CN030 | Start-migration and prepare-build Lambdas (C014) | PQC migration state machine (C015) | HTTPS | 443 | Yes | start-migration calls StartExecution. |
+| CN031 | PQC migration state machine (C015) | Start-migration and prepare-build Lambdas (C014) | HTTPS | 443 | Yes | PrepareBuild state invokes prepare-build (lambda:invoke). |
+| CN032 | Start-migration and prepare-build Lambdas (C014) | Device registry table (D002) | HTTPS | 443 | Yes | prepare-build reads the device registry (incl. plaintext wifiPassword fallback). |
+| CN033 | Start-migration and prepare-build Lambdas (C014) | SSM Parameter Store /pqc-workshop/* (D006) | HTTPS | 443 | Yes | prepare-build reads /pqc-workshop/wifi/* and broker endpoint (SecureString decrypt). |
+| CN034 | PQC migration state machine (C015) | Firmware build CodeBuild (C017) | HTTPS | 443 | Yes | WaitForBuild: codebuild:startBuild.sync with per-device env overrides incl. WIFI_PASSWORD as PLAINTEXT. |
+| CN035 | PQC migration state machine (C015) | Publish-OTA Lambda (C016) | HTTPS | 443 | Yes | PublishOta state invokes publish-ota. |
+| CN036 | PQC migration state machine (C015) | Dashboard devices table (D003) | HTTPS | 443 | Yes | Status states write migrationStatus building/pushing-ota/rebooting/failed. |
+| CN037 | Publish-OTA Lambda (C016) | Firmware S3 bucket (D001) | HTTPS | 443 | Yes | HeadObject and presign (900 s) firmware.bin, firmware.bin.sig, signer.crt. |
+| CN038 | Publish-OTA Lambda (C016) | AWS IoT Core and rules (C007) | HTTPS | 443 | Yes | iot-data Publish of the ota-update command to cmd/<thing>/ota at QoS 1. |
+| CN039 | ESP32 field device firmware (C001) | Firmware S3 bucket (D001) | HTTPS | 443 | Yes | Device downloads firmware.bin (+ .sig, signer.crt) from the presigned regional S3 URL over the workshop WiFi and internet; TLS verified against a baked S3 root CA; sha256 and signature checked before applying. |
+| CN040 | ESP32 field device firmware (C001) | ESP32 device flash (D011) | Other | N/A | No | Device private key, certs, signer roots and WiFi PSK are compiled into the app image stored in flash; OTA writes the inactive partition. |
+| CN041 | Builder-Pi edge host and Flask GUI (C003) | Builder API (C011) | HTTPS | 443 | Yes | Builder-Pi calls /register, /deregister, /firmware with SigV4 using its SSM-rotated role credentials. |
+| CN042 | Builder API (C011) | Device registrar Lambda (C012) | HTTPS | 443 | Yes | /register Lambda proxy integration. |
+| CN043 | Builder API (C011) | Deregistrar and firmware-pusher Lambdas (C013) | HTTPS | 443 | Yes | /deregister and /firmware Lambda proxy integrations. |
+| CN044 | Device registrar Lambda (C012) | AWS IoT Core and rules (C007) | HTTPS | 443 | Yes | CreateThing, CreatePolicy (pqc-device-<serial>), attach. |
+| CN045 | Device registrar Lambda (C012) | Device registry table (D002) | HTTPS | 443 | Yes | PutItem registry record including plaintext wifiPassword. |
+| CN046 | Device registrar Lambda (C012) | Dashboard devices table (D003) | HTTPS | 443 | Yes | Seeds the dashboard row with serialNumber (required by the telemetry guard). |
+| CN047 | Device registrar Lambda (C012) | SSM Parameter Store /pqc-workshop/* (D006) | HTTPS | 443 | Yes | Reads WiFi SSID/PSK and broker endpoint (SecureString decrypt). |
+| CN048 | Device registrar Lambda (C012) | Firmware build CodeBuild (C017) | HTTPS | 443 | Yes | StartBuild for the classical first-flash firmware with WIFI_PASSWORD plaintext override. |
+| CN049 | Deregistrar and firmware-pusher Lambdas (C013) | AWS IoT Core and rules (C007) | HTTPS | 443 | Yes | Deregistrar removes the Thing, cert and policy. |
+| CN050 | Deregistrar and firmware-pusher Lambdas (C013) | Device registry table (D002) | HTTPS | 443 | Yes | Deregistrar deletes the registry record. |
+| CN051 | Firmware build CodeBuild (C017) | Firmware S3 bucket (D001) | HTTPS | 443 | Yes | Reads source/<sketch>.ino; writes <serial>/<version>/ firmware.bin, merged.bin (both embedding the device key and PSK), sig, signer cert, metadata. |
+| CN052 | Firmware build CodeBuild (C017) | Classical Private CA (C020) | HTTPS | 443 | Yes | IssueCertificate for classical and pqc device certs. |
+| CN053 | Firmware build CodeBuild (C017) | ML-DSA-44 Private CA (C021) | HTTPS | 443 | Yes | IssueCertificate for pqc-mldsa device certs. |
+| CN054 | Firmware build CodeBuild (C017) | Secrets Manager secrets (D005) | HTTPS | 443 | Yes | GetSecretValue pqc-broker/signer-* (signer private keys and CA roots) to sign firmware.bin and bake trust anchors. |
+| CN055 | Firmware build CodeBuild (C017) | ECR repositories (D007) | HTTPS | 443 | Yes | Pulls pqc-workshop-firmware-builder:latest. |
+| CN056 | Builder-Pi edge host and Flask GUI (C003) | Firmware S3 bucket (D001) | HTTPS | 443 | Yes | Downloads <serial>/<version>/firmware.merged.bin for USB flashing; role can read every object in the bucket. |
+| CN057 | Builder-Pi edge host and Flask GUI (C003) | Device registry table (D002) | HTTPS | 443 | Yes | GetItem/Scan on the registry (exposes plaintext wifiPassword). |
+| CN058 | Builder-Pi edge host and Flask GUI (C003) | SSM Parameter Store /pqc-workshop/* (D006) | HTTPS | 443 | Yes | GetParameter(s)/ByPath /pqc-workshop/* incl. WiFi PSK decrypt. |
+| CN059 | Builder-Pi edge host and Flask GUI (C003) | CloudWatch log groups (D010) | HTTPS | 443 | Yes | CloudWatch agent ships flash/serial logs to /pqc-workshop/builder-pi. |
+| CN060 | Builder-Pi edge host and Flask GUI (C003) | ESP32 field device firmware (C001) | Other | N/A | No | esptool erase/write of merged firmware and the serial console over USB. No authentication; physical access. |
+| CN061 | Workshop WiFi access point (C002) | Builder-Pi edge host and Flask GUI (C003) | HTTP | 8080 | No | Any client on the workshop AP (or a reachable LAN interface) can drive the UNAUTHENTICATED Flask GUI over plain HTTP: register/reflash/deregister devices, read serial output, and POST /api/config to re-point endpoints. |
+| CN062 | Builder-Pi edge host and Flask GUI (C003) | SSM fleet management for the Builder-Pi (C027) | HTTPS | 443 | Yes | SSM agent registers with the hybrid activation and polls for Run Command. |
+| CN063 | SSM fleet management for the Builder-Pi (C027) | Builder-Pi edge host and Flask GUI (C003) | HTTPS | 443 | Yes | Run Command executes install-toolchain / deploy-app / configure-service / configure-wifi-ap as root on the Pi. |
+| CN064 | SSM fleet management for the Builder-Pi (C027) | Secrets Manager secrets (D005) | HTTPS | 443 | Yes | Activation id/code stored in Secrets Manager iot/<instance>/*. |
+| CN065 | Operator deploy workstation (C028) | SSM fleet management for the Builder-Pi (C027) | HTTPS | 443 | Yes | Operator orchestrates SSM send-command and generates the Pi bundle (activation code embedded). |
+| CN066 | Operator deploy workstation (C028) | SSM Parameter Store /pqc-workshop/* (D006) | HTTPS | 443 | Yes | deploy-workshop.sh PutParameter for iotEndpoint, broker endpoint, WiFi SSID/PSK, dashboard config. |
+| CN067 | Operator deploy workstation (C028) | Build source buckets (D009) | HTTPS | 443 | Yes | Uploads broker, cert-issuer and dashboard build sources. |
+| CN068 | Operator deploy workstation (C028) | Image and dashboard build CodeBuild projects (C029) | HTTPS | 443 | Yes | Starts the firmware-builder image build and other image builds. |
+| CN069 | Image and dashboard build CodeBuild projects (C029) | Build source buckets (D009) | HTTPS | 443 | Yes | Image/dashboard builds read their sources. |
+| CN070 | Image and dashboard build CodeBuild projects (C029) | ECR repositories (D007) | HTTPS | 443 | Yes | Push broker, cert-issuer and firmware-builder images (mutable :latest). |
+| CN071 | Image and dashboard build CodeBuild projects (C029) | Dashboard hosting bucket (D008) | HTTPS | 443 | Yes | Dashboard build syncs the Vite artifact and config.json, then invalidates CloudFront. |
+| CN072 | Broker and signer cert provisioner CodeBuild (C018) | Classical Private CA (C020) | HTTPS | 443 | Yes | IssueCertificate for the classical broker cert and classical OTA signer. |
+| CN073 | Broker and signer cert provisioner CodeBuild (C018) | ML-DSA-44 Private CA (C021) | HTTPS | 443 | Yes | IssueCertificate for the ML-DSA broker cert and ML-DSA OTA signer. |
+| CN074 | Broker and signer cert provisioner CodeBuild (C018) | Secrets Manager secrets (D005) | HTTPS | 443 | Yes | PutSecretValue for 12 broker and signer CA/cert/key secrets. |
+| CN075 | Broker and signer cert provisioner CodeBuild (C018) | Build source buckets (D009) | HTTPS | 443 | Yes | Reads cert-issuer buildspec and pulls the cert-issuer image. |
+| CN076 | Bridge provisioner Lambda (C019) | AWS IoT Core and rules (C007) | HTTPS | 443 | Yes | CreateThing, CreateKeysAndCertificate, CreatePolicy for pqc-workshop-broker-bridge. |
+| CN077 | Bridge provisioner Lambda (C019) | Secrets Manager secrets (D005) | HTTPS | 443 | Yes | PutSecretValue bridge cert, private key and AmazonRootCA1. |
+
+### Data Stores
+
+| ID | Name | Type | Classification | Encrypted at Rest | Description |
+|---|---|---|---|---|---|
+| D001 | Firmware S3 bucket | Object Storage | Restricted | Yes | pqc-workshop-firmware-<acct>: SSE-S3, versioning on, public access blocked. Holds sketch sources (source/), Pi app assets, and per device <serial>/<version>/ firmware.bin, firmware.merged.bin, bootloader, partitions, metadata.json, firmware.bin.sig, signer.crt. Every firmware image embeds that device's private key and the WiFi PSK, and old versions persist. Readable in full by the Builder-Pi role. |
+| D002 | Device registry table | NoSQL | Confidential | Yes | DynamoDB pqc-workshop-device-registry (SSE on): serial, thing name, cert metadata, firmware version/target, status, broker endpoint, and a PLAINTEXT wifiPassword. Readable by the Builder-Pi role (GetItem/Scan). |
+| D003 | Dashboard devices table | NoSQL | Internal | Yes | DynamoDB pqc-workshop-devices (SSE on): per-device dashboard state, latest telemetry, migrationStatus. Read and freely updated through AppSync (updateDevice). |
+| D004 | Message log table | NoSQL | Internal | Yes | DynamoDB pqc-workshop-message-log (SSE on, TTL, PITR on): MQTT payloads for dt/+/+ and cmd/+/+, including OTA commands that carry presigned firmware URLs. |
+| D005 | Secrets Manager secrets | Other | Restricted | Yes | Default aws/secretsmanager key. pqc-broker/*: classical and ML-DSA broker CA/cert/key, classical and ML-DSA OTA signer CA/cert/key (pqc-broker/signer-*), IoT bridge cert/key/root CA; iot/<instance>/* SSM activation id/code. |
+| D006 | SSM Parameter Store /pqc-workshop/* | Other | Confidential | Yes | iotEndpoint, broker/endpoint, wifi/ssid (String), wifi/password (SecureString, aws/ssm key), dashboard config. Written by deploy-workshop.sh. |
+| D007 | ECR repositories | Other | Internal | Yes | pqc-workshop-mosquitto-broker, pqc-workshop-cert-issuer, pqc-workshop-firmware-builder (scan on push, mutable latest tag). Images pulled by Fargate and CodeBuild by :latest. |
+| D008 | Dashboard hosting bucket | Object Storage | Public | Yes | Auto-named S3 bucket (SSE-S3, versioned), readable only by the CloudFront distribution via OAC. Content is public by design: the SPA and config.json, which includes the Cognito identity pool ID and AppSync endpoint. |
+| D009 | Build source buckets | Object Storage | Internal | Yes | pqc-workshop-broker-source-<acct> (broker and cert-issuer build sources, buildspecs) and pqc-workshop-dashboard-source-<acct>. SSE-S3, versioned. Writing here changes what CodeBuild builds. |
+| D010 | CloudWatch log groups | Other | Internal | Yes | /pqc-workshop/broker-container (7 d; client IDs, source IPs, topics), /aws/codebuild/pqc-workshop-firmware-build and cert-provisioner, /pqc-workshop/builder-pi, Lambda logs, VPC flow logs (14 d). Default encryption. |
+| D011 | ESP32 device flash | File System | Restricted | No | Device private key, certificate, CA roots, OTA signer roots and WiFi PSK compiled into the app image in flash (PROGMEM). No ESP32 flash encryption or secure boot configured in the build FQBN as far as found, so anyone with the board can read them over USB. |
+
+## Threat Actors
+
+*No threat actors reviewed for this system.*
+
+## Trust Boundaries
+
+*No trust zones or boundaries defined for this system.*
+
+## Assets and Flows
+
+*No assets or flows defined for this system.*
+
+## Threats
+
+*No threats defined.*
+
+## Mitigations
+
+*No mitigations defined.*
+
+## Assumptions
+
+*No assumptions defined.*
+
+## Phase Progress
+
+| Phase | Name | Completion |
+|---|---|---|
+| 1 | Business Context Analysis | 100% ✅ |
+| 2 | Architecture Analysis | 100% ✅ |
+| 3 | Threat Actor Analysis | 0% ⏳ |
+| 4 | Trust Boundary Analysis | 0% ⏳ |
+| 5 | Asset Flow Analysis | 0% ⏳ |
+| 6 | Threat Identification | 0% ⏳ |
+| 7 | Mitigation Planning | 0% ⏳ |
+| 7.5 | Code Validation Analysis | 0% ⏳ |
+| 8 | Residual Risk Analysis | 0% ⏳ |
+| 9 | Output Generation and Documentation | 100% ✅ |
+
+---
+
+*This threat model report was generated automatically by the Threat Modeling MCP Server.*

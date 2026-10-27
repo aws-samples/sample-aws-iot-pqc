@@ -1,0 +1,1586 @@
+{
+  "exportType": "threat-modeling-mcp-server-extended-snapshot",
+  "importableIntoThreatComposer": false,
+  "notice": "Full server state snapshot. Not a Threat Composer import file; import pqc-iot-workshop-threat-model.tc.json instead.",
+  "threatComposerFile": "pqc-iot-workshop-threat-model.tc.json",
+  "threats": [],
+  "mitigations": [],
+  "assumptions": [],
+  "mitigationLinks": [],
+  "businessContext": {
+    "description": "Post-Quantum Cryptography Migration for IoT workshop (AWS Workshop Studio / re:Invent builders session, also published as the public aws-samples/sample-aws-iot-pqc sample). ESP32-S3 field devices connect over MQTT/TLS 1.3 with a hybrid SecP256r1MLKEM768 key exchange to a containerized Mosquitto PQC broker (ECS Fargate in private subnets behind an internet-facing NLB on 8883 classical / 8884 ML-DSA-44), which bridges over classical mTLS to AWS IoT Core. Two Private CAs (classical ECDSA P-256 and ML-DSA-44) issue broker and device certificates. A cloud pipeline (API Gateway + Lambda registrar, CodeBuild firmware builder container, Step Functions PQC migration, S3 presigned-URL OTA) builds per-device firmware with embedded credentials and migrates devices classical -> PQC key exchange -> PQC certificates over the air. An on-site Raspberry Pi (Builder-Pi, managed via SSM hybrid activation) runs a Flask GUI that registers and USB-flashes devices and hosts the 2.4GHz workshop WiFi AP. A CloudFront + S3 React dashboard backed by AppSync, Cognito, DynamoDB and IoT Rules -> Lambdas shows live telemetry and sends LED/OTA commands. Deployed per event from a single master CloudFormation stack in a throwaway account. In scope: device firmware, broker, NLB, PKI, build/registration/OTA/migration pipeline, Builder-Pi, dashboard and their AWS resources. Out of scope: AWS-managed service internals, the physical venue network beyond the workshop AP, attendee laptops.",
+    "features": {
+      "industry_sector": "Technology",
+      "sensitivity_tier": "Confidential",
+      "user_base_size": "Micro",
+      "geographic_scope": "National / Single-Country",
+      "regulatory_requirements": [
+        "None"
+      ],
+      "system_criticality": "Medium",
+      "financial_impact": "Low",
+      "authentication_requirement": "Basic",
+      "deployment_model": "Hybrid cloud",
+      "user_base_metric": "Concurrent Users",
+      "revenue_band": "Enterprise",
+      "geographic_profile": {
+        "data_residency": "National / Single-Country",
+        "compute_location": "National / Single-Country",
+        "user_base_location": "National / Single-Country",
+        "organizational_headquarters": "National / Single-Country"
+      }
+    }
+  },
+  "components": [
+    {
+      "id": "C001",
+      "name": "ESP32 field device firmware",
+      "type": "Compute",
+      "service_provider": "Other",
+      "specific_service": "ESP32-S3 (XIAO) Arduino firmware, wolfSSL 5.7+, FreeRTOS",
+      "version": null,
+      "description": "Three variants: v1 classical (ECDHE + ECDSA cert, port 8883), pqc (SecP256r1MLKEM768 + ECDSA cert, 8883), v3 mldsa (ML-KEM + ML-DSA-44 cert, 8884). mTLS to the broker with WOLFSSL_VERIFY_PEER chain check only (no hostname/SAN check). Publishes dt/<thing>/telemetry and lifecycle, subscribes cmd/<thing>/+. Dual-boot OTA: downloads firmware over HTTPS from a presigned S3 URL, checks sha256 and (signed variants) an ECDSA-P256 or ML-DSA-44 signature chained to a baked signer CA root.",
+      "configuration": null
+    },
+    {
+      "id": "C002",
+      "name": "Workshop WiFi access point",
+      "type": "Network",
+      "service_provider": "On-Premise",
+      "specific_service": "NetworkManager AP on the Builder-Pi MediaTek USB radio",
+      "version": null,
+      "description": "2.4GHz WPA2-PSK AP built by the configure-wifi-ap SSM document from /pqc-workshop/wifi/*. One shared PSK for every device and attendee; the same PSK is compiled into every firmware image.",
+      "configuration": null
+    },
+    {
+      "id": "C003",
+      "name": "Builder-Pi edge host and Flask GUI",
+      "type": "Compute",
+      "service_provider": "On-Premise",
+      "specific_service": "Raspberry Pi, Flask app.py, arduino-cli/esptool, SSM agent, CloudWatch agent",
+      "version": null,
+      "description": "Flask GUI bound to 0.0.0.0:8080 with NO authentication or CSRF protection. Routes: /api/register, /api/reflash, /api/deregister, /api/serial/<port>, /api/scan, GET/POST /api/config (POST merges arbitrary JSON into config incl. API endpoint/bucket/region). Calls the builder API with SigV4 using SSM hybrid-activation role credentials, downloads merged firmware from S3, and USB-flashes devices.",
+      "configuration": null
+    },
+    {
+      "id": "C004",
+      "name": "Broker Network Load Balancer",
+      "type": "Network",
+      "service_provider": "AWS",
+      "specific_service": "Elastic Load Balancing NLB pqc-broker-nlb (internet-facing)",
+      "version": null,
+      "description": "Internet-facing NLB in public subnets. TCP listeners 8883 and 8884 pass TLS through to the broker (no termination). Broker SG allows 0.0.0.0/0 on both ports. VPC BPA exclusion (allow-bidirectional) lets IGW ingress through on BPA accounts.",
+      "configuration": null
+    },
+    {
+      "id": "C005",
+      "name": "Mosquitto PQC broker",
+      "type": "Container",
+      "service_provider": "AWS",
+      "specific_service": "ECS Fargate service pqc-workshop-broker, Mosquitto + OpenSSL 3.5 + oqs-provider",
+      "version": null,
+      "description": "Private subnets, no public IP, egress via NAT and VPC endpoints. Listener 8883 trusts the classical CA, 8884 the ML-DSA-44 CA; both require_certificate + use_identity_as_username, TLS 1.3 only. NO acl_file: any client holding any cert from the trusted CA can publish/subscribe to any topic. Loads broker and bridge credentials from Secrets Manager at startup. Logs connect/subscribe/publish events with client IDs and source IPs.",
+      "configuration": null
+    },
+    {
+      "id": "C006",
+      "name": "Mosquitto to IoT Core bridge",
+      "type": "Messaging",
+      "service_provider": "AWS",
+      "specific_service": "Mosquitto bridge to AWS IoT Core MQTT data endpoint",
+      "version": null,
+      "description": "Bridge client pqc-workshop-broker-bridge connects to IoT Core 8883 with an IoT-issued X.509 cert (TLS 1.2, AmazonRootCA1). Bridges dt/+/telemetry out and cmd/# in; lifecycle is NOT bridged. Its IoT policy allows publish dt/* and shadow, subscribe/receive cmd/* and shadow wildcards: one identity speaks for every device.",
+      "configuration": null
+    },
+    {
+      "id": "C007",
+      "name": "AWS IoT Core and rules",
+      "type": "Messaging",
+      "service_provider": "AWS",
+      "specific_service": "AWS IoT Core message broker and Rules Engine",
+      "version": null,
+      "description": "Rules: pqc_workshop_telemetry (dt/+/telemetry) and pqc_workshop_lifecycle (dt/+/lifecycle) -> telemetry-processor; pqc_workshop_message_log_dt (dt/+/+) and _cmd (cmd/+/+) -> message-logger; pqc_workshop_auto_register (lifecycle online) -> auto-register. Also hosts the IoT Things, esp32-pqc-device ThingType and per-device policies (devices do not connect to IoT Core directly).",
+      "configuration": null
+    },
+    {
+      "id": "C008",
+      "name": "Telemetry processor Lambda",
+      "type": "Serverless",
+      "service_provider": "AWS",
+      "specific_service": "Lambda pqc-workshop-telemetry-processor",
+      "version": null,
+      "description": "Updates pqc-workshop-devices only when the row already has serialNumber (registered-only guard), reconciles migrationStatus, and calls AppSync. Resource policy allows any IoT rule in the account (rule/*).",
+      "configuration": null
+    },
+    {
+      "id": "C009",
+      "name": "Message logger Lambda",
+      "type": "Serverless",
+      "service_provider": "AWS",
+      "specific_service": "Lambda pqc-workshop-message-logger",
+      "version": null,
+      "description": "Writes dt/+/+ and cmd/+/+ payloads to pqc-workshop-message-log (TTL) for the dashboard log view. cmd payloads include OTA commands with presigned URLs.",
+      "configuration": null
+    },
+    {
+      "id": "C010",
+      "name": "Auto-register Lambda",
+      "type": "Serverless",
+      "service_provider": "AWS",
+      "specific_service": "Lambda pqc-workshop-auto-register",
+      "version": null,
+      "description": "Creates IoT Things on a lifecycle 'online' event. Effectively dormant: lifecycle is not bridged from Mosquitto to IoT Core.",
+      "configuration": null
+    },
+    {
+      "id": "C011",
+      "name": "Builder API",
+      "type": "Network",
+      "service_provider": "AWS",
+      "specific_service": "API Gateway REST pqc-workshop-device-builder-api, stage prod, EDGE (default)",
+      "version": null,
+      "description": "Public edge endpoint. POST /register, /deregister, /firmware, all AuthorizationType AWS_IAM (SigV4). No resource policy, API key or usage plan. Caller is the Builder-Pi.",
+      "configuration": null
+    },
+    {
+      "id": "C012",
+      "name": "Device registrar Lambda",
+      "type": "Serverless",
+      "service_provider": "AWS",
+      "specific_service": "Lambda pqc-workshop-device-registrar",
+      "version": null,
+      "description": "Creates the IoT Thing and per-device policy, writes the registry (including the WiFi password in plaintext), seeds the dashboard device row, and starts the firmware CodeBuild with WIFI_PASSWORD as a plaintext env override. Role: iot:Create*/Attach* on *, iot:Publish cmd/*, SSM /pqc-workshop/* read.",
+      "configuration": null
+    },
+    {
+      "id": "C013",
+      "name": "Deregistrar and firmware-pusher Lambdas",
+      "type": "Serverless",
+      "service_provider": "AWS",
+      "specific_service": "Lambdas pqc-workshop-device-deregistrar, pqc-workshop-firmware-pusher",
+      "version": null,
+      "description": "Behind /deregister (removes Thing/cert/policy/registry/dashboard row) and /firmware.",
+      "configuration": null
+    },
+    {
+      "id": "C014",
+      "name": "Start-migration and prepare-build Lambdas",
+      "type": "Serverless",
+      "service_provider": "AWS",
+      "specific_service": "Lambdas pqc-workshop-start-migration and pqc-workshop-prepare-build",
+      "version": null,
+      "description": "start-migration (invoked by AppSync migrateFirmware) validates the variant and starts the state machine. prepare-build resolves variant/version/signer era and the per-device build env (including the WiFi password).",
+      "configuration": null
+    },
+    {
+      "id": "C015",
+      "name": "PQC migration state machine",
+      "type": "Serverless",
+      "service_provider": "AWS",
+      "specific_service": "Step Functions STANDARD pqc-workshop-pqc-migration",
+      "version": null,
+      "description": "SetStatusBuilding -> PrepareBuild -> WaitForBuild (codebuild:startBuild.sync, WIFI_PASSWORD passed as PLAINTEXT env, visible in execution history) -> SetStatusPushing -> PublishOta -> SetStatusRebooting; Catch -> SetStatusFailed.",
+      "configuration": null
+    },
+    {
+      "id": "C016",
+      "name": "Publish-OTA Lambda",
+      "type": "Serverless",
+      "service_provider": "AWS",
+      "specific_service": "Lambda pqc-workshop-publish-ota",
+      "version": null,
+      "description": "Presigns firmware.bin (+ .sig and signer.crt for signed variants) for 900 s and publishes {action: ota-update, url, sha256, sigUrl, signerCertUrl} to cmd/<thing>/ota at QoS 1 via IoT Core.",
+      "configuration": null
+    },
+    {
+      "id": "C017",
+      "name": "Firmware build CodeBuild",
+      "type": "Compute",
+      "service_provider": "AWS",
+      "specific_service": "CodeBuild pqc-workshop-firmware-build (firmware-builder ECR image)",
+      "version": null,
+      "description": "Generates the device key + CSR in-container, issues the cert from the variant's ACM PCA, writes key, cert, WiFi SSID/PSK and broker endpoint into secrets.h, compiles with arduino-cli, signs firmware.bin with the era signer key from Secrets Manager, uploads all artifacts to s3://firmware/<serial>/<version>/. WIFI_PASSWORD is also a plaintext project env var.",
+      "configuration": null
+    },
+    {
+      "id": "C018",
+      "name": "Broker and signer cert provisioner CodeBuild",
+      "type": "Compute",
+      "service_provider": "AWS",
+      "specific_service": "CodeBuild pqc-workshop-broker-cert-provisioner (cert-issuer ECR image)",
+      "version": null,
+      "description": "Mints the classical and ML-DSA broker server certs and the classical and ML-DSA OTA signer identities from the two CAs and stores keys/certs in 12 Secrets Manager secrets.",
+      "configuration": null
+    },
+    {
+      "id": "C019",
+      "name": "Bridge provisioner Lambda",
+      "type": "Serverless",
+      "service_provider": "AWS",
+      "specific_service": "Lambda pqc-workshop-bridge-provisioner (CloudFormation custom resource)",
+      "version": null,
+      "description": "Creates the pqc-workshop-broker-bridge Thing, IoT keys/cert and wildcard bridge policy, downloads AmazonRootCA1, stores cert/key/root in Secrets Manager. Role has iot Create/Delete/Attach on *.",
+      "configuration": null
+    },
+    {
+      "id": "C020",
+      "name": "Classical Private CA",
+      "type": "Security",
+      "service_provider": "AWS",
+      "specific_service": "ACM Private CA ROOT, EC_prime256v1 / SHA256WITHECDSA, CRL disabled",
+      "version": null,
+      "description": "Trust root for the 8883 listener: issues the classical broker cert, classical/pqc device certs, and the classical OTA signer.",
+      "configuration": null
+    },
+    {
+      "id": "C021",
+      "name": "ML-DSA-44 Private CA",
+      "type": "Security",
+      "service_provider": "AWS",
+      "specific_service": "ACM Private CA ROOT, ML_DSA_44, CRL disabled",
+      "version": null,
+      "description": "Trust root for the 8884 listener: issues the ML-DSA broker cert, pqc-mldsa device certs and the ML-DSA OTA signer. Key held by ACM PCA (not self-managed).",
+      "configuration": null
+    },
+    {
+      "id": "C022",
+      "name": "Dashboard AppSync API",
+      "type": "Other",
+      "service_provider": "AWS",
+      "specific_service": "AppSync GraphQL pqc-workshop-device-api, AWS_IAM auth",
+      "version": null,
+      "description": "Queries listDevices/getDevice (devices table), getDeviceLog (message log), getBrokerLog (broker-log-reader). Mutations updateDevice (SETs arbitrary input fields on the device row), migrateFirmware (start-migration -> full build + OTA). sendCommand and deleteDevice are in the schema with NO resolvers. Subscription onDeviceUpdate.",
+      "configuration": null
+    },
+    {
+      "id": "C023",
+      "name": "Cognito identity pool",
+      "type": "Security",
+      "service_provider": "AWS",
+      "specific_service": "Cognito Identity Pool pqc_workshop_dashboard, AllowUnauthenticatedIdentities true",
+      "version": null,
+      "description": "No user pool. Anyone with the pool ID (shipped in the public dashboard config.json) gets guest credentials for CognitoUnauthRole, which allows appsync:GraphQL on the whole API.",
+      "configuration": null
+    },
+    {
+      "id": "C024",
+      "name": "Dashboard CloudFront distribution",
+      "type": "Network",
+      "service_provider": "AWS",
+      "specific_service": "CloudFront distribution with OAC to the S3 hosting bucket",
+      "version": null,
+      "description": "Public HTTPS (redirect-to-https, default cert), GET/HEAD only, no WAF, no access logging. Serves the Vite/React dashboard and its runtime config.json.",
+      "configuration": null
+    },
+    {
+      "id": "C025",
+      "name": "Dashboard web client",
+      "type": "Compute",
+      "service_provider": "Other",
+      "specific_service": "React SPA in an attendee/operator web browser",
+      "version": null,
+      "description": "Gets guest credentials from Cognito, SigV4-signs AppSync calls, polls every 5 s, offers the firmware picker / migrate button.",
+      "configuration": null
+    },
+    {
+      "id": "C026",
+      "name": "Broker log reader Lambda",
+      "type": "Serverless",
+      "service_provider": "AWS",
+      "specific_service": "Lambda pqc-workshop-broker-log-reader",
+      "version": null,
+      "description": "Reads /pqc-workshop/broker-container for the getBrokerLog query (client IDs, source IPs, topics).",
+      "configuration": null
+    },
+    {
+      "id": "C027",
+      "name": "SSM fleet management for the Builder-Pi",
+      "type": "Security",
+      "service_provider": "AWS",
+      "specific_service": "SSM hybrid activation (Custom::SSMActivation) + 5 SSM Documents + Run Command",
+      "version": null,
+      "description": "Hybrid activation (7-day code, in the Builder-Pi bundle and Secrets Manager iot/<instance>/*) registers the Pi. Run Command documents install the toolchain, deploy the app, configure services and the WiFi AP (decrypting the PSK). Two candidate Pi roles exist (<instance>-ssm-role and pqc-workshop-builder-pi-ssm).",
+      "configuration": null
+    },
+    {
+      "id": "C028",
+      "name": "Operator deploy workstation",
+      "type": "Compute",
+      "service_provider": "Other",
+      "specific_service": "Laptop / Cloud IDE running deploy-workshop.sh, bundle-for-builder-pi.sh, setup-builder-pi-remote.sh",
+      "version": null,
+      "description": "Holds Admin credentials; deploys the master CloudFormation stack, writes /pqc-workshop/* SSM params, starts image builds, generates the Pi bundle and orchestrates SSM provisioning.",
+      "configuration": null
+    },
+    {
+      "id": "C029",
+      "name": "Image and dashboard build CodeBuild projects",
+      "type": "Compute",
+      "service_provider": "AWS",
+      "specific_service": "CodeBuild image builds (broker, cert-issuer, firmware-builder, dashboard)",
+      "version": null,
+      "description": "Build the broker, cert-issuer and firmware-builder container images (apt/Ubuntu mirror, oqs-provider) into ECR, and the Vite dashboard into the hosting bucket with a CloudFront invalidation. Supply-chain entry point.",
+      "configuration": null
+    },
+    {
+      "id": "C030",
+      "name": "NAT gateway and VPC endpoints",
+      "type": "Network",
+      "service_provider": "AWS",
+      "specific_service": "VPC NAT gateway + VPC endpoints (ecr.api, ecr.dkr, secretsmanager, logs, s3)",
+      "version": null,
+      "description": "Egress path for the private broker task to IoT Core, ECR, Secrets Manager and CloudWatch Logs. VPC flow logs enabled (14 days).",
+      "configuration": null
+    }
+  ],
+  "connections": [
+    {
+      "id": "CN001",
+      "source_id": "C001",
+      "destination_id": "C002",
+      "protocol": "Other",
+      "port": null,
+      "encryption": true,
+      "description": "Device joins the workshop AP with the shared WPA2 PSK baked into its firmware."
+    },
+    {
+      "id": "CN002",
+      "source_id": "C001",
+      "destination_id": "C004",
+      "protocol": "MQTT",
+      "port": 8883,
+      "encryption": true,
+      "description": "classical / pqc firmware: MQTT over TLS 1.3 (SecP256r1MLKEM768 for pqc, ECDHE for classical) with mTLS client cert from the classical CA. Device verifies the broker chain only, no hostname check."
+    },
+    {
+      "id": "CN003",
+      "source_id": "C001",
+      "destination_id": "C004",
+      "protocol": "MQTT",
+      "port": 8884,
+      "encryption": true,
+      "description": "pqc-mldsa / signer / verified firmware: MQTT over TLS 1.3 with ML-KEM and an ML-DSA-44 client cert; broker presents an ML-DSA-44 server cert."
+    },
+    {
+      "id": "CN004",
+      "source_id": "C004",
+      "destination_id": "C005",
+      "protocol": "TCP",
+      "port": 8883,
+      "encryption": true,
+      "description": "NLB TCP passthrough of 8883 and 8884 to the Fargate task IPs in private subnets; TLS terminates at Mosquitto."
+    },
+    {
+      "id": "CN005",
+      "source_id": "C005",
+      "destination_id": "C006",
+      "protocol": "Other",
+      "port": null,
+      "encryption": false,
+      "description": "In-process: broker hands dt/+/telemetry to the bridge client in the same container."
+    },
+    {
+      "id": "CN006",
+      "source_id": "C005",
+      "destination_id": "C001",
+      "protocol": "MQTT",
+      "port": 8883,
+      "encryption": true,
+      "description": "Downlink to devices over their established TLS sessions via the NLB: cmd/<thing>/ota (presigned firmware URLs), LED/control and revert commands. No per-device topic ACL, so any connected client can also publish to these topics."
+    },
+    {
+      "id": "CN007",
+      "source_id": "C006",
+      "destination_id": "C030",
+      "protocol": "MQTT",
+      "port": 8883,
+      "encryption": true,
+      "description": "Bridge MQTT/TLS 1.2 to IoT Core leaves the private subnet via the NAT gateway."
+    },
+    {
+      "id": "CN008",
+      "source_id": "C030",
+      "destination_id": "C007",
+      "protocol": "MQTT",
+      "port": 8883,
+      "encryption": true,
+      "description": "NAT egress to the IoT Core ATS data endpoint; bridge authenticates with its IoT X.509 cert and publishes dt/+/telemetry."
+    },
+    {
+      "id": "CN009",
+      "source_id": "C007",
+      "destination_id": "C006",
+      "protocol": "MQTT",
+      "port": 8883,
+      "encryption": true,
+      "description": "IoT Core delivers cmd/# (OTA and control commands) to the bridge subscription."
+    },
+    {
+      "id": "CN010",
+      "source_id": "C005",
+      "destination_id": "C030",
+      "protocol": "HTTPS",
+      "port": 443,
+      "encryption": true,
+      "description": "Broker task reaches ECR, Secrets Manager and CloudWatch Logs via VPC endpoints (or NAT)."
+    },
+    {
+      "id": "CN011",
+      "source_id": "C030",
+      "destination_id": "D005",
+      "protocol": "HTTPS",
+      "port": 443,
+      "encryption": true,
+      "description": "GetSecretValue for broker classical/ML-DSA certs and keys and the bridge cert/key/root CA at task start."
+    },
+    {
+      "id": "CN012",
+      "source_id": "C030",
+      "destination_id": "D007",
+      "protocol": "HTTPS",
+      "port": 443,
+      "encryption": true,
+      "description": "Fargate pulls pqc-workshop-mosquitto-broker:latest."
+    },
+    {
+      "id": "CN013",
+      "source_id": "C030",
+      "destination_id": "D010",
+      "protocol": "HTTPS",
+      "port": 443,
+      "encryption": true,
+      "description": "awslogs driver ships broker logs (client IDs, source IPs, topics) to /pqc-workshop/broker-container."
+    },
+    {
+      "id": "CN014",
+      "source_id": "C007",
+      "destination_id": "C008",
+      "protocol": "Other",
+      "port": null,
+      "encryption": true,
+      "description": "Rules pqc_workshop_telemetry and pqc_workshop_lifecycle invoke the telemetry processor."
+    },
+    {
+      "id": "CN015",
+      "source_id": "C007",
+      "destination_id": "C009",
+      "protocol": "Other",
+      "port": null,
+      "encryption": true,
+      "description": "Rules pqc_workshop_message_log_dt (dt/+/+) and _cmd (cmd/+/+) invoke the message logger."
+    },
+    {
+      "id": "CN016",
+      "source_id": "C007",
+      "destination_id": "C010",
+      "protocol": "Other",
+      "port": null,
+      "encryption": true,
+      "description": "Rule pqc_workshop_auto_register on dt/+/lifecycle status=online (receives nothing because lifecycle is not bridged)."
+    },
+    {
+      "id": "CN017",
+      "source_id": "C010",
+      "destination_id": "C007",
+      "protocol": "HTTPS",
+      "port": 443,
+      "encryption": true,
+      "description": "Auto-register calls iot CreateThing."
+    },
+    {
+      "id": "CN018",
+      "source_id": "C008",
+      "destination_id": "D003",
+      "protocol": "HTTPS",
+      "port": 443,
+      "encryption": true,
+      "description": "Conditional UpdateItem (attribute_exists(serialNumber)) and migrationStatus reconcile on pqc-workshop-devices."
+    },
+    {
+      "id": "CN019",
+      "source_id": "C008",
+      "destination_id": "C022",
+      "protocol": "HTTPS",
+      "port": 443,
+      "encryption": true,
+      "description": "Telemetry processor calls AppSync (IAM) to push updates to subscribers."
+    },
+    {
+      "id": "CN020",
+      "source_id": "C009",
+      "destination_id": "D004",
+      "protocol": "HTTPS",
+      "port": 443,
+      "encryption": true,
+      "description": "PutItem of MQTT payloads into pqc-workshop-message-log."
+    },
+    {
+      "id": "CN021",
+      "source_id": "C025",
+      "destination_id": "C024",
+      "protocol": "HTTPS",
+      "port": 443,
+      "encryption": true,
+      "description": "Browser loads the SPA and config.json (identity pool ID, AppSync URL). Public, no WAF."
+    },
+    {
+      "id": "CN022",
+      "source_id": "C024",
+      "destination_id": "D008",
+      "protocol": "HTTPS",
+      "port": 443,
+      "encryption": true,
+      "description": "CloudFront OAC (SigV4) GetObject from the hosting bucket."
+    },
+    {
+      "id": "CN023",
+      "source_id": "C025",
+      "destination_id": "C023",
+      "protocol": "HTTPS",
+      "port": 443,
+      "encryption": true,
+      "description": "GetId / GetCredentialsForIdentity as an UNAUTHENTICATED guest; no sign-in exists."
+    },
+    {
+      "id": "CN024",
+      "source_id": "C025",
+      "destination_id": "C022",
+      "protocol": "HTTPS",
+      "port": 443,
+      "encryption": true,
+      "description": "SigV4-signed GraphQL with guest credentials: listDevices/getDevice/getDeviceLog/getBrokerLog queries and updateDevice/migrateFirmware mutations. Reachable by anyone holding the public identity pool ID."
+    },
+    {
+      "id": "CN025",
+      "source_id": "C022",
+      "destination_id": "D003",
+      "protocol": "HTTPS",
+      "port": 443,
+      "encryption": true,
+      "description": "Resolvers listDevices/getDevice/updateDevice (arbitrary field SET) on pqc-workshop-devices."
+    },
+    {
+      "id": "CN026",
+      "source_id": "C022",
+      "destination_id": "D004",
+      "protocol": "HTTPS",
+      "port": 443,
+      "encryption": true,
+      "description": "getDeviceLog resolver queries the message log (includes OTA command payloads)."
+    },
+    {
+      "id": "CN027",
+      "source_id": "C022",
+      "destination_id": "C026",
+      "protocol": "HTTPS",
+      "port": 443,
+      "encryption": true,
+      "description": "getBrokerLog resolver invokes the broker log reader."
+    },
+    {
+      "id": "CN028",
+      "source_id": "C026",
+      "destination_id": "D010",
+      "protocol": "HTTPS",
+      "port": 443,
+      "encryption": true,
+      "description": "FilterLogEvents on /pqc-workshop/broker-container."
+    },
+    {
+      "id": "CN029",
+      "source_id": "C022",
+      "destination_id": "C014",
+      "protocol": "HTTPS",
+      "port": 443,
+      "encryption": true,
+      "description": "migrateFirmware resolver invokes start-migration with {thingName, variant}."
+    },
+    {
+      "id": "CN030",
+      "source_id": "C014",
+      "destination_id": "C015",
+      "protocol": "HTTPS",
+      "port": 443,
+      "encryption": true,
+      "description": "start-migration calls StartExecution."
+    },
+    {
+      "id": "CN031",
+      "source_id": "C015",
+      "destination_id": "C014",
+      "protocol": "HTTPS",
+      "port": 443,
+      "encryption": true,
+      "description": "PrepareBuild state invokes prepare-build (lambda:invoke)."
+    },
+    {
+      "id": "CN032",
+      "source_id": "C014",
+      "destination_id": "D002",
+      "protocol": "HTTPS",
+      "port": 443,
+      "encryption": true,
+      "description": "prepare-build reads the device registry (incl. plaintext wifiPassword fallback)."
+    },
+    {
+      "id": "CN033",
+      "source_id": "C014",
+      "destination_id": "D006",
+      "protocol": "HTTPS",
+      "port": 443,
+      "encryption": true,
+      "description": "prepare-build reads /pqc-workshop/wifi/* and broker endpoint (SecureString decrypt)."
+    },
+    {
+      "id": "CN034",
+      "source_id": "C015",
+      "destination_id": "C017",
+      "protocol": "HTTPS",
+      "port": 443,
+      "encryption": true,
+      "description": "WaitForBuild: codebuild:startBuild.sync with per-device env overrides incl. WIFI_PASSWORD as PLAINTEXT."
+    },
+    {
+      "id": "CN035",
+      "source_id": "C015",
+      "destination_id": "C016",
+      "protocol": "HTTPS",
+      "port": 443,
+      "encryption": true,
+      "description": "PublishOta state invokes publish-ota."
+    },
+    {
+      "id": "CN036",
+      "source_id": "C015",
+      "destination_id": "D003",
+      "protocol": "HTTPS",
+      "port": 443,
+      "encryption": true,
+      "description": "Status states write migrationStatus building/pushing-ota/rebooting/failed."
+    },
+    {
+      "id": "CN037",
+      "source_id": "C016",
+      "destination_id": "D001",
+      "protocol": "HTTPS",
+      "port": 443,
+      "encryption": true,
+      "description": "HeadObject and presign (900 s) firmware.bin, firmware.bin.sig, signer.crt."
+    },
+    {
+      "id": "CN038",
+      "source_id": "C016",
+      "destination_id": "C007",
+      "protocol": "HTTPS",
+      "port": 443,
+      "encryption": true,
+      "description": "iot-data Publish of the ota-update command to cmd/<thing>/ota at QoS 1."
+    },
+    {
+      "id": "CN039",
+      "source_id": "C001",
+      "destination_id": "D001",
+      "protocol": "HTTPS",
+      "port": 443,
+      "encryption": true,
+      "description": "Device downloads firmware.bin (+ .sig, signer.crt) from the presigned regional S3 URL over the workshop WiFi and internet; TLS verified against a baked S3 root CA; sha256 and signature checked before applying."
+    },
+    {
+      "id": "CN040",
+      "source_id": "C001",
+      "destination_id": "D011",
+      "protocol": "Other",
+      "port": null,
+      "encryption": false,
+      "description": "Device private key, certs, signer roots and WiFi PSK are compiled into the app image stored in flash; OTA writes the inactive partition."
+    },
+    {
+      "id": "CN041",
+      "source_id": "C003",
+      "destination_id": "C011",
+      "protocol": "HTTPS",
+      "port": 443,
+      "encryption": true,
+      "description": "Builder-Pi calls /register, /deregister, /firmware with SigV4 using its SSM-rotated role credentials."
+    },
+    {
+      "id": "CN042",
+      "source_id": "C011",
+      "destination_id": "C012",
+      "protocol": "HTTPS",
+      "port": 443,
+      "encryption": true,
+      "description": "/register Lambda proxy integration."
+    },
+    {
+      "id": "CN043",
+      "source_id": "C011",
+      "destination_id": "C013",
+      "protocol": "HTTPS",
+      "port": 443,
+      "encryption": true,
+      "description": "/deregister and /firmware Lambda proxy integrations."
+    },
+    {
+      "id": "CN044",
+      "source_id": "C012",
+      "destination_id": "C007",
+      "protocol": "HTTPS",
+      "port": 443,
+      "encryption": true,
+      "description": "CreateThing, CreatePolicy (pqc-device-<serial>), attach."
+    },
+    {
+      "id": "CN045",
+      "source_id": "C012",
+      "destination_id": "D002",
+      "protocol": "HTTPS",
+      "port": 443,
+      "encryption": true,
+      "description": "PutItem registry record including plaintext wifiPassword."
+    },
+    {
+      "id": "CN046",
+      "source_id": "C012",
+      "destination_id": "D003",
+      "protocol": "HTTPS",
+      "port": 443,
+      "encryption": true,
+      "description": "Seeds the dashboard row with serialNumber (required by the telemetry guard)."
+    },
+    {
+      "id": "CN047",
+      "source_id": "C012",
+      "destination_id": "D006",
+      "protocol": "HTTPS",
+      "port": 443,
+      "encryption": true,
+      "description": "Reads WiFi SSID/PSK and broker endpoint (SecureString decrypt)."
+    },
+    {
+      "id": "CN048",
+      "source_id": "C012",
+      "destination_id": "C017",
+      "protocol": "HTTPS",
+      "port": 443,
+      "encryption": true,
+      "description": "StartBuild for the classical first-flash firmware with WIFI_PASSWORD plaintext override."
+    },
+    {
+      "id": "CN049",
+      "source_id": "C013",
+      "destination_id": "C007",
+      "protocol": "HTTPS",
+      "port": 443,
+      "encryption": true,
+      "description": "Deregistrar removes the Thing, cert and policy."
+    },
+    {
+      "id": "CN050",
+      "source_id": "C013",
+      "destination_id": "D002",
+      "protocol": "HTTPS",
+      "port": 443,
+      "encryption": true,
+      "description": "Deregistrar deletes the registry record."
+    },
+    {
+      "id": "CN051",
+      "source_id": "C017",
+      "destination_id": "D001",
+      "protocol": "HTTPS",
+      "port": 443,
+      "encryption": true,
+      "description": "Reads source/<sketch>.ino; writes <serial>/<version>/ firmware.bin, merged.bin (both embedding the device key and PSK), sig, signer cert, metadata."
+    },
+    {
+      "id": "CN052",
+      "source_id": "C017",
+      "destination_id": "C020",
+      "protocol": "HTTPS",
+      "port": 443,
+      "encryption": true,
+      "description": "IssueCertificate for classical and pqc device certs."
+    },
+    {
+      "id": "CN053",
+      "source_id": "C017",
+      "destination_id": "C021",
+      "protocol": "HTTPS",
+      "port": 443,
+      "encryption": true,
+      "description": "IssueCertificate for pqc-mldsa device certs."
+    },
+    {
+      "id": "CN054",
+      "source_id": "C017",
+      "destination_id": "D005",
+      "protocol": "HTTPS",
+      "port": 443,
+      "encryption": true,
+      "description": "GetSecretValue pqc-broker/signer-* (signer private keys and CA roots) to sign firmware.bin and bake trust anchors."
+    },
+    {
+      "id": "CN055",
+      "source_id": "C017",
+      "destination_id": "D007",
+      "protocol": "HTTPS",
+      "port": 443,
+      "encryption": true,
+      "description": "Pulls pqc-workshop-firmware-builder:latest."
+    },
+    {
+      "id": "CN056",
+      "source_id": "C003",
+      "destination_id": "D001",
+      "protocol": "HTTPS",
+      "port": 443,
+      "encryption": true,
+      "description": "Downloads <serial>/<version>/firmware.merged.bin for USB flashing; role can read every object in the bucket."
+    },
+    {
+      "id": "CN057",
+      "source_id": "C003",
+      "destination_id": "D002",
+      "protocol": "HTTPS",
+      "port": 443,
+      "encryption": true,
+      "description": "GetItem/Scan on the registry (exposes plaintext wifiPassword)."
+    },
+    {
+      "id": "CN058",
+      "source_id": "C003",
+      "destination_id": "D006",
+      "protocol": "HTTPS",
+      "port": 443,
+      "encryption": true,
+      "description": "GetParameter(s)/ByPath /pqc-workshop/* incl. WiFi PSK decrypt."
+    },
+    {
+      "id": "CN059",
+      "source_id": "C003",
+      "destination_id": "D010",
+      "protocol": "HTTPS",
+      "port": 443,
+      "encryption": true,
+      "description": "CloudWatch agent ships flash/serial logs to /pqc-workshop/builder-pi."
+    },
+    {
+      "id": "CN060",
+      "source_id": "C003",
+      "destination_id": "C001",
+      "protocol": "Other",
+      "port": null,
+      "encryption": false,
+      "description": "esptool erase/write of merged firmware and the serial console over USB. No authentication; physical access."
+    },
+    {
+      "id": "CN061",
+      "source_id": "C002",
+      "destination_id": "C003",
+      "protocol": "HTTP",
+      "port": 8080,
+      "encryption": false,
+      "description": "Any client on the workshop AP (or a reachable LAN interface) can drive the UNAUTHENTICATED Flask GUI over plain HTTP: register/reflash/deregister devices, read serial output, and POST /api/config to re-point endpoints."
+    },
+    {
+      "id": "CN062",
+      "source_id": "C003",
+      "destination_id": "C027",
+      "protocol": "HTTPS",
+      "port": 443,
+      "encryption": true,
+      "description": "SSM agent registers with the hybrid activation and polls for Run Command."
+    },
+    {
+      "id": "CN063",
+      "source_id": "C027",
+      "destination_id": "C003",
+      "protocol": "HTTPS",
+      "port": 443,
+      "encryption": true,
+      "description": "Run Command executes install-toolchain / deploy-app / configure-service / configure-wifi-ap as root on the Pi."
+    },
+    {
+      "id": "CN064",
+      "source_id": "C027",
+      "destination_id": "D005",
+      "protocol": "HTTPS",
+      "port": 443,
+      "encryption": true,
+      "description": "Activation id/code stored in Secrets Manager iot/<instance>/*."
+    },
+    {
+      "id": "CN065",
+      "source_id": "C028",
+      "destination_id": "C027",
+      "protocol": "HTTPS",
+      "port": 443,
+      "encryption": true,
+      "description": "Operator orchestrates SSM send-command and generates the Pi bundle (activation code embedded)."
+    },
+    {
+      "id": "CN066",
+      "source_id": "C028",
+      "destination_id": "D006",
+      "protocol": "HTTPS",
+      "port": 443,
+      "encryption": true,
+      "description": "deploy-workshop.sh PutParameter for iotEndpoint, broker endpoint, WiFi SSID/PSK, dashboard config."
+    },
+    {
+      "id": "CN067",
+      "source_id": "C028",
+      "destination_id": "D009",
+      "protocol": "HTTPS",
+      "port": 443,
+      "encryption": true,
+      "description": "Uploads broker, cert-issuer and dashboard build sources."
+    },
+    {
+      "id": "CN068",
+      "source_id": "C028",
+      "destination_id": "C029",
+      "protocol": "HTTPS",
+      "port": 443,
+      "encryption": true,
+      "description": "Starts the firmware-builder image build and other image builds."
+    },
+    {
+      "id": "CN069",
+      "source_id": "C029",
+      "destination_id": "D009",
+      "protocol": "HTTPS",
+      "port": 443,
+      "encryption": true,
+      "description": "Image/dashboard builds read their sources."
+    },
+    {
+      "id": "CN070",
+      "source_id": "C029",
+      "destination_id": "D007",
+      "protocol": "HTTPS",
+      "port": 443,
+      "encryption": true,
+      "description": "Push broker, cert-issuer and firmware-builder images (mutable :latest)."
+    },
+    {
+      "id": "CN071",
+      "source_id": "C029",
+      "destination_id": "D008",
+      "protocol": "HTTPS",
+      "port": 443,
+      "encryption": true,
+      "description": "Dashboard build syncs the Vite artifact and config.json, then invalidates CloudFront."
+    },
+    {
+      "id": "CN072",
+      "source_id": "C018",
+      "destination_id": "C020",
+      "protocol": "HTTPS",
+      "port": 443,
+      "encryption": true,
+      "description": "IssueCertificate for the classical broker cert and classical OTA signer."
+    },
+    {
+      "id": "CN073",
+      "source_id": "C018",
+      "destination_id": "C021",
+      "protocol": "HTTPS",
+      "port": 443,
+      "encryption": true,
+      "description": "IssueCertificate for the ML-DSA broker cert and ML-DSA OTA signer."
+    },
+    {
+      "id": "CN074",
+      "source_id": "C018",
+      "destination_id": "D005",
+      "protocol": "HTTPS",
+      "port": 443,
+      "encryption": true,
+      "description": "PutSecretValue for 12 broker and signer CA/cert/key secrets."
+    },
+    {
+      "id": "CN075",
+      "source_id": "C018",
+      "destination_id": "D009",
+      "protocol": "HTTPS",
+      "port": 443,
+      "encryption": true,
+      "description": "Reads cert-issuer buildspec and pulls the cert-issuer image."
+    },
+    {
+      "id": "CN076",
+      "source_id": "C019",
+      "destination_id": "C007",
+      "protocol": "HTTPS",
+      "port": 443,
+      "encryption": true,
+      "description": "CreateThing, CreateKeysAndCertificate, CreatePolicy for pqc-workshop-broker-bridge."
+    },
+    {
+      "id": "CN077",
+      "source_id": "C019",
+      "destination_id": "D005",
+      "protocol": "HTTPS",
+      "port": 443,
+      "encryption": true,
+      "description": "PutSecretValue bridge cert, private key and AmazonRootCA1."
+    }
+  ],
+  "dataStores": [
+    {
+      "id": "D001",
+      "name": "Firmware S3 bucket",
+      "type": "Object Storage",
+      "classification": "Restricted",
+      "encryption_at_rest": true,
+      "backup_frequency": "None",
+      "description": "pqc-workshop-firmware-<acct>: SSE-S3, versioning on, public access blocked. Holds sketch sources (source/), Pi app assets, and per device <serial>/<version>/ firmware.bin, firmware.merged.bin, bootloader, partitions, metadata.json, firmware.bin.sig, signer.crt. Every firmware image embeds that device's private key and the WiFi PSK, and old versions persist. Readable in full by the Builder-Pi role."
+    },
+    {
+      "id": "D002",
+      "name": "Device registry table",
+      "type": "NoSQL",
+      "classification": "Confidential",
+      "encryption_at_rest": true,
+      "backup_frequency": null,
+      "description": "DynamoDB pqc-workshop-device-registry (SSE on): serial, thing name, cert metadata, firmware version/target, status, broker endpoint, and a PLAINTEXT wifiPassword. Readable by the Builder-Pi role (GetItem/Scan)."
+    },
+    {
+      "id": "D003",
+      "name": "Dashboard devices table",
+      "type": "NoSQL",
+      "classification": "Internal",
+      "encryption_at_rest": true,
+      "backup_frequency": null,
+      "description": "DynamoDB pqc-workshop-devices (SSE on): per-device dashboard state, latest telemetry, migrationStatus. Read and freely updated through AppSync (updateDevice)."
+    },
+    {
+      "id": "D004",
+      "name": "Message log table",
+      "type": "NoSQL",
+      "classification": "Internal",
+      "encryption_at_rest": true,
+      "backup_frequency": "Continuous",
+      "description": "DynamoDB pqc-workshop-message-log (SSE on, TTL, PITR on): MQTT payloads for dt/+/+ and cmd/+/+, including OTA commands that carry presigned firmware URLs."
+    },
+    {
+      "id": "D005",
+      "name": "Secrets Manager secrets",
+      "type": "Other",
+      "classification": "Restricted",
+      "encryption_at_rest": true,
+      "backup_frequency": null,
+      "description": "Default aws/secretsmanager key. pqc-broker/*: classical and ML-DSA broker CA/cert/key, classical and ML-DSA OTA signer CA/cert/key (pqc-broker/signer-*), IoT bridge cert/key/root CA; iot/<instance>/* SSM activation id/code."
+    },
+    {
+      "id": "D006",
+      "name": "SSM Parameter Store /pqc-workshop/*",
+      "type": "Other",
+      "classification": "Confidential",
+      "encryption_at_rest": true,
+      "backup_frequency": null,
+      "description": "iotEndpoint, broker/endpoint, wifi/ssid (String), wifi/password (SecureString, aws/ssm key), dashboard config. Written by deploy-workshop.sh."
+    },
+    {
+      "id": "D007",
+      "name": "ECR repositories",
+      "type": "Other",
+      "classification": "Internal",
+      "encryption_at_rest": true,
+      "backup_frequency": null,
+      "description": "pqc-workshop-mosquitto-broker, pqc-workshop-cert-issuer, pqc-workshop-firmware-builder (scan on push, mutable latest tag). Images pulled by Fargate and CodeBuild by :latest."
+    },
+    {
+      "id": "D008",
+      "name": "Dashboard hosting bucket",
+      "type": "Object Storage",
+      "classification": "Public",
+      "encryption_at_rest": true,
+      "backup_frequency": null,
+      "description": "Auto-named S3 bucket (SSE-S3, versioned), readable only by the CloudFront distribution via OAC. Content is public by design: the SPA and config.json, which includes the Cognito identity pool ID and AppSync endpoint."
+    },
+    {
+      "id": "D009",
+      "name": "Build source buckets",
+      "type": "Object Storage",
+      "classification": "Internal",
+      "encryption_at_rest": true,
+      "backup_frequency": null,
+      "description": "pqc-workshop-broker-source-<acct> (broker and cert-issuer build sources, buildspecs) and pqc-workshop-dashboard-source-<acct>. SSE-S3, versioned. Writing here changes what CodeBuild builds."
+    },
+    {
+      "id": "D010",
+      "name": "CloudWatch log groups",
+      "type": "Other",
+      "classification": "Internal",
+      "encryption_at_rest": true,
+      "backup_frequency": null,
+      "description": "/pqc-workshop/broker-container (7 d; client IDs, source IPs, topics), /aws/codebuild/pqc-workshop-firmware-build and cert-provisioner, /pqc-workshop/builder-pi, Lambda logs, VPC flow logs (14 d). Default encryption."
+    },
+    {
+      "id": "D011",
+      "name": "ESP32 device flash",
+      "type": "File System",
+      "classification": "Restricted",
+      "encryption_at_rest": false,
+      "backup_frequency": null,
+      "description": "Device private key, certificate, CA roots, OTA signer roots and WiFi PSK compiled into the app image in flash (PROGMEM). No ESP32 flash encryption or secure boot configured in the build FQBN as far as found, so anyone with the board can read them over USB."
+    }
+  ],
+  "threatActors": [],
+  "trustZones": [],
+  "crossingPoints": [],
+  "trustBoundaries": [],
+  "assets": [],
+  "flows": [],
+  "residualRiskAssessments": [],
+  "softwareProfile": {
+    "software_type": "Embedded / IoT / Firmware",
+    "deployment_model": "Hybrid cloud",
+    "architecture_style": "Event-driven",
+    "platform_runtime": "Embedded device",
+    "user_domain": "Education",
+    "licensing_ownership": "Open source",
+    "modern_paradigms": [
+      "Cloud-native",
+      "Containerized",
+      "IoT",
+      "Edge computing",
+      "Event-driven architecture"
+    ],
+    "description": "ESP32 Arduino firmware (wolfSSL TLS 1.3 + ML-KEM, FreeRTOS WiFi/MQTT tasks, dual-boot OTA) plus an AWS backend: ECS Fargate Mosquitto/OpenSSL 3.5 + oqs-provider broker, NLB, ACM Private CA, Lambda, Step Functions, CodeBuild, API Gateway, AppSync, Cognito, DynamoDB, S3, CloudFront, IoT Core, SSM, Secrets Manager. Raspberry Pi edge host running a Flask GUI and arduino-cli/esptool. MIT-0 licensed sample."
+  },
+  "dataAssetProfiles": [
+    {
+      "id": "DP001",
+      "name": "Device private keys and certificates",
+      "asset_id": "DA-DEVICE-CREDS",
+      "structural_category": "Secrets and Credentials",
+      "content_types": [
+        "Authentication credentials"
+      ],
+      "sensitivity_tier": "Restricted",
+      "compliance_regimes": [
+        "None"
+      ],
+      "data_states": [
+        "At rest",
+        "In transit",
+        "In use"
+      ],
+      "volume_tier": "Small",
+      "lifecycle_state": "Active",
+      "business_domain": "Engineering",
+      "description": "Per-device ECDSA P-256 and ML-DSA-44 key pairs and certificates issued by the shared cert-issuer CodeBuild job, compiled into each device's firmware image, stored in device flash, and used for device-to-broker mTLS."
+    },
+    {
+      "id": "DP002",
+      "name": "Private CA signing keys",
+      "asset_id": "DA-CA-KEYS",
+      "structural_category": "Secrets and Credentials",
+      "content_types": [
+        "Authentication credentials"
+      ],
+      "sensitivity_tier": "Restricted",
+      "compliance_regimes": [
+        "None"
+      ],
+      "data_states": [
+        "At rest",
+        "In use"
+      ],
+      "volume_tier": "Small",
+      "lifecycle_state": "Active",
+      "business_domain": "Engineering",
+      "description": "Signing keys of the two workshop trust roots (classical ECDSA P-256 Private CA and the ML-DSA-44 CA). Compromise allows minting trusted broker or device identities."
+    },
+    {
+      "id": "DP003",
+      "name": "Broker server and IoT bridge credentials",
+      "asset_id": "DA-BROKER-CREDS",
+      "structural_category": "Secrets and Credentials",
+      "content_types": [
+        "Authentication credentials"
+      ],
+      "sensitivity_tier": "Restricted",
+      "compliance_regimes": [
+        "None"
+      ],
+      "data_states": [
+        "At rest",
+        "In use"
+      ],
+      "volume_tier": "Small",
+      "lifecycle_state": "Active",
+      "business_domain": "Engineering",
+      "description": "Broker TLS server certificates/keys (classical and ML-DSA) and the AWS IoT Core bridge client certificate/key, stored in Secrets Manager and loaded by the Fargate broker task."
+    },
+    {
+      "id": "DP004",
+      "name": "Workshop WiFi credentials",
+      "asset_id": "DA-WIFI",
+      "structural_category": "Secrets and Credentials",
+      "content_types": [
+        "Authentication credentials"
+      ],
+      "sensitivity_tier": "Confidential",
+      "compliance_regimes": [
+        "None"
+      ],
+      "data_states": [
+        "At rest",
+        "In transit",
+        "In use"
+      ],
+      "volume_tier": "Small",
+      "lifecycle_state": "Active",
+      "business_domain": "Operations",
+      "description": "Workshop AP SSID and PSK. Source of truth is SSM SecureString /pqc-workshop/wifi/password; also compiled into firmware, configured on the Builder-Pi AP, and (known backlog item) still written in plaintext to the pqc-workshop-device-registry DynamoDB table by the registrar."
+    },
+    {
+      "id": "DP005",
+      "name": "Firmware images",
+      "asset_id": "DA-FIRMWARE",
+      "structural_category": "Unstructured Data",
+      "content_types": [
+        "Authentication credentials",
+        "Intellectual property / trade secrets"
+      ],
+      "sensitivity_tier": "Restricted",
+      "compliance_regimes": [
+        "None"
+      ],
+      "data_states": [
+        "At rest",
+        "In transit"
+      ],
+      "volume_tier": "Small",
+      "lifecycle_state": "Active",
+      "business_domain": "Engineering",
+      "description": "Per-device classical / PQC / PQC+ML-DSA firmware binaries in the versioned firmware S3 bucket under <serial>/<version>/, delivered to the Builder-Pi for USB flashing and to devices over OTA via presigned S3 URLs. Each image embeds that device's private key and the WiFi PSK, and integrity determines what code runs on the device."
+    },
+    {
+      "id": "DP006",
+      "name": "Device telemetry and message log",
+      "asset_id": "DA-TELEMETRY",
+      "structural_category": "Semi-Structured Data",
+      "content_types": [
+        "Operational / telemetry data"
+      ],
+      "sensitivity_tier": "Internal",
+      "compliance_regimes": [
+        "None"
+      ],
+      "data_states": [
+        "At rest",
+        "In transit"
+      ],
+      "volume_tier": "Streaming",
+      "lifecycle_state": "Active",
+      "business_domain": "Engineering",
+      "description": "JSON telemetry on dt/<thing>/telemetry (heap, RSSI, firmware version, negotiated PQC group, TLS version) plus lifecycle events, stored in DynamoDB (pqc-workshop-devices, pqc-workshop-message-log) and pushed to the dashboard. Its integrity is what proves to attendees that a device negotiated ML-KEM."
+    },
+    {
+      "id": "DP007",
+      "name": "Device commands and OTA jobs",
+      "asset_id": "DA-COMMANDS",
+      "structural_category": "API Data",
+      "content_types": [
+        "Operational / telemetry data"
+      ],
+      "sensitivity_tier": "Internal",
+      "compliance_regimes": [
+        "None"
+      ],
+      "data_states": [
+        "In transit"
+      ],
+      "volume_tier": "Small",
+      "lifecycle_state": "Active",
+      "business_domain": "Engineering",
+      "description": "Downlink messages on cmd/<thing>/+ (LED control, OTA trigger carrying a presigned firmware URL, revert-to-classical). A forged OTA command can make a device install attacker-chosen firmware."
+    },
+    {
+      "id": "DP008",
+      "name": "Device registry and migration state",
+      "asset_id": "DA-REGISTRY",
+      "structural_category": "Structured Data",
+      "content_types": [
+        "System metadata"
+      ],
+      "sensitivity_tier": "Internal",
+      "compliance_regimes": [
+        "None"
+      ],
+      "data_states": [
+        "At rest"
+      ],
+      "volume_tier": "Small",
+      "lifecycle_state": "Active",
+      "business_domain": "Engineering",
+      "description": "DynamoDB device registry (serial, thing name, cert metadata, firmware version, status) and dashboard device rows (migrationStatus), plus IoT Thing / per-device policy records."
+    },
+    {
+      "id": "DP009",
+      "name": "Dashboard user accounts",
+      "asset_id": "DA-DASH-USERS",
+      "structural_category": "Secrets and Credentials",
+      "content_types": [
+        "Authentication credentials",
+        "PII"
+      ],
+      "sensitivity_tier": "Confidential",
+      "compliance_regimes": [
+        "None"
+      ],
+      "data_states": [
+        "At rest",
+        "In transit"
+      ],
+      "volume_tier": "Small",
+      "lifecycle_state": "Active",
+      "business_domain": "Operations",
+      "description": "Cognito user pool identities (email address, password) and issued JWTs used to call the AppSync API that reads telemetry and sends device commands and migrations."
+    },
+    {
+      "id": "DP010",
+      "name": "Infrastructure-as-code and deployment configuration",
+      "asset_id": "DA-IAC",
+      "structural_category": "Configuration Data",
+      "content_types": [
+        "System metadata"
+      ],
+      "sensitivity_tier": "Internal",
+      "compliance_regimes": [
+        "None"
+      ],
+      "data_states": [
+        "At rest"
+      ],
+      "volume_tier": "Small",
+      "lifecycle_state": "Active",
+      "business_domain": "Engineering",
+      "description": "CloudFormation templates, buildspecs, Dockerfiles, SSM documents, deploy scripts and the Builder-Pi bundle (contains a 7-day SSM hybrid activation code). Public on GitHub after scrubbing; integrity determines what is deployed."
+    }
+  ],
+  "userPersonas": [
+    {
+      "id": "UP001",
+      "persona_type": "System Administrator",
+      "name": "Workshop operator",
+      "privilege_level": "Administrative",
+      "organizational_affiliation": "Employee",
+      "functional_roles": [
+        "Administrator",
+        "Operator"
+      ],
+      "intent_behavior": "Legitimate",
+      "entity_type": "Human",
+      "authentication_method": "IAM Role",
+      "threat_actor_overlay": [],
+      "description": "Deploys and tears down the master stack with Admin credentials, provisions the Builder-Pi over SSM, and runs readiness checks.",
+      "is_relevant": true
+    },
+    {
+      "id": "UP002",
+      "persona_type": "Authenticated Standard User",
+      "name": "Workshop attendee",
+      "privilege_level": "Low",
+      "organizational_affiliation": "Customer",
+      "functional_roles": [
+        "End User"
+      ],
+      "intent_behavior": "Legitimate",
+      "entity_type": "Human",
+      "authentication_method": "Password",
+      "threat_actor_overlay": [],
+      "description": "Plugs in and flashes a device at the Builder-Pi, joins the workshop WiFi, and uses the dashboard (Cognito) to watch telemetry and trigger PQC migrations. Physically present with access to the hardware and the venue network.",
+      "is_relevant": true
+    },
+    {
+      "id": "UP003",
+      "persona_type": "Non-Human Identity / Service Account",
+      "name": "ESP32 field device",
+      "privilege_level": "Low",
+      "organizational_affiliation": "Customer",
+      "functional_roles": [
+        "Service Account"
+      ],
+      "intent_behavior": "Legitimate",
+      "entity_type": "Non-Human",
+      "authentication_method": "Certificate",
+      "threat_actor_overlay": [],
+      "description": "Authenticates to the broker with an mTLS client certificate; publishes dt/<thing>/* and subscribes to cmd/<thing>/*; downloads OTA firmware from presigned S3 URLs.",
+      "is_relevant": true
+    },
+    {
+      "id": "UP004",
+      "persona_type": "Non-Human Identity / Service Account",
+      "name": "Builder-Pi edge host",
+      "privilege_level": "Elevated",
+      "organizational_affiliation": "Employee",
+      "functional_roles": [
+        "Service Account",
+        "Operator"
+      ],
+      "intent_behavior": "Legitimate",
+      "entity_type": "Non-Human",
+      "authentication_method": "IAM Role",
+      "threat_actor_overlay": [],
+      "description": "On-site Raspberry Pi registered as an SSM managed instance (pqc-workshop-builder-pi-ssm role). Calls the builder API to register devices, downloads firmware from S3, flashes over USB, and runs the open Flask GUI on :8080 and the workshop WiFi AP.",
+      "is_relevant": true
+    },
+    {
+      "id": "UP005",
+      "persona_type": "Non-Human Identity / Service Account",
+      "name": "Mosquitto broker and IoT bridge",
+      "privilege_level": "Medium",
+      "organizational_affiliation": "Employee",
+      "functional_roles": [
+        "Service Account",
+        "Integration Endpoint"
+      ],
+      "intent_behavior": "Legitimate",
+      "entity_type": "Non-Human",
+      "authentication_method": "Certificate",
+      "threat_actor_overlay": [],
+      "description": "Fargate task that terminates device PQC TLS and bridges to AWS IoT Core with its own client certificate (pqc-workshop-broker-bridge Thing).",
+      "is_relevant": true
+    },
+    {
+      "id": "UP006",
+      "persona_type": "Non-Human Identity / Service Account",
+      "name": "Cloud workload roles",
+      "privilege_level": "Elevated",
+      "organizational_affiliation": "Employee",
+      "functional_roles": [
+        "Service Account"
+      ],
+      "intent_behavior": "Legitimate",
+      "entity_type": "Non-Human",
+      "authentication_method": "IAM Role",
+      "threat_actor_overlay": [],
+      "description": "Lambda (registrar, deregistrar, prepare-build, publish-ota, start-migration, telemetry-processor, command-publisher, auto-register), CodeBuild (firmware build, image build, cert-issuer) and Step Functions roles that create IoT Things/policies, issue certificates and publish OTA.",
+      "is_relevant": true
+    },
+    {
+      "id": "UP007",
+      "persona_type": "Anonymous / Unauthenticated User",
+      "name": "Unauthenticated internet or venue user",
+      "privilege_level": "None",
+      "organizational_affiliation": "Public / Unknown",
+      "functional_roles": [
+        "End User"
+      ],
+      "intent_behavior": "Malicious",
+      "entity_type": "Human",
+      "authentication_method": "None",
+      "threat_actor_overlay": [],
+      "description": "Can reach the internet-facing NLB (8883/8884), the CloudFront dashboard and the builder API endpoint, and anyone in RF range or on the venue LAN can attempt the workshop AP and the Builder-Pi GUI.",
+      "is_relevant": true
+    },
+    {
+      "id": "UP008",
+      "persona_type": "Developer / DevOps User",
+      "name": "Sample maintainer",
+      "privilege_level": "Elevated",
+      "organizational_affiliation": "Employee",
+      "functional_roles": [
+        "Developer"
+      ],
+      "intent_behavior": "Legitimate",
+      "entity_type": "Human",
+      "authentication_method": "Multi-factor",
+      "threat_actor_overlay": [],
+      "description": "Commits to the internal GitLab repo and publishes the scrubbed public mirror to GitHub aws-samples and the Workshop Studio source zip.",
+      "is_relevant": true
+    }
+  ],
+  "nonFunctionalRequirements": [
+    {
+      "quality_class": "Resource Utilization",
+      "level": "Constrained",
+      "rationale": "ESP32-S3 RAM/flash budget must fit wolfSSL with ML-KEM and ML-DSA plus dual OTA partitions."
+    },
+    {
+      "quality_class": "Availability",
+      "level": "99%",
+      "rationale": "Needed only for the duration of a workshop event; not a production service."
+    },
+    {
+      "quality_class": "Recoverability",
+      "level": "Hours",
+      "rationale": "Recovery is a from-scratch redeploy of the master stack (roughly an hour)."
+    },
+    {
+      "quality_class": "Installability",
+      "level": "Automated",
+      "rationale": "Must deploy in one attempt from CloudFormation and scripts with minimal documented manual steps."
+    },
+    {
+      "quality_class": "Adaptability",
+      "level": "Multiple environments",
+      "rationale": "Must work in accounts with and without VPC Block Public Access."
+    },
+    {
+      "quality_class": "Interoperability",
+      "level": "Standards-based",
+      "rationale": "MQTT 3.1.1, TLS 1.3, IANA SecP256r1MLKEM768 group, FIPS 203/204 algorithms, X.509."
+    },
+    {
+      "quality_class": "Fault Tolerance",
+      "level": "Partial",
+      "rationale": "Device WiFi/MQTT tasks auto-reconnect; single broker task and NLB."
+    },
+    {
+      "quality_class": "Fail-Safe Behaviour",
+      "level": "Revert to safe state",
+      "rationale": "Dual-boot partitions allow rollback to classical firmware after a failed migration."
+    },
+    {
+      "quality_class": "Capacity",
+      "level": "Small",
+      "rationale": "Tens of devices per workshop room."
+    },
+    {
+      "quality_class": "Safety Criticality",
+      "level": "Non-safety-related",
+      "rationale": "Demo devices drive only an LED."
+    }
+  ],
+  "phaseProgress": {
+    "current_phase": 1,
+    "current_phase_name": "Business Context Analysis",
+    "phase_completion": {
+      "1": 1.0,
+      "2": 1.0,
+      "3": 0.0,
+      "4": 0.0,
+      "5": 0.0,
+      "6": 0.0,
+      "7": 0.0,
+      "7.5": 0.0,
+      "8": 0.0,
+      "9": 1.0
+    },
+    "phases": {
+      "1": "Business Context Analysis",
+      "2": "Architecture Analysis",
+      "3": "Threat Actor Analysis",
+      "4": "Trust Boundary Analysis",
+      "5": "Asset Flow Analysis",
+      "6": "Threat Identification",
+      "7": "Mitigation Planning",
+      "7.5": "Code Validation Analysis",
+      "8": "Residual Risk Analysis",
+      "9": "Output Generation and Documentation"
+    },
+    "overall_completion": 0.3
+  },
+  "referenceCatalogue": {
+    "description": "Threat actors the server pre-loaded but that were never assessed for this system. These are NOT part of the threat model.",
+    "threatActors": []
+  }
+}
