@@ -480,7 +480,18 @@
         "appsync",
         "anonymous-access"
       ],
-      "metadata": []
+      "metadata": [
+        {
+          "key": "Priority",
+          "value": "High"
+        },
+        {
+          "key": "STRIDE",
+          "value": [
+            "E"
+          ]
+        }
+      ]
     },
     {
       "id": "3d6631e1-af13-5fa7-9f0a-946747b7422d",
@@ -502,7 +513,18 @@
         "anonymous-access",
         "integrity"
       ],
-      "metadata": []
+      "metadata": [
+        {
+          "key": "Priority",
+          "value": "High"
+        },
+        {
+          "key": "STRIDE",
+          "value": [
+            "T"
+          ]
+        }
+      ]
     },
     {
       "id": "9118901f-6eb5-5fe1-9f5f-a3fea4274ca2",
@@ -526,7 +548,18 @@
         "presigned-url",
         "key-exposure"
       ],
-      "metadata": []
+      "metadata": [
+        {
+          "key": "Priority",
+          "value": "High"
+        },
+        {
+          "key": "STRIDE",
+          "value": [
+            "I"
+          ]
+        }
+      ]
     },
     {
       "id": "4f7d8c3d-523a-59f9-8629-6255e6c92d81",
@@ -547,7 +580,18 @@
         "appsync",
         "anonymous-access"
       ],
-      "metadata": []
+      "metadata": [
+        {
+          "key": "Priority",
+          "value": "Medium"
+        },
+        {
+          "key": "STRIDE",
+          "value": [
+            "I"
+          ]
+        }
+      ]
     },
     {
       "id": "08076e24-45d9-5f2c-a1c4-293bff49fdab",
@@ -568,7 +612,18 @@
         "physical",
         "no-flash-encryption"
       ],
-      "metadata": []
+      "metadata": [
+        {
+          "key": "Priority",
+          "value": "Medium"
+        },
+        {
+          "key": "STRIDE",
+          "value": [
+            "I"
+          ]
+        }
+      ]
     },
     {
       "id": "15c4d825-3519-5999-a894-88185c6b42c9",
@@ -590,7 +645,18 @@
         "ota",
         "signature-downgrade"
       ],
-      "metadata": []
+      "metadata": [
+        {
+          "key": "Priority",
+          "value": "High"
+        },
+        {
+          "key": "STRIDE",
+          "value": [
+            "T"
+          ]
+        }
+      ]
     },
     {
       "id": "8414df73-8d4b-5e1e-b0bf-4844f86bb045",
@@ -609,7 +675,18 @@
       "tags": [
         "broker-acl"
       ],
-      "metadata": []
+      "metadata": [
+        {
+          "key": "Priority",
+          "value": "Medium"
+        },
+        {
+          "key": "STRIDE",
+          "value": [
+            "S"
+          ]
+        }
+      ]
     },
     {
       "id": "aee0a9dd-0ee6-5f39-b90b-73874cd6a292",
@@ -629,7 +706,18 @@
         "revocation",
         "pki"
       ],
-      "metadata": []
+      "metadata": [
+        {
+          "key": "Priority",
+          "value": "High"
+        },
+        {
+          "key": "STRIDE",
+          "value": [
+            "S"
+          ]
+        }
+      ]
     },
     {
       "id": "ddf39fa0-8d1f-5971-b650-962e6ff499fb",
@@ -649,7 +737,18 @@
         "builder-pi",
         "no-auth"
       ],
-      "metadata": []
+      "metadata": [
+        {
+          "key": "Priority",
+          "value": "High"
+        },
+        {
+          "key": "STRIDE",
+          "value": [
+            "E"
+          ]
+        }
+      ]
     },
     {
       "id": "4b6ba760-5baf-5785-938e-e67ad203cedd",
@@ -671,7 +770,18 @@
         "no-auth",
         "csrf"
       ],
-      "metadata": []
+      "metadata": [
+        {
+          "key": "Priority",
+          "value": "High"
+        },
+        {
+          "key": "STRIDE",
+          "value": [
+            "T"
+          ]
+        }
+      ]
     },
     {
       "id": "73429e61-5b54-54c1-9aa1-7201565b9559",
@@ -693,7 +803,18 @@
         "builder-pi",
         "least-privilege"
       ],
-      "metadata": []
+      "metadata": [
+        {
+          "key": "Priority",
+          "value": "High"
+        },
+        {
+          "key": "STRIDE",
+          "value": [
+            "I"
+          ]
+        }
+      ]
     },
     {
       "id": "6838c8b1-6bac-5053-8e8c-4906b9b53f66",
@@ -713,7 +834,18 @@
         "ssm",
         "builder-pi"
       ],
-      "metadata": []
+      "metadata": [
+        {
+          "key": "Priority",
+          "value": "High"
+        },
+        {
+          "key": "STRIDE",
+          "value": [
+            "E"
+          ]
+        }
+      ]
     },
     {
       "id": "a06ec6cc-22bc-58a1-9f1f-03d540a3f0cf",
@@ -732,7 +864,18 @@
       "tags": [
         "secrets-handling"
       ],
-      "metadata": []
+      "metadata": [
+        {
+          "key": "Priority",
+          "value": "Medium"
+        },
+        {
+          "key": "STRIDE",
+          "value": [
+            "I"
+          ]
+        }
+      ]
     },
     {
       "id": "0fa4615b-7141-5ac3-a394-94cb554ad2ae",
@@ -753,7 +896,18 @@
         "tls",
         "hostname-check"
       ],
-      "metadata": []
+      "metadata": [
+        {
+          "key": "Priority",
+          "value": "High"
+        },
+        {
+          "key": "STRIDE",
+          "value": [
+            "S"
+          ]
+        }
+      ]
     },
     {
       "id": "73035e02-c29a-5993-8777-c3719275c91b",
@@ -774,7 +928,18 @@
       "tags": [
         "supply-chain"
       ],
-      "metadata": []
+      "metadata": [
+        {
+          "key": "Priority",
+          "value": "High"
+        },
+        {
+          "key": "STRIDE",
+          "value": [
+            "T"
+          ]
+        }
+      ]
     },
     {
       "id": "16017c77-52e6-532b-82b1-5b72bf3f46a7",
@@ -795,7 +960,18 @@
         "supply-chain",
         "ecr"
       ],
-      "metadata": []
+      "metadata": [
+        {
+          "key": "Priority",
+          "value": "High"
+        },
+        {
+          "key": "STRIDE",
+          "value": [
+            "T"
+          ]
+        }
+      ]
     },
     {
       "id": "27084191-d624-5f92-8355-12a1051fc150",
@@ -815,7 +991,18 @@
         "appsync",
         "cost"
       ],
-      "metadata": []
+      "metadata": [
+        {
+          "key": "Priority",
+          "value": "Medium"
+        },
+        {
+          "key": "STRIDE",
+          "value": [
+            "D"
+          ]
+        }
+      ]
     },
     {
       "id": "74165ea7-f6e5-5082-baa1-e74c478b20d8",
@@ -832,7 +1019,18 @@
       "tags": [
         "availability"
       ],
-      "metadata": []
+      "metadata": [
+        {
+          "key": "Priority",
+          "value": "Medium"
+        },
+        {
+          "key": "STRIDE",
+          "value": [
+            "D"
+          ]
+        }
+      ]
     },
     {
       "id": "96318db1-ff7e-59af-a3b3-cd61b9bf9ee0",
@@ -852,7 +1050,18 @@
         "audit",
         "anonymous-access"
       ],
-      "metadata": []
+      "metadata": [
+        {
+          "key": "Priority",
+          "value": "Medium"
+        },
+        {
+          "key": "STRIDE",
+          "value": [
+            "R"
+          ]
+        }
+      ]
     },
     {
       "id": "140dbbb7-7fb8-58f0-bf12-0692363919eb",
@@ -874,7 +1083,18 @@
         "broker",
         "least-privilege"
       ],
-      "metadata": []
+      "metadata": [
+        {
+          "key": "Priority",
+          "value": "Medium"
+        },
+        {
+          "key": "STRIDE",
+          "value": [
+            "E"
+          ]
+        }
+      ]
     },
     {
       "id": "095d43bc-590e-5c10-9083-b9465aafbea3",
@@ -891,7 +1111,18 @@
       "tags": [
         "release-process"
       ],
-      "metadata": []
+      "metadata": [
+        {
+          "key": "Priority",
+          "value": "Medium"
+        },
+        {
+          "key": "STRIDE",
+          "value": [
+            "I"
+          ]
+        }
+      ]
     },
     {
       "id": "398f8cd8-b686-554d-ac4c-79f8b832bda3",
@@ -912,7 +1143,18 @@
         "pqc",
         "hndl"
       ],
-      "metadata": []
+      "metadata": [
+        {
+          "key": "Priority",
+          "value": "Low"
+        },
+        {
+          "key": "STRIDE",
+          "value": [
+            "I"
+          ]
+        }
+      ]
     },
     {
       "id": "477d100c-666d-543d-98e1-038585bc15c6",
@@ -935,7 +1177,18 @@
         "tls",
         "rogue-ap"
       ],
-      "metadata": []
+      "metadata": [
+        {
+          "key": "Priority",
+          "value": "High"
+        },
+        {
+          "key": "STRIDE",
+          "value": [
+            "T"
+          ]
+        }
+      ]
     }
   ]
 }
