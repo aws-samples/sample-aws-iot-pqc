@@ -139,7 +139,7 @@
       "metadata": [],
       "statement": "A workshop attendee with physical access to their own ESP32 board can dump the board's flash over USB and recover its device private key, certificate and the WiFi PSK, which leads to the attendee holding a broker-trusted device identity and access to the workshop AP, enabling the broker-level attacks",
       "displayOrder": 5,
-      "status": "threatIdentified",
+      "status": "threatResolved",
       "tags": [
         "physical",
         "no-flash-encryption"
@@ -502,7 +502,7 @@
       "metadata": [],
       "statement": "A internet attacker with modest bandwidth can flood the NLB on 8883/8884 with TLS handshakes, which leads to exhaustion of the single Fargate broker task, disconnecting every device",
       "displayOrder": 18,
-      "status": "threatIdentified",
+      "status": "threatResolved",
       "tags": [
         "availability"
       ],
@@ -609,7 +609,7 @@
       "metadata": [],
       "statement": "A harvest-now-decrypt-later adversary with a future cryptographically relevant quantum computer can record and later decrypt the classical-only links: bridge TLS 1.2, Builder-Pi HTTPS and the OTA firmware download from S3, which leads to future disclosure of telemetry and of key-bearing firmware images, contrary to the workshop's PQC message",
       "displayOrder": 22,
-      "status": "threatIdentified",
+      "status": "threatResolved",
       "tags": [
         "pqc",
         "hndl"
@@ -654,9 +654,566 @@
       ]
     }
   ],
-  "mitigations": [],
-  "assumptions": [],
-  "mitigationLinks": [],
+  "mitigations": [
+    {
+      "id": "M001",
+      "numericId": 1,
+      "status": "mitigationIdentified",
+      "content": "Make every firmware variant refuse any OTA that does not carry a valid signature chained to the baked signer root (fail closed when sigAlg is missing), and have publish-ota sign every push including the classical era.",
+      "displayOrder": 1,
+      "metadata": [],
+      "type": "Preventive",
+      "cost": "Medium",
+      "effectiveness": "High",
+      "implementation_details": "In otaTask replace the 'UNSIGNED ... proceeding' else-branch with a refusal in all three .ino sketches; ensure buildspec sets a signer era for classical builds and publish-ota always sends sigAlg/sigUrl/signerCertUrl. Re-flash devices so the first-flash image enforces the policy."
+    },
+    {
+      "id": "M002",
+      "numericId": 2,
+      "status": "mitigationIdentified",
+      "content": "Verify the OTA download server: fix the wolfSSL chain issue (load the Amazon intermediate/roots and enable WOLFSSL_VERIFY_PEER with SNI and domain check) and only accept URLs whose host is the workshop firmware bucket's regional S3 endpoint.",
+      "displayOrder": 2,
+      "metadata": [],
+      "type": "Preventive",
+      "cost": "Medium",
+      "effectiveness": "High",
+      "implementation_details": "Replace WOLFSSL_VERIFY_NONE in otaTask and otaHttpsGetToBuffer; bake the expected bucket host at build time and reject other hosts before connecting."
+    },
+    {
+      "id": "M003",
+      "numericId": 3,
+      "status": "mitigationIdentified",
+      "content": "Add a Mosquitto ACL that confines each device to its own topics: write dt/%u/#, read cmd/%u/#, using the certificate CN as the username (use_identity_as_username is already on).",
+      "displayOrder": 3,
+      "metadata": [],
+      "type": "Preventive",
+      "cost": "Low",
+      "effectiveness": "High",
+      "implementation_details": "Add acl_file to both listeners in mosquitto.conf with 'pattern write dt/%u/#' and 'pattern read cmd/%u/#'; give the bridge its own rules. Device CN is already esp32-<serial>."
+    },
+    {
+      "id": "M004",
+      "numericId": 4,
+      "status": "mitigationIdentified",
+      "content": "Replace anonymous dashboard access: add a Cognito user pool (operator and per-event attendee sign-in), keep the unauthenticated role read-only, and allow mutations only to authenticated users scoped to their own device where possible.",
+      "displayOrder": 4,
+      "metadata": [],
+      "type": "Preventive",
+      "cost": "Medium",
+      "effectiveness": "High",
+      "implementation_details": "Add a user pool and IdentityPoolRoleAttachment 'authenticated' role; restrict CognitoUnauthRole to appsync:GraphQL on .../types/Query/fields/listDevices and getDevice; move migrateFirmware/getDeviceLog/getBrokerLog to the authenticated role."
+    },
+    {
+      "id": "M005",
+      "numericId": 5,
+      "status": "mitigationIdentified",
+      "content": "Remove updateDevice from browser-callable access: only the telemetry processor writes device state, so scope the guest role's appsync:GraphQL to specific Query fields.",
+      "displayOrder": 5,
+      "metadata": [],
+      "type": "Preventive",
+      "cost": "Low",
+      "effectiveness": "High",
+      "implementation_details": "Field-level IAM resource ARNs on CognitoUnauthRole; keep updateDevice for the telemetry processor's role (needed for the subscription)."
+    },
+    {
+      "id": "M006",
+      "numericId": 6,
+      "status": "mitigationInProgress",
+      "content": "Throttle migrations: reject migrateFirmware while a device already has a migration in progress, cap start-migration concurrency, and set a CodeBuild concurrent-build limit.",
+      "displayOrder": 6,
+      "metadata": [],
+      "type": "Preventive",
+      "cost": "Low",
+      "effectiveness": "Medium",
+      "implementation_details": "Conditional update on migrationStatus in start-migration; ReservedConcurrentExecutions on start-migration; ConcurrentBuildLimit on the firmware project."
+    },
+    {
+      "id": "M007",
+      "numericId": 7,
+      "status": "mitigationIdentified",
+      "content": "Redact presigned URLs from logged OTA commands and shorten the presign expiry to the minimum the download needs.",
+      "displayOrder": 7,
+      "metadata": [],
+      "type": "Preventive",
+      "cost": "Low",
+      "effectiveness": "Medium",
+      "implementation_details": "message-logger strips url/sigUrl/signerCertUrl from cmd/+/ota payloads; reduce PRESIGNED_URL_EXPIRY from 900 s."
+    },
+    {
+      "id": "M008",
+      "numericId": 8,
+      "status": "mitigationIdentified",
+      "content": "Enable ESP32 flash encryption and secure boot v2 so device keys and the PSK cannot be read back over USB (production guidance; accepted for the workshop).",
+      "displayOrder": 8,
+      "metadata": [],
+      "type": "Preventive",
+      "cost": "High",
+      "effectiveness": "High",
+      "implementation_details": "Document as production guidance in README security considerations; for the workshop treat device keys as attendee-extractable and rely on M3/M9."
+    },
+    {
+      "id": "M009",
+      "numericId": 9,
+      "status": "mitigationIdentified",
+      "content": "Make device identity revocable: enable CRLs on both Private CAs, revoke the device cert in the deregistrar, and have Mosquitto check the CRL (or an auth plugin that checks the registry).",
+      "displayOrder": 9,
+      "metadata": [],
+      "type": "Corrective",
+      "cost": "Medium",
+      "effectiveness": "High",
+      "implementation_details": "RevocationConfiguration CrlConfiguration Enabled with an S3 bucket; acm-pca RevokeCertificate in device-deregistrar; mosquitto crlfile refreshed by the entrypoint."
+    },
+    {
+      "id": "M010",
+      "numericId": 10,
+      "status": "mitigationIdentified",
+      "content": "Lock down the Builder-Pi GUI: require an operator token, add CSRF protection, make /api/config read-only at runtime, and bind the GUI away from the attendee AP interface.",
+      "displayOrder": 10,
+      "metadata": [],
+      "type": "Preventive",
+      "cost": "Low",
+      "effectiveness": "High",
+      "implementation_details": "Flask before_request token check; drop POST /api/config or restrict to localhost; set gui_host to the operator interface rather than 0.0.0.0."
+    },
+    {
+      "id": "M011",
+      "numericId": 11,
+      "status": "mitigationIdentified",
+      "content": "Least-privilege Builder-Pi role: drop bucket-wide firmware read and registry Scan; the builder API returns a short-lived presigned URL for just the device being flashed.",
+      "displayOrder": 11,
+      "metadata": [],
+      "type": "Preventive",
+      "cost": "Medium",
+      "effectiveness": "High",
+      "implementation_details": "Remove s3:GetObject on bucket/* and dynamodb:Scan from BuilderPiSsmRole; extend the registrar response with a presigned merged.bin URL."
+    },
+    {
+      "id": "M012",
+      "numericId": 12,
+      "status": "mitigationIdentified",
+      "content": "Stop persisting device private keys in stored firmware: expire per-device images after flashing/OTA (lifecycle rule, short noncurrent-version expiry) or move the key to a separately flashed NVS partition that is never uploaded.",
+      "displayOrder": 12,
+      "metadata": [],
+      "type": "Preventive",
+      "cost": "Medium",
+      "effectiveness": "Medium",
+      "implementation_details": "S3 lifecycle on <serial>/ prefixes plus NoncurrentVersionExpiration; longer term a secrets NVS image generated and flashed by the Pi only."
+    },
+    {
+      "id": "M013",
+      "numericId": 13,
+      "status": "mitigationIdentified",
+      "content": "Keep the WiFi PSK only in SSM: drop wifiPassword from the registry and pass it to CodeBuild as a PARAMETER_STORE environment variable instead of PLAINTEXT (project env, registrar override and state machine).",
+      "displayOrder": 13,
+      "metadata": [],
+      "type": "Preventive",
+      "cost": "Low",
+      "effectiveness": "High",
+      "implementation_details": "Already a backlog item; change the CodeBuild env type and the ASL WaitForBuild override, remove the registrar put_item field and prepare-build fallback."
+    },
+    {
+      "id": "M014",
+      "numericId": 14,
+      "status": "mitigationInProgress",
+      "content": "Limit the SSM hybrid activation: registration limit of 1, expiry of hours not 7 days, and auto-deregister stale managed instances.",
+      "displayOrder": 14,
+      "metadata": [],
+      "type": "Preventive",
+      "cost": "Low",
+      "effectiveness": "Medium",
+      "implementation_details": "RegistrationLimit and ExpirationDate in the SSMActivation custom resource; setup-builder-pi-remote.sh already prunes ConnectionLost instances."
+    },
+    {
+      "id": "M015",
+      "numericId": 15,
+      "status": "mitigationIdentified",
+      "content": "Enforce broker hostname checks on devices: add stable DNS names as SANs on both broker certificates and enable wolfSSL domain-name checking.",
+      "displayOrder": 15,
+      "metadata": [],
+      "type": "Preventive",
+      "cost": "Medium",
+      "effectiveness": "High",
+      "implementation_details": "Matches the existing backlog item (stable broker DNS + SANs); wolfSSL_check_domain_name(ssl, MQTT_BROKER_ENDPOINT) before the handshake."
+    },
+    {
+      "id": "M016",
+      "numericId": 16,
+      "status": "mitigationInProgress",
+      "content": "Harden the build supply chain: pin base images by digest, pin oqs-provider/OpenSSL commits and package versions, verify Arduino index signatures, use npm ci with a lockfile, and deploy images by digest with immutable ECR tags.",
+      "displayOrder": 16,
+      "metadata": [],
+      "type": "Preventive",
+      "cost": "Medium",
+      "effectiveness": "Medium",
+      "implementation_details": "Dockerfile FROM ...@sha256; apt version pins; arduino-cli with signed indexes (data/*.json.sig exist); ECR ImageTagMutability IMMUTABLE with per-build tags."
+    },
+    {
+      "id": "M017",
+      "numericId": 17,
+      "status": "mitigationResolved",
+      "content": "ECR scan on push for all three images.",
+      "displayOrder": 17,
+      "metadata": [],
+      "type": "Detective",
+      "cost": "Low",
+      "effectiveness": "Low",
+      "implementation_details": "ImageScanningConfiguration ScanOnPush true on the ECR repositories."
+    },
+    {
+      "id": "M018",
+      "numericId": 18,
+      "status": "mitigationIdentified",
+      "content": "Improve broker availability: run at least two broker tasks across AZs, set Mosquitto connection limits, and rely on Shield Standard on the NLB.",
+      "displayOrder": 18,
+      "metadata": [],
+      "type": "Preventive",
+      "cost": "Medium",
+      "effectiveness": "Medium",
+      "implementation_details": "BrokerService DesiredCount >= 2 (check bridge client-id uniqueness), max_connections in mosquitto.conf."
+    },
+    {
+      "id": "M019",
+      "numericId": 19,
+      "status": "mitigationIdentified",
+      "content": "Make dashboard actions auditable: enable AppSync request logging and record caller identity once sign-in exists.",
+      "displayOrder": 19,
+      "metadata": [],
+      "type": "Detective",
+      "cost": "Low",
+      "effectiveness": "Medium",
+      "implementation_details": "AppSync LogConfig with FieldLogLevel ERROR/ALL to CloudWatch; include identity in start-migration logs."
+    },
+    {
+      "id": "M020",
+      "numericId": 20,
+      "status": "mitigationIdentified",
+      "content": "Narrow the bridge IoT policy to the device topic shapes (dt/esp32-*/telemetry, cmd/esp32-*/*) and remove the shadow wildcards it does not use.",
+      "displayOrder": 20,
+      "metadata": [],
+      "type": "Preventive",
+      "cost": "Low",
+      "effectiveness": "Medium",
+      "implementation_details": "Edit policy_doc in the bridge provisioner Lambda."
+    },
+    {
+      "id": "M021",
+      "numericId": 21,
+      "status": "mitigationResolved",
+      "content": "Fail-closed public-mirror curation: publish-public-mirror.sh strips .kiro/ and .threatmodel/, scrubs account IDs, the PSK and internal URLs, and aborts if any survive.",
+      "displayOrder": 21,
+      "metadata": [],
+      "type": "Preventive",
+      "cost": "Low",
+      "effectiveness": "High",
+      "implementation_details": "Implemented in cloudformation/publish-public-mirror.sh (sweep step 4/5)."
+    },
+    {
+      "id": "M022",
+      "numericId": 22,
+      "status": "mitigationIdentified",
+      "content": "Apply the same curation to the Workshop Studio source zip (package-workshop-src.sh), which currently ships .kiro/, .threatmodel/ and real account IDs.",
+      "displayOrder": 22,
+      "metadata": [],
+      "type": "Preventive",
+      "cost": "Low",
+      "effectiveness": "High",
+      "implementation_details": "Reuse the mirror script's strip and sweep in package-workshop-src.sh."
+    },
+    {
+      "id": "M023",
+      "numericId": 23,
+      "status": "mitigationIdentified",
+      "content": "Track the remaining classical-only links (IoT Core bridge TLS 1.2, OTA download, Builder-Pi HTTPS) and move them to hybrid ML-KEM where AWS endpoints support it; explain them in the workshop as the next migration step.",
+      "displayOrder": 23,
+      "metadata": [],
+      "type": "Preventive",
+      "cost": "Medium",
+      "effectiveness": "Low",
+      "implementation_details": "Workshop content note plus periodic check of AWS endpoint PQ TLS support."
+    },
+    {
+      "id": "M024",
+      "numericId": 24,
+      "status": "mitigationResolved",
+      "content": "Mutual TLS required on both broker listeners, each trusting only its own Private CA, TLS 1.3 only.",
+      "displayOrder": 24,
+      "metadata": [],
+      "type": "Preventive",
+      "cost": "Low",
+      "effectiveness": "Medium",
+      "implementation_details": "mosquitto.conf require_certificate true, use_identity_as_username true, per_listener_settings with separate cafile per listener."
+    },
+    {
+      "id": "M025",
+      "numericId": 25,
+      "status": "mitigationResolved",
+      "content": "Telemetry processor only updates devices that were registered (attribute_exists(serialNumber)), so unknown things cannot create dashboard cards.",
+      "displayOrder": 25,
+      "metadata": [],
+      "type": "Detective",
+      "cost": "Low",
+      "effectiveness": "Low",
+      "implementation_details": "Conditional UpdateItem in dashboard/lambda/telemetry-processor/index.py."
+    },
+    {
+      "id": "M026",
+      "numericId": 26,
+      "status": "mitigationResolved",
+      "content": "Signed OTA verification when the command declares sigAlg: signer leaf must chain to the baked signer root (fails closed without a root), then the ECDSA-P256 or ML-DSA-44 signature must verify; signer keys are scrubbed from the build disk after signing.",
+      "displayOrder": 26,
+      "metadata": [],
+      "type": "Preventive",
+      "cost": "Low",
+      "effectiveness": "Medium",
+      "implementation_details": "otaVerifyImage / otaVerifyChainToRoot in all three sketches; buildspec post_build signing. Bypassable while unsigned OTA is accepted (see M001)."
+    },
+    {
+      "id": "M027",
+      "numericId": 27,
+      "status": "mitigationResolved",
+      "content": "Broker runs in private subnets with no public IP; its task role can read only the named broker and bridge secrets.",
+      "displayOrder": 27,
+      "metadata": [],
+      "type": "Preventive",
+      "cost": "Low",
+      "effectiveness": "Medium",
+      "implementation_details": "AssignPublicIp DISABLED; BrokerTaskRole GetSecretValue on explicit secret ARNs."
+    },
+    {
+      "id": "M028",
+      "numericId": 28,
+      "status": "mitigationResolved",
+      "content": "start-migration validates the requested variant against an allow-list before starting a migration.",
+      "displayOrder": 28,
+      "metadata": [],
+      "type": "Preventive",
+      "cost": "Low",
+      "effectiveness": "Low",
+      "implementation_details": "VALID_VARIANTS check in raw_device_builder/lambda/start-migration/index.py."
+    }
+  ],
+  "assumptions": [
+    {
+      "id": "A011",
+      "description": "Each workshop runs in a throwaway AWS account (Workshop Studio per-event account, or pqc-a/pqc-b test accounts) that is torn down after the event.",
+      "category": "Deployment",
+      "impact": "Bounds the lifetime of leaked credentials, device keys and cost abuse to the event window.",
+      "rationale": "Stated deployment model in the project steering and DEPLOYMENT.md."
+    },
+    {
+      "id": "A012",
+      "description": "The system holds no customer data, PII beyond optional dashboard identities, or regulated data; telemetry is synthetic device health data.",
+      "category": "Data",
+      "impact": "Disruption, not data theft, is the main business impact; this drives the risk ratings.",
+      "rationale": "Phase 1 data asset review."
+    },
+    {
+      "id": "A013",
+      "description": "Attendees are semi-trusted: many are security practitioners with physical access to a board, the Builder-Pi station and the workshop WiFi.",
+      "category": "Users",
+      "impact": "Device keys and the WiFi PSK are treated as extractable; controls must not depend on their secrecy.",
+      "rationale": "Room setup in the workshop documentation."
+    },
+    {
+      "id": "A014",
+      "description": "Risk tolerance: a disrupted or visibly compromised live session at re:Invent is a reputational failure for a security workshop, so fleet-wide or cross-attendee attacks are not acceptable; single-device or workshop-scale availability issues are tolerable.",
+      "category": "Risk acceptance",
+      "impact": "Threats whose only outcome is a degraded session at workshop scale may be accepted; anything that lets one attendee or an internet user take over other devices, or that would be copied into production designs, stays open.",
+      "rationale": "Business context: Medium criticality, Low financial impact, high reputational sensitivity."
+    },
+    {
+      "id": "A015",
+      "description": "The public aws-samples repo is reference material; readers may reuse the design.",
+      "category": "Scope",
+      "impact": "Production readers need the documented hardening (flash encryption, secure boot, sign-in, revocation) rather than copying the workshop defaults.",
+      "rationale": "Published as an MIT-0 sample."
+    },
+    {
+      "id": "A016",
+      "description": "Operator Admin credentials are short-lived Isengard credentials obtained via ada, and upstream sources are pinned to release tags.",
+      "category": "Operations",
+      "impact": "Supply-chain and operator-mistake threats are rated Unlikely/Possible rather than Likely.",
+      "rationale": "Observed operator workflow and Dockerfile pins."
+    }
+  ],
+  "mitigationLinks": [
+    {
+      "linkedId": "T001",
+      "mitigationId": "M004"
+    },
+    {
+      "linkedId": "T001",
+      "mitigationId": "M006"
+    },
+    {
+      "linkedId": "T001",
+      "mitigationId": "M028"
+    },
+    {
+      "linkedId": "T002",
+      "mitigationId": "M004"
+    },
+    {
+      "linkedId": "T002",
+      "mitigationId": "M005"
+    },
+    {
+      "linkedId": "T003",
+      "mitigationId": "M004"
+    },
+    {
+      "linkedId": "T003",
+      "mitigationId": "M007"
+    },
+    {
+      "linkedId": "T003",
+      "mitigationId": "M012"
+    },
+    {
+      "linkedId": "T004",
+      "mitigationId": "M004"
+    },
+    {
+      "linkedId": "T005",
+      "mitigationId": "M008"
+    },
+    {
+      "linkedId": "T006",
+      "mitigationId": "M001"
+    },
+    {
+      "linkedId": "T006",
+      "mitigationId": "M002"
+    },
+    {
+      "linkedId": "T006",
+      "mitigationId": "M003"
+    },
+    {
+      "linkedId": "T006",
+      "mitigationId": "M026"
+    },
+    {
+      "linkedId": "T007",
+      "mitigationId": "M003"
+    },
+    {
+      "linkedId": "T007",
+      "mitigationId": "M024"
+    },
+    {
+      "linkedId": "T007",
+      "mitigationId": "M025"
+    },
+    {
+      "linkedId": "T008",
+      "mitigationId": "M009"
+    },
+    {
+      "linkedId": "T009",
+      "mitigationId": "M010"
+    },
+    {
+      "linkedId": "T010",
+      "mitigationId": "M010"
+    },
+    {
+      "linkedId": "T011",
+      "mitigationId": "M011"
+    },
+    {
+      "linkedId": "T011",
+      "mitigationId": "M012"
+    },
+    {
+      "linkedId": "T012",
+      "mitigationId": "M014"
+    },
+    {
+      "linkedId": "T013",
+      "mitigationId": "M013"
+    },
+    {
+      "linkedId": "T014",
+      "mitigationId": "M015"
+    },
+    {
+      "linkedId": "T015",
+      "mitigationId": "M016"
+    },
+    {
+      "linkedId": "T016",
+      "mitigationId": "M016"
+    },
+    {
+      "linkedId": "T016",
+      "mitigationId": "M017"
+    },
+    {
+      "linkedId": "T017",
+      "mitigationId": "M004"
+    },
+    {
+      "linkedId": "T017",
+      "mitigationId": "M006"
+    },
+    {
+      "linkedId": "T018",
+      "mitigationId": "M018"
+    },
+    {
+      "linkedId": "T019",
+      "mitigationId": "M004"
+    },
+    {
+      "linkedId": "T019",
+      "mitigationId": "M019"
+    },
+    {
+      "linkedId": "T020",
+      "mitigationId": "M020"
+    },
+    {
+      "linkedId": "T020",
+      "mitigationId": "M003"
+    },
+    {
+      "linkedId": "T020",
+      "mitigationId": "M027"
+    },
+    {
+      "linkedId": "T021",
+      "mitigationId": "M021"
+    },
+    {
+      "linkedId": "T021",
+      "mitigationId": "M022"
+    },
+    {
+      "linkedId": "T022",
+      "mitigationId": "M023"
+    },
+    {
+      "linkedId": "T022",
+      "mitigationId": "M002"
+    },
+    {
+      "linkedId": "T023",
+      "mitigationId": "M001"
+    },
+    {
+      "linkedId": "T023",
+      "mitigationId": "M002"
+    },
+    {
+      "linkedId": "T023",
+      "mitigationId": "M012"
+    },
+    {
+      "linkedId": "T023",
+      "mitigationId": "M026"
+    }
+  ],
   "businessContext": {
     "description": "Post-Quantum Cryptography Migration for IoT workshop (AWS Workshop Studio / re:Invent builders session, also published as the public aws-samples/sample-aws-iot-pqc sample). ESP32-S3 field devices connect over MQTT/TLS 1.3 with a hybrid SecP256r1MLKEM768 key exchange to a containerized Mosquitto PQC broker (ECS Fargate in private subnets behind an internet-facing NLB on 8883 classical / 8884 ML-DSA-44), which bridges over classical mTLS to AWS IoT Core. Two Private CAs (classical ECDSA P-256 and ML-DSA-44) issue broker and device certificates. A cloud pipeline (API Gateway + Lambda registrar, CodeBuild firmware builder container, Step Functions PQC migration, S3 presigned-URL OTA) builds per-device firmware with embedded credentials and migrates devices classical -> PQC key exchange -> PQC certificates over the air. An on-site Raspberry Pi (Builder-Pi, managed via SSM hybrid activation) runs a Flask GUI that registers and USB-flashes devices and hosts the 2.4GHz workshop WiFi AP. A CloudFront + S3 React dashboard backed by AppSync, Cognito, DynamoDB and IoT Rules -> Lambdas shows live telemetry and sends LED/OTA commands. Deployed per event from a single master CloudFormation stack in a throwaway account. In scope: device firmware, broker, NLB, PKI, build/registration/OTA/migration pipeline, Builder-Pi, dashboard and their AWS resources. Out of scope: AWS-managed service internals, the physical venue network beyond the workshop AP, attendee laptops.",
     "features": {
@@ -3181,7 +3738,192 @@
       "risk_level": 4
     }
   ],
-  "residualRiskAssessments": [],
+  "residualRiskAssessments": [
+    {
+      "threat_id": "T001",
+      "decision": "Open",
+      "residual_severity": "High",
+      "residual_likelihood": "Likely",
+      "rationale": "No sign-in exists; any internet user can trigger builds and OTA pushes. Fix with M004 and M006 before the next public event.",
+      "is_current": true
+    },
+    {
+      "threat_id": "T002",
+      "decision": "Open",
+      "residual_severity": "High",
+      "residual_likelihood": "Very Likely",
+      "rationale": "updateDevice is callable anonymously and falsifies the workshop's PQC evidence. M005 is a low-cost fix.",
+      "is_current": true
+    },
+    {
+      "threat_id": "T003",
+      "decision": "Open",
+      "residual_severity": "High",
+      "residual_likelihood": "Possible",
+      "rationale": "Logged presigned URLs plus key-bearing images give anonymous access to device keys for 15 minutes. Needs M004, M007 or M012.",
+      "is_current": true
+    },
+    {
+      "threat_id": "T004",
+      "decision": "Open",
+      "residual_severity": "Medium",
+      "residual_likelihood": "Likely",
+      "rationale": "Anonymous read of logs and payloads; low data value but closes with M004.",
+      "is_current": true
+    },
+    {
+      "threat_id": "T005",
+      "decision": "Accepted",
+      "residual_severity": "Medium",
+      "residual_likelihood": "Very Likely",
+      "rationale": "Accepted for the workshop: boards are handed to attendees and flash encryption/secure boot would complicate re-flashing. The design must not rely on key secrecy (see T006/T008), and M008 is documented as production guidance.",
+      "is_current": true
+    },
+    {
+      "threat_id": "T006",
+      "decision": "Open",
+      "residual_severity": "Critical",
+      "residual_likelihood": "Likely",
+      "rationale": "Any attendee can install arbitrary firmware on any device. Highest priority: M001 (fail-closed signature) and M003 (broker ACL), then M002.",
+      "is_current": true
+    },
+    {
+      "threat_id": "T007",
+      "decision": "Open",
+      "residual_severity": "Medium",
+      "residual_likelihood": "Likely",
+      "rationale": "mTLS limits this to cert holders, but without ACLs any attendee can spoof others' telemetry. Closes with M003.",
+      "is_current": true
+    },
+    {
+      "threat_id": "T008",
+      "decision": "Open",
+      "residual_severity": "High",
+      "residual_likelihood": "Likely",
+      "rationale": "No revocation path; impact bounded by the throwaway account lifetime but extracted keys stay valid for the whole event. M009 needed.",
+      "is_current": true
+    },
+    {
+      "threat_id": "T009",
+      "decision": "Open",
+      "residual_severity": "High",
+      "residual_likelihood": "Likely",
+      "rationale": "Anyone on the AP can manage every device on the station. M010 is low cost.",
+      "is_current": true
+    },
+    {
+      "threat_id": "T010",
+      "decision": "Open",
+      "residual_severity": "High",
+      "residual_likelihood": "Possible",
+      "rationale": "Runtime config changes can redirect flashing to attacker firmware. M010.",
+      "is_current": true
+    },
+    {
+      "threat_id": "T011",
+      "decision": "Open",
+      "residual_severity": "High",
+      "residual_likelihood": "Possible",
+      "rationale": "Pi compromise exposes every device key. M011 and M012.",
+      "is_current": true
+    },
+    {
+      "threat_id": "T012",
+      "decision": "Open",
+      "residual_severity": "High",
+      "residual_likelihood": "Possible",
+      "rationale": "Registration limit 5 and multi-day expiry still allow a leaked bundle to add rogue instances. Tighten per M014.",
+      "is_current": true
+    },
+    {
+      "threat_id": "T013",
+      "decision": "Open",
+      "residual_severity": "Low",
+      "residual_likelihood": "Likely",
+      "rationale": "PSK value is low (shared and compiled into firmware) but plaintext copies are an existing backlog item and a poor pattern for a sample. M013.",
+      "is_current": true
+    },
+    {
+      "threat_id": "T014",
+      "decision": "Open",
+      "residual_severity": "High",
+      "residual_likelihood": "Possible",
+      "rationale": "Rogue AP plus no hostname check enables MITM in the room. M015 (already a backlog item).",
+      "is_current": true
+    },
+    {
+      "threat_id": "T015",
+      "decision": "Open",
+      "residual_severity": "Critical",
+      "residual_likelihood": "Unlikely",
+      "rationale": "Release-tag pins reduce but do not remove the risk; impact is fleet-wide. Track M016.",
+      "is_current": true
+    },
+    {
+      "threat_id": "T016",
+      "decision": "Open",
+      "residual_severity": "High",
+      "residual_likelihood": "Unlikely",
+      "rationale": "Requires an insider or compromised principal; scan on push detects known vulnerabilities only. Track M016.",
+      "is_current": true
+    },
+    {
+      "threat_id": "T017",
+      "decision": "Open",
+      "residual_severity": "Medium",
+      "residual_likelihood": "Possible",
+      "rationale": "Reserved concurrency of 5 limits fan-out but builds still queue. Closes with M004 and M006.",
+      "is_current": true
+    },
+    {
+      "threat_id": "T018",
+      "decision": "Accepted",
+      "residual_severity": "Medium",
+      "residual_likelihood": "Possible",
+      "rationale": "Accepted at workshop scale: a single task is enough for tens of devices and the event is short; M018 recorded for production use.",
+      "is_current": true
+    },
+    {
+      "threat_id": "T019",
+      "decision": "Open",
+      "residual_severity": "Medium",
+      "residual_likelihood": "Likely",
+      "rationale": "No attribution is possible today. Closes with M004 and M019.",
+      "is_current": true
+    },
+    {
+      "threat_id": "T020",
+      "decision": "Open",
+      "residual_severity": "Medium",
+      "residual_likelihood": "Unlikely",
+      "rationale": "Bridge wildcard policy amplifies a broker compromise; private subnet reduces exposure. M020 is a low-cost fix.",
+      "is_current": true
+    },
+    {
+      "threat_id": "T021",
+      "decision": "Open",
+      "residual_severity": "Medium",
+      "residual_likelihood": "Possible",
+      "rationale": "Public mirror is protected (M021); the Workshop Studio source zip is not (M022).",
+      "is_current": true
+    },
+    {
+      "threat_id": "T022",
+      "decision": "Accepted",
+      "residual_severity": "Low",
+      "residual_likelihood": "Unlikely",
+      "rationale": "Accepted: short-lived workshop data has no long-term secrecy value; the classical links are part of the teaching story (M023).",
+      "is_current": true
+    },
+    {
+      "threat_id": "T023",
+      "decision": "Open",
+      "residual_severity": "High",
+      "residual_likelihood": "Possible",
+      "rationale": "Signed pushes are protected by M026, but unverified TLS exposes key-bearing images and unsigned pushes. M001 and M002.",
+      "is_current": true
+    }
+  ],
   "softwareProfile": {
     "software_type": "Embedded / IoT / Firmware",
     "deployment_model": "Hybrid cloud",
@@ -3606,9 +4348,9 @@
       "4": 1.0,
       "5": 1.0,
       "6": 1.0,
-      "7": 0.0,
-      "7.5": 0.0,
-      "8": 0.0,
+      "7": 1.0,
+      "7.5": 1.0,
+      "8": 1.0,
       "9": 1.0
     },
     "phases": {
@@ -3623,7 +4365,7 @@
       "8": "Residual Risk Analysis",
       "9": "Output Generation and Documentation"
     },
-    "overall_completion": 0.7
+    "overall_completion": 1.0
   },
   "referenceCatalogue": {
     "description": "Threat actors the server pre-loaded but that were never assessed for this system. These are NOT part of the threat model.",

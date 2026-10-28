@@ -10,10 +10,455 @@
   "dataflow": {
     "description": ""
   },
-  "assumptions": [],
-  "mitigations": [],
+  "assumptions": [
+    {
+      "id": "1c061ddf-7f85-5822-b716-67d14d25f9af",
+      "numericId": 11,
+      "content": "Each workshop runs in a throwaway AWS account (Workshop Studio per-event account, or pqc-a/pqc-b test accounts) that is torn down after the event.",
+      "displayOrder": 11,
+      "metadata": []
+    },
+    {
+      "id": "9ef0311f-df85-501c-b610-0f8a40e192d6",
+      "numericId": 12,
+      "content": "The system holds no customer data, PII beyond optional dashboard identities, or regulated data; telemetry is synthetic device health data.",
+      "displayOrder": 12,
+      "metadata": []
+    },
+    {
+      "id": "a5067811-4ba2-54b4-bb59-4baf670d6bbd",
+      "numericId": 13,
+      "content": "Attendees are semi-trusted: many are security practitioners with physical access to a board, the Builder-Pi station and the workshop WiFi.",
+      "displayOrder": 13,
+      "metadata": []
+    },
+    {
+      "id": "ba678ff3-01da-5707-b534-9675a4df6e1c",
+      "numericId": 14,
+      "content": "Risk tolerance: a disrupted or visibly compromised live session at re:Invent is a reputational failure for a security workshop, so fleet-wide or cross-attendee attacks are not acceptable; single-device or workshop-scale availability issues are tolerable.",
+      "displayOrder": 14,
+      "metadata": []
+    },
+    {
+      "id": "db37d072-2688-53ca-a6ea-a40b7c1e64e0",
+      "numericId": 15,
+      "content": "The public aws-samples repo is reference material; readers may reuse the design.",
+      "displayOrder": 15,
+      "metadata": []
+    },
+    {
+      "id": "976d034c-c113-5538-ad55-e8b3badd3baf",
+      "numericId": 16,
+      "content": "Operator Admin credentials are short-lived Isengard credentials obtained via ada, and upstream sources are pinned to release tags.",
+      "displayOrder": 16,
+      "metadata": []
+    }
+  ],
+  "mitigations": [
+    {
+      "id": "30d9086f-e2b2-590a-95ef-425cc05821b4",
+      "numericId": 1,
+      "status": "mitigationIdentified",
+      "content": "Make every firmware variant refuse any OTA that does not carry a valid signature chained to the baked signer root (fail closed when sigAlg is missing), and have publish-ota sign every push including the classical era.",
+      "displayOrder": 1,
+      "metadata": []
+    },
+    {
+      "id": "4f11cd18-b7ae-51cf-b621-eb4e3e4f9ce3",
+      "numericId": 2,
+      "status": "mitigationIdentified",
+      "content": "Verify the OTA download server: fix the wolfSSL chain issue (load the Amazon intermediate/roots and enable WOLFSSL_VERIFY_PEER with SNI and domain check) and only accept URLs whose host is the workshop firmware bucket's regional S3 endpoint.",
+      "displayOrder": 2,
+      "metadata": []
+    },
+    {
+      "id": "9792381f-1bd2-548e-a804-93bbb51476fd",
+      "numericId": 3,
+      "status": "mitigationIdentified",
+      "content": "Add a Mosquitto ACL that confines each device to its own topics: write dt/%u/#, read cmd/%u/#, using the certificate CN as the username (use_identity_as_username is already on).",
+      "displayOrder": 3,
+      "metadata": []
+    },
+    {
+      "id": "5dcba292-23e8-591e-bcb2-e7f68dbbbfbc",
+      "numericId": 4,
+      "status": "mitigationIdentified",
+      "content": "Replace anonymous dashboard access: add a Cognito user pool (operator and per-event attendee sign-in), keep the unauthenticated role read-only, and allow mutations only to authenticated users scoped to their own device where possible.",
+      "displayOrder": 4,
+      "metadata": []
+    },
+    {
+      "id": "f5f6d25e-25ef-591a-9053-2f25680bf6ad",
+      "numericId": 5,
+      "status": "mitigationIdentified",
+      "content": "Remove updateDevice from browser-callable access: only the telemetry processor writes device state, so scope the guest role's appsync:GraphQL to specific Query fields.",
+      "displayOrder": 5,
+      "metadata": []
+    },
+    {
+      "id": "f9a4940d-ad09-5432-a64a-f989b32f80ff",
+      "numericId": 6,
+      "status": "mitigationInProgress",
+      "content": "Throttle migrations: reject migrateFirmware while a device already has a migration in progress, cap start-migration concurrency, and set a CodeBuild concurrent-build limit.",
+      "displayOrder": 6,
+      "metadata": []
+    },
+    {
+      "id": "6adb0839-7ea3-58a1-beeb-10002556ae67",
+      "numericId": 7,
+      "status": "mitigationIdentified",
+      "content": "Redact presigned URLs from logged OTA commands and shorten the presign expiry to the minimum the download needs.",
+      "displayOrder": 7,
+      "metadata": []
+    },
+    {
+      "id": "8dbe2c4e-e1a8-5e38-a023-5c2aa9de1ea9",
+      "numericId": 8,
+      "status": "mitigationIdentified",
+      "content": "Enable ESP32 flash encryption and secure boot v2 so device keys and the PSK cannot be read back over USB (production guidance; accepted for the workshop).",
+      "displayOrder": 8,
+      "metadata": []
+    },
+    {
+      "id": "958242a4-af71-5cbb-828f-f91ce6c1d4eb",
+      "numericId": 9,
+      "status": "mitigationIdentified",
+      "content": "Make device identity revocable: enable CRLs on both Private CAs, revoke the device cert in the deregistrar, and have Mosquitto check the CRL (or an auth plugin that checks the registry).",
+      "displayOrder": 9,
+      "metadata": []
+    },
+    {
+      "id": "28f6cd02-0682-5137-864c-5809d1996611",
+      "numericId": 10,
+      "status": "mitigationIdentified",
+      "content": "Lock down the Builder-Pi GUI: require an operator token, add CSRF protection, make /api/config read-only at runtime, and bind the GUI away from the attendee AP interface.",
+      "displayOrder": 10,
+      "metadata": []
+    },
+    {
+      "id": "4ca68f67-e147-5f50-be47-9457000dba9c",
+      "numericId": 11,
+      "status": "mitigationIdentified",
+      "content": "Least-privilege Builder-Pi role: drop bucket-wide firmware read and registry Scan; the builder API returns a short-lived presigned URL for just the device being flashed.",
+      "displayOrder": 11,
+      "metadata": []
+    },
+    {
+      "id": "e3b59a40-6700-56ce-ab08-e76446580fdf",
+      "numericId": 12,
+      "status": "mitigationIdentified",
+      "content": "Stop persisting device private keys in stored firmware: expire per-device images after flashing/OTA (lifecycle rule, short noncurrent-version expiry) or move the key to a separately flashed NVS partition that is never uploaded.",
+      "displayOrder": 12,
+      "metadata": []
+    },
+    {
+      "id": "bb3b4df9-2c21-52d9-b4c3-150143179951",
+      "numericId": 13,
+      "status": "mitigationIdentified",
+      "content": "Keep the WiFi PSK only in SSM: drop wifiPassword from the registry and pass it to CodeBuild as a PARAMETER_STORE environment variable instead of PLAINTEXT (project env, registrar override and state machine).",
+      "displayOrder": 13,
+      "metadata": []
+    },
+    {
+      "id": "0a0c2b22-7afc-537c-b1f0-8c5dd9cab2bb",
+      "numericId": 14,
+      "status": "mitigationInProgress",
+      "content": "Limit the SSM hybrid activation: registration limit of 1, expiry of hours not 7 days, and auto-deregister stale managed instances.",
+      "displayOrder": 14,
+      "metadata": []
+    },
+    {
+      "id": "b449989d-c17f-563a-a21b-986a7e632072",
+      "numericId": 15,
+      "status": "mitigationIdentified",
+      "content": "Enforce broker hostname checks on devices: add stable DNS names as SANs on both broker certificates and enable wolfSSL domain-name checking.",
+      "displayOrder": 15,
+      "metadata": []
+    },
+    {
+      "id": "9f6f2854-ad4d-5982-b6c9-42a6d63a4fd7",
+      "numericId": 16,
+      "status": "mitigationInProgress",
+      "content": "Harden the build supply chain: pin base images by digest, pin oqs-provider/OpenSSL commits and package versions, verify Arduino index signatures, use npm ci with a lockfile, and deploy images by digest with immutable ECR tags.",
+      "displayOrder": 16,
+      "metadata": []
+    },
+    {
+      "id": "f0e061a3-a8b4-5485-a44c-364bf0382351",
+      "numericId": 17,
+      "status": "mitigationResolved",
+      "content": "ECR scan on push for all three images.",
+      "displayOrder": 17,
+      "metadata": []
+    },
+    {
+      "id": "37f2b3af-f397-5667-b9de-e32706f45c69",
+      "numericId": 18,
+      "status": "mitigationIdentified",
+      "content": "Improve broker availability: run at least two broker tasks across AZs, set Mosquitto connection limits, and rely on Shield Standard on the NLB.",
+      "displayOrder": 18,
+      "metadata": []
+    },
+    {
+      "id": "d316da8e-b388-52ff-b9f8-dfee8f4977f7",
+      "numericId": 19,
+      "status": "mitigationIdentified",
+      "content": "Make dashboard actions auditable: enable AppSync request logging and record caller identity once sign-in exists.",
+      "displayOrder": 19,
+      "metadata": []
+    },
+    {
+      "id": "f8b13425-2724-5067-965d-970ef9911e19",
+      "numericId": 20,
+      "status": "mitigationIdentified",
+      "content": "Narrow the bridge IoT policy to the device topic shapes (dt/esp32-*/telemetry, cmd/esp32-*/*) and remove the shadow wildcards it does not use.",
+      "displayOrder": 20,
+      "metadata": []
+    },
+    {
+      "id": "9f429bf2-7220-50f3-af74-d66d1467c513",
+      "numericId": 21,
+      "status": "mitigationResolved",
+      "content": "Fail-closed public-mirror curation: publish-public-mirror.sh strips .kiro/ and .threatmodel/, scrubs account IDs, the PSK and internal URLs, and aborts if any survive.",
+      "displayOrder": 21,
+      "metadata": []
+    },
+    {
+      "id": "1bfe4ab2-c9be-59c4-940b-2741698dab93",
+      "numericId": 22,
+      "status": "mitigationIdentified",
+      "content": "Apply the same curation to the Workshop Studio source zip (package-workshop-src.sh), which currently ships .kiro/, .threatmodel/ and real account IDs.",
+      "displayOrder": 22,
+      "metadata": []
+    },
+    {
+      "id": "29d7bbbb-eec5-52ed-903f-4bac1224bfea",
+      "numericId": 23,
+      "status": "mitigationIdentified",
+      "content": "Track the remaining classical-only links (IoT Core bridge TLS 1.2, OTA download, Builder-Pi HTTPS) and move them to hybrid ML-KEM where AWS endpoints support it; explain them in the workshop as the next migration step.",
+      "displayOrder": 23,
+      "metadata": []
+    },
+    {
+      "id": "3ab90308-c4cc-5f12-8875-db822c16f2c1",
+      "numericId": 24,
+      "status": "mitigationResolved",
+      "content": "Mutual TLS required on both broker listeners, each trusting only its own Private CA, TLS 1.3 only.",
+      "displayOrder": 24,
+      "metadata": []
+    },
+    {
+      "id": "2f4eef0d-9845-5f9a-8ffe-ff1f4f1c5e2d",
+      "numericId": 25,
+      "status": "mitigationResolved",
+      "content": "Telemetry processor only updates devices that were registered (attribute_exists(serialNumber)), so unknown things cannot create dashboard cards.",
+      "displayOrder": 25,
+      "metadata": []
+    },
+    {
+      "id": "df7f3205-1c64-5ccd-892f-1810dda46d45",
+      "numericId": 26,
+      "status": "mitigationResolved",
+      "content": "Signed OTA verification when the command declares sigAlg: signer leaf must chain to the baked signer root (fails closed without a root), then the ECDSA-P256 or ML-DSA-44 signature must verify; signer keys are scrubbed from the build disk after signing.",
+      "displayOrder": 26,
+      "metadata": []
+    },
+    {
+      "id": "a6bdf38c-b290-5cff-876e-b4c1d6c0e039",
+      "numericId": 27,
+      "status": "mitigationResolved",
+      "content": "Broker runs in private subnets with no public IP; its task role can read only the named broker and bridge secrets.",
+      "displayOrder": 27,
+      "metadata": []
+    },
+    {
+      "id": "c112ece1-1bed-5759-9f80-ca6648656f83",
+      "numericId": 28,
+      "status": "mitigationResolved",
+      "content": "start-migration validates the requested variant against an allow-list before starting a migration.",
+      "displayOrder": 28,
+      "metadata": []
+    }
+  ],
   "assumptionLinks": [],
-  "mitigationLinks": [],
+  "mitigationLinks": [
+    {
+      "mitigationId": "5dcba292-23e8-591e-bcb2-e7f68dbbbfbc",
+      "linkedId": "ba25dd1d-cee0-5e02-a7d7-fde24d6d0f26"
+    },
+    {
+      "mitigationId": "f9a4940d-ad09-5432-a64a-f989b32f80ff",
+      "linkedId": "ba25dd1d-cee0-5e02-a7d7-fde24d6d0f26"
+    },
+    {
+      "mitigationId": "c112ece1-1bed-5759-9f80-ca6648656f83",
+      "linkedId": "ba25dd1d-cee0-5e02-a7d7-fde24d6d0f26"
+    },
+    {
+      "mitigationId": "5dcba292-23e8-591e-bcb2-e7f68dbbbfbc",
+      "linkedId": "3d6631e1-af13-5fa7-9f0a-946747b7422d"
+    },
+    {
+      "mitigationId": "f5f6d25e-25ef-591a-9053-2f25680bf6ad",
+      "linkedId": "3d6631e1-af13-5fa7-9f0a-946747b7422d"
+    },
+    {
+      "mitigationId": "5dcba292-23e8-591e-bcb2-e7f68dbbbfbc",
+      "linkedId": "9118901f-6eb5-5fe1-9f5f-a3fea4274ca2"
+    },
+    {
+      "mitigationId": "6adb0839-7ea3-58a1-beeb-10002556ae67",
+      "linkedId": "9118901f-6eb5-5fe1-9f5f-a3fea4274ca2"
+    },
+    {
+      "mitigationId": "e3b59a40-6700-56ce-ab08-e76446580fdf",
+      "linkedId": "9118901f-6eb5-5fe1-9f5f-a3fea4274ca2"
+    },
+    {
+      "mitigationId": "5dcba292-23e8-591e-bcb2-e7f68dbbbfbc",
+      "linkedId": "4f7d8c3d-523a-59f9-8629-6255e6c92d81"
+    },
+    {
+      "mitigationId": "8dbe2c4e-e1a8-5e38-a023-5c2aa9de1ea9",
+      "linkedId": "08076e24-45d9-5f2c-a1c4-293bff49fdab"
+    },
+    {
+      "mitigationId": "30d9086f-e2b2-590a-95ef-425cc05821b4",
+      "linkedId": "15c4d825-3519-5999-a894-88185c6b42c9"
+    },
+    {
+      "mitigationId": "4f11cd18-b7ae-51cf-b621-eb4e3e4f9ce3",
+      "linkedId": "15c4d825-3519-5999-a894-88185c6b42c9"
+    },
+    {
+      "mitigationId": "9792381f-1bd2-548e-a804-93bbb51476fd",
+      "linkedId": "15c4d825-3519-5999-a894-88185c6b42c9"
+    },
+    {
+      "mitigationId": "df7f3205-1c64-5ccd-892f-1810dda46d45",
+      "linkedId": "15c4d825-3519-5999-a894-88185c6b42c9"
+    },
+    {
+      "mitigationId": "9792381f-1bd2-548e-a804-93bbb51476fd",
+      "linkedId": "8414df73-8d4b-5e1e-b0bf-4844f86bb045"
+    },
+    {
+      "mitigationId": "3ab90308-c4cc-5f12-8875-db822c16f2c1",
+      "linkedId": "8414df73-8d4b-5e1e-b0bf-4844f86bb045"
+    },
+    {
+      "mitigationId": "2f4eef0d-9845-5f9a-8ffe-ff1f4f1c5e2d",
+      "linkedId": "8414df73-8d4b-5e1e-b0bf-4844f86bb045"
+    },
+    {
+      "mitigationId": "958242a4-af71-5cbb-828f-f91ce6c1d4eb",
+      "linkedId": "aee0a9dd-0ee6-5f39-b90b-73874cd6a292"
+    },
+    {
+      "mitigationId": "28f6cd02-0682-5137-864c-5809d1996611",
+      "linkedId": "ddf39fa0-8d1f-5971-b650-962e6ff499fb"
+    },
+    {
+      "mitigationId": "28f6cd02-0682-5137-864c-5809d1996611",
+      "linkedId": "4b6ba760-5baf-5785-938e-e67ad203cedd"
+    },
+    {
+      "mitigationId": "4ca68f67-e147-5f50-be47-9457000dba9c",
+      "linkedId": "73429e61-5b54-54c1-9aa1-7201565b9559"
+    },
+    {
+      "mitigationId": "e3b59a40-6700-56ce-ab08-e76446580fdf",
+      "linkedId": "73429e61-5b54-54c1-9aa1-7201565b9559"
+    },
+    {
+      "mitigationId": "0a0c2b22-7afc-537c-b1f0-8c5dd9cab2bb",
+      "linkedId": "6838c8b1-6bac-5053-8e8c-4906b9b53f66"
+    },
+    {
+      "mitigationId": "bb3b4df9-2c21-52d9-b4c3-150143179951",
+      "linkedId": "a06ec6cc-22bc-58a1-9f1f-03d540a3f0cf"
+    },
+    {
+      "mitigationId": "b449989d-c17f-563a-a21b-986a7e632072",
+      "linkedId": "0fa4615b-7141-5ac3-a394-94cb554ad2ae"
+    },
+    {
+      "mitigationId": "9f6f2854-ad4d-5982-b6c9-42a6d63a4fd7",
+      "linkedId": "73035e02-c29a-5993-8777-c3719275c91b"
+    },
+    {
+      "mitigationId": "9f6f2854-ad4d-5982-b6c9-42a6d63a4fd7",
+      "linkedId": "16017c77-52e6-532b-82b1-5b72bf3f46a7"
+    },
+    {
+      "mitigationId": "f0e061a3-a8b4-5485-a44c-364bf0382351",
+      "linkedId": "16017c77-52e6-532b-82b1-5b72bf3f46a7"
+    },
+    {
+      "mitigationId": "5dcba292-23e8-591e-bcb2-e7f68dbbbfbc",
+      "linkedId": "27084191-d624-5f92-8355-12a1051fc150"
+    },
+    {
+      "mitigationId": "f9a4940d-ad09-5432-a64a-f989b32f80ff",
+      "linkedId": "27084191-d624-5f92-8355-12a1051fc150"
+    },
+    {
+      "mitigationId": "37f2b3af-f397-5667-b9de-e32706f45c69",
+      "linkedId": "74165ea7-f6e5-5082-baa1-e74c478b20d8"
+    },
+    {
+      "mitigationId": "5dcba292-23e8-591e-bcb2-e7f68dbbbfbc",
+      "linkedId": "96318db1-ff7e-59af-a3b3-cd61b9bf9ee0"
+    },
+    {
+      "mitigationId": "d316da8e-b388-52ff-b9f8-dfee8f4977f7",
+      "linkedId": "96318db1-ff7e-59af-a3b3-cd61b9bf9ee0"
+    },
+    {
+      "mitigationId": "f8b13425-2724-5067-965d-970ef9911e19",
+      "linkedId": "140dbbb7-7fb8-58f0-bf12-0692363919eb"
+    },
+    {
+      "mitigationId": "9792381f-1bd2-548e-a804-93bbb51476fd",
+      "linkedId": "140dbbb7-7fb8-58f0-bf12-0692363919eb"
+    },
+    {
+      "mitigationId": "a6bdf38c-b290-5cff-876e-b4c1d6c0e039",
+      "linkedId": "140dbbb7-7fb8-58f0-bf12-0692363919eb"
+    },
+    {
+      "mitigationId": "9f429bf2-7220-50f3-af74-d66d1467c513",
+      "linkedId": "095d43bc-590e-5c10-9083-b9465aafbea3"
+    },
+    {
+      "mitigationId": "1bfe4ab2-c9be-59c4-940b-2741698dab93",
+      "linkedId": "095d43bc-590e-5c10-9083-b9465aafbea3"
+    },
+    {
+      "mitigationId": "29d7bbbb-eec5-52ed-903f-4bac1224bfea",
+      "linkedId": "398f8cd8-b686-554d-ac4c-79f8b832bda3"
+    },
+    {
+      "mitigationId": "4f11cd18-b7ae-51cf-b621-eb4e3e4f9ce3",
+      "linkedId": "398f8cd8-b686-554d-ac4c-79f8b832bda3"
+    },
+    {
+      "mitigationId": "30d9086f-e2b2-590a-95ef-425cc05821b4",
+      "linkedId": "477d100c-666d-543d-98e1-038585bc15c6"
+    },
+    {
+      "mitigationId": "4f11cd18-b7ae-51cf-b621-eb4e3e4f9ce3",
+      "linkedId": "477d100c-666d-543d-98e1-038585bc15c6"
+    },
+    {
+      "mitigationId": "e3b59a40-6700-56ce-ab08-e76446580fdf",
+      "linkedId": "477d100c-666d-543d-98e1-038585bc15c6"
+    },
+    {
+      "mitigationId": "df7f3205-1c64-5ccd-892f-1810dda46d45",
+      "linkedId": "477d100c-666d-543d-98e1-038585bc15c6"
+    }
+  ],
   "threats": [
     {
       "id": "ba25dd1d-cee0-5e02-a7d7-fde24d6d0f26",
@@ -118,7 +563,7 @@
       ],
       "statement": "A workshop attendee with physical access to their own ESP32 board can dump the board's flash over USB and recover its device private key, certificate and the WiFi PSK, which leads to the attendee holding a broker-trusted device identity and access to the workshop AP, enabling the broker-level attacks",
       "displayOrder": 5,
-      "status": "threatIdentified",
+      "status": "threatResolved",
       "tags": [
         "physical",
         "no-flash-encryption"
@@ -383,7 +828,7 @@
       "impactedAssets": [],
       "statement": "A internet attacker with modest bandwidth can flood the NLB on 8883/8884 with TLS handshakes, which leads to exhaustion of the single Fargate broker task, disconnecting every device",
       "displayOrder": 18,
-      "status": "threatIdentified",
+      "status": "threatResolved",
       "tags": [
         "availability"
       ],
@@ -462,7 +907,7 @@
       ],
       "statement": "A harvest-now-decrypt-later adversary with a future cryptographically relevant quantum computer can record and later decrypt the classical-only links: bridge TLS 1.2, Builder-Pi HTTPS and the OTA firmware download from S3, which leads to future disclosure of telemetry and of key-bearing firmware images, contrary to the workshop's PQC message",
       "displayOrder": 22,
-      "status": "threatIdentified",
+      "status": "threatResolved",
       "tags": [
         "pqc",
         "hndl"

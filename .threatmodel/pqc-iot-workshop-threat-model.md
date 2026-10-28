@@ -1,8 +1,8 @@
 # Comprehensive Threat Model Report
 
-**Generated**: 2026-10-28 07:40:25
+**Generated**: 2026-10-28 07:47:49
 **Current Phase**: 1 - Business Context Analysis
-**Overall Completion**: 70.0%
+**Overall Completion**: 100.0%
 
 ## Table of Contents
 
@@ -25,8 +25,8 @@ Post-Quantum Cryptography Migration for IoT workshop (AWS Workshop Studio / re:I
 ### Key Statistics
 
 - **Total Threats**: 23
-- **Total Mitigations**: 0
-- **Total Assumptions**: 0
+- **Total Mitigations**: 28
+- **Total Assumptions**: 6
 - **System Components**: 30
 - **Assets**: 10
 - **Threat Actors**: 13
@@ -590,6 +590,11 @@ Post-Quantum Cryptography Migration for IoT workshop (AWS Workshop Studio / re:I
 - **Impact**: unrequested firmware builds and OTA pushes to any attendee's device, disrupting the live workshop and spending account resources
 - **Impacted Assets**: A009, A006, A007
 - **Tags**: appsync, anonymous-access
+- **Residual Risk Decision**: Open
+- **Residual Severity**: High
+- **Residual Likelihood**: Likely
+- **Residual Risk Rationale**: No sign-in exists; any internet user can trigger builds and OTA pushes. Fix with M004 and M006 before the next public event.
+- **Assessment State**: Current
 
 #### T2: anonymous internet user
 
@@ -600,6 +605,11 @@ Post-Quantum Cryptography Migration for IoT workshop (AWS Workshop Studio / re:I
 - **Impact**: a dashboard that shows false migration results, undermining the workshop's proof that devices negotiated ML-KEM
 - **Impacted Assets**: A008, A009
 - **Tags**: appsync, anonymous-access, integrity
+- **Residual Risk Decision**: Open
+- **Residual Severity**: High
+- **Residual Likelihood**: Very Likely
+- **Residual Risk Rationale**: updateDevice is callable anonymously and falsifies the workshop's PQC evidence. M005 is a low-cost fix.
+- **Assessment State**: Current
 
 #### T3: anonymous internet user
 
@@ -610,6 +620,11 @@ Post-Quantum Cryptography Migration for IoT workshop (AWS Workshop Studio / re:I
 - **Impact**: disclosure of the device private key and WiFi PSK embedded in the image, enabling impersonation of that device
 - **Impacted Assets**: A007, A006, A001, A005
 - **Tags**: appsync, presigned-url, key-exposure
+- **Residual Risk Decision**: Open
+- **Residual Severity**: High
+- **Residual Likelihood**: Possible
+- **Residual Risk Rationale**: Logged presigned URLs plus key-bearing images give anonymous access to device keys for 15 minutes. Needs M004, M007 or M012.
+- **Assessment State**: Current
 
 #### T4: anonymous internet user
 
@@ -620,16 +635,11 @@ Post-Quantum Cryptography Migration for IoT workshop (AWS Workshop Studio / re:I
 - **Impact**: disclosure of device client IDs, source IP addresses and full telemetry and command history
 - **Impacted Assets**: A008, A007
 - **Tags**: appsync, anonymous-access
-
-#### T5: workshop attendee
-
-**Statement**: A workshop attendee with physical access to their own ESP32 board can dump the board's flash over USB and recover its device private key, certificate and the WiFi PSK, which leads to the attendee holding a broker-trusted device identity and access to the workshop AP, enabling the broker-level attacks
-
-- **Prerequisites**: with physical access to their own ESP32 board
-- **Action**: dump the board's flash over USB and recover its device private key, certificate and the WiFi PSK
-- **Impact**: the attendee holding a broker-trusted device identity and access to the workshop AP, enabling the broker-level attacks
-- **Impacted Assets**: A001, A005
-- **Tags**: physical, no-flash-encryption
+- **Residual Risk Decision**: Open
+- **Residual Severity**: Medium
+- **Residual Likelihood**: Likely
+- **Residual Risk Rationale**: Anonymous read of logs and payloads; low data value but closes with M004.
+- **Assessment State**: Current
 
 #### T6: workshop attendee
 
@@ -640,6 +650,11 @@ Post-Quantum Cryptography Migration for IoT workshop (AWS Workshop Studio / re:I
 - **Impact**: any device variant installing attacker-chosen firmware, because devices skip signature checks when sigAlg is absent and do not verify the download server's TLS certificate
 - **Impacted Assets**: A007, A006
 - **Tags**: broker-acl, ota, signature-downgrade
+- **Residual Risk Decision**: Open
+- **Residual Severity**: Critical
+- **Residual Likelihood**: Likely
+- **Residual Risk Rationale**: Any attendee can install arbitrary firmware on any device. Highest priority: M001 (fail-closed signature) and M003 (broker ACL), then M002.
+- **Assessment State**: Current
 
 #### T7: workshop attendee
 
@@ -650,6 +665,11 @@ Post-Quantum Cryptography Migration for IoT workshop (AWS Workshop Studio / re:I
 - **Impact**: fake telemetry and PQC status for other attendees' devices on the dashboard and in the message log
 - **Impacted Assets**: A008
 - **Tags**: broker-acl
+- **Residual Risk Decision**: Open
+- **Residual Severity**: Medium
+- **Residual Likelihood**: Likely
+- **Residual Risk Rationale**: mTLS limits this to cert holders, but without ACLs any attendee can spoof others' telemetry. Closes with M003.
+- **Assessment State**: Current
 
 #### T8: attacker
 
@@ -660,6 +680,11 @@ Post-Quantum Cryptography Migration for IoT workshop (AWS Workshop Studio / re:I
 - **Impact**: removed devices staying trusted, because the broker trusts any CA-issued cert, does not check the registry, and both CAs have CRLs disabled
 - **Impacted Assets**: A001
 - **Tags**: revocation, pki
+- **Residual Risk Decision**: Open
+- **Residual Severity**: High
+- **Residual Likelihood**: Likely
+- **Residual Risk Rationale**: No revocation path; impact bounded by the throwaway account lifetime but extracted keys stay valid for the whole event. M009 needed.
+- **Assessment State**: Current
 
 #### T9: user on the workshop WiFi
 
@@ -670,6 +695,11 @@ Post-Quantum Cryptography Migration for IoT workshop (AWS Workshop Studio / re:I
 - **Impact**: disruption of other attendees' devices and exposure of serial output
 - **Impacted Assets**: A010
 - **Tags**: builder-pi, no-auth
+- **Residual Risk Decision**: Open
+- **Residual Severity**: High
+- **Residual Likelihood**: Likely
+- **Residual Risk Rationale**: Anyone on the AP can manage every device on the station. M010 is low cost.
+- **Assessment State**: Current
 
 #### T10: user on the workshop WiFi
 
@@ -680,6 +710,11 @@ Post-Quantum Cryptography Migration for IoT workshop (AWS Workshop Studio / re:I
 - **Impact**: the Pi flashing attacker-supplied firmware onto the next boards plugged into the station
 - **Impacted Assets**: A006, A010
 - **Tags**: builder-pi, no-auth, csrf
+- **Residual Risk Decision**: Open
+- **Residual Severity**: High
+- **Residual Likelihood**: Possible
+- **Residual Risk Rationale**: Runtime config changes can redirect flashing to attacker firmware. M010.
+- **Assessment State**: Current
 
 #### T11: attacker
 
@@ -690,6 +725,11 @@ Post-Quantum Cryptography Migration for IoT workshop (AWS Workshop Studio / re:I
 - **Impact**: disclosure of every device private key and the PSK, allowing impersonation of the whole fleet
 - **Impacted Assets**: A001, A006, A010
 - **Tags**: builder-pi, least-privilege
+- **Residual Risk Decision**: Open
+- **Residual Severity**: High
+- **Residual Likelihood**: Possible
+- **Residual Risk Rationale**: Pi compromise exposes every device key. M011 and M012.
+- **Assessment State**: Current
 
 #### T12: attacker
 
@@ -700,6 +740,11 @@ Post-Quantum Cryptography Migration for IoT workshop (AWS Workshop Studio / re:I
 - **Impact**: a rogue managed instance holding the Builder-Pi role, with the same bucket, registry and PSK access as the real Pi
 - **Impacted Assets**: A010
 - **Tags**: ssm, builder-pi
+- **Residual Risk Decision**: Open
+- **Residual Severity**: High
+- **Residual Likelihood**: Possible
+- **Residual Risk Rationale**: Registration limit 5 and multi-day expiry still allow a leaked bundle to add rogue instances. Tighten per M014.
+- **Assessment State**: Current
 
 #### T13: user or role with read-only account access
 
@@ -710,6 +755,11 @@ Post-Quantum Cryptography Migration for IoT workshop (AWS Workshop Studio / re:I
 - **Impact**: disclosure of the PSK outside its SecureString
 - **Impacted Assets**: A005
 - **Tags**: secrets-handling
+- **Residual Risk Decision**: Open
+- **Residual Severity**: Low
+- **Residual Likelihood**: Likely
+- **Residual Risk Rationale**: PSK value is low (shared and compiled into firmware) but plaintext copies are an existing backlog item and a poor pattern for a sample. M013.
+- **Assessment State**: Current
 
 #### T14: workshop attendee
 
@@ -720,6 +770,11 @@ Post-Quantum Cryptography Migration for IoT workshop (AWS Workshop Studio / re:I
 - **Impact**: a man-in-the-middle on devices that associate with it, because the firmware checks the chain but not the broker hostname or SAN
 - **Impacted Assets**: A008, A007
 - **Tags**: tls, hostname-check
+- **Residual Risk Decision**: Open
+- **Residual Severity**: High
+- **Residual Likelihood**: Possible
+- **Residual Risk Rationale**: Rogue AP plus no hostname check enables MITM in the room. M015 (already a backlog item).
+- **Assessment State**: Current
 
 #### T15: compromised upstream package source
 
@@ -730,6 +785,11 @@ Post-Quantum Cryptography Migration for IoT workshop (AWS Workshop Studio / re:I
 - **Impact**: theft of the OTA signer keys and abuse of CA issuance, so malicious firmware can be signed for the whole fleet
 - **Impacted Assets**: A002, A003, A006
 - **Tags**: supply-chain
+- **Residual Risk Decision**: Open
+- **Residual Severity**: Critical
+- **Residual Likelihood**: Unlikely
+- **Residual Risk Rationale**: Release-tag pins reduce but do not remove the risk; impact is fleet-wide. Track M016.
+- **Assessment State**: Current
 
 #### T16: insider or compromised principal
 
@@ -740,6 +800,11 @@ Post-Quantum Cryptography Migration for IoT workshop (AWS Workshop Studio / re:I
 - **Impact**: Fargate and CodeBuild silently running attacker code with broker secrets or signer-key access on the next start
 - **Impacted Assets**: A002, A004
 - **Tags**: supply-chain, ecr
+- **Residual Risk Decision**: Open
+- **Residual Severity**: High
+- **Residual Likelihood**: Unlikely
+- **Residual Risk Rationale**: Requires an insider or compromised principal; scan on push detects known vulnerabilities only. Track M016.
+- **Assessment State**: Current
 
 #### T17: anonymous internet user
 
@@ -750,15 +815,11 @@ Post-Quantum Cryptography Migration for IoT workshop (AWS Workshop Studio / re:I
 - **Impact**: queued or throttled CodeBuild builds that stall real migrations during the session, plus avoidable build cost
 - **Impacted Assets**: A009
 - **Tags**: appsync, cost
-
-#### T18: internet attacker
-
-**Statement**: A internet attacker with modest bandwidth can flood the NLB on 8883/8884 with TLS handshakes, which leads to exhaustion of the single Fargate broker task, disconnecting every device
-
-- **Prerequisites**: with modest bandwidth
-- **Action**: flood the NLB on 8883/8884 with TLS handshakes
-- **Impact**: exhaustion of the single Fargate broker task, disconnecting every device
-- **Tags**: availability
+- **Residual Risk Decision**: Open
+- **Residual Severity**: Medium
+- **Residual Likelihood**: Possible
+- **Residual Risk Rationale**: Reserved concurrency of 5 limits fan-out but builds still queue. Closes with M004 and M006.
+- **Assessment State**: Current
 
 #### T19: anonymous internet user
 
@@ -769,6 +830,11 @@ Post-Quantum Cryptography Migration for IoT workshop (AWS Workshop Studio / re:I
 - **Impact**: actions that cannot be attributed to a person, because all callers share the unauthenticated role
 - **Impacted Assets**: A009
 - **Tags**: audit, anonymous-access
+- **Residual Risk Decision**: Open
+- **Residual Severity**: Medium
+- **Residual Likelihood**: Likely
+- **Residual Risk Rationale**: No attribution is possible today. Closes with M004 and M019.
+- **Assessment State**: Current
 
 #### T20: attacker
 
@@ -779,6 +845,11 @@ Post-Quantum Cryptography Migration for IoT workshop (AWS Workshop Studio / re:I
 - **Impact**: fleet-wide telemetry spoofing and command interception in IoT Core from one compromised component
 - **Impacted Assets**: A004, A008, A007
 - **Tags**: broker, least-privilege
+- **Residual Risk Decision**: Open
+- **Residual Severity**: Medium
+- **Residual Likelihood**: Unlikely
+- **Residual Risk Rationale**: Bridge wildcard policy amplifies a broker compromise; private subnet reduces exposure. M020 is a low-cost fix.
+- **Assessment State**: Current
 
 #### T21: maintainer making a mistake
 
@@ -788,16 +859,11 @@ Post-Quantum Cryptography Migration for IoT workshop (AWS Workshop Studio / re:I
 - **Action**: publish real account IDs, the PSK, .kiro notes or the threat model to the public mirror or the Workshop Studio source zip
 - **Impact**: public disclosure of internal details and an attack roadmap
 - **Tags**: release-process
-
-#### T22: harvest-now-decrypt-later adversary
-
-**Statement**: A harvest-now-decrypt-later adversary with a future cryptographically relevant quantum computer can record and later decrypt the classical-only links: bridge TLS 1.2, Builder-Pi HTTPS and the OTA firmware download from S3, which leads to future disclosure of telemetry and of key-bearing firmware images, contrary to the workshop's PQC message
-
-- **Prerequisites**: with a future cryptographically relevant quantum computer
-- **Action**: record and later decrypt the classical-only links: bridge TLS 1.2, Builder-Pi HTTPS and the OTA firmware download from S3
-- **Impact**: future disclosure of telemetry and of key-bearing firmware images, contrary to the workshop's PQC message
-- **Impacted Assets**: A006, A008
-- **Tags**: pqc, hndl
+- **Residual Risk Decision**: Open
+- **Residual Severity**: Medium
+- **Residual Likelihood**: Possible
+- **Residual Risk Rationale**: Public mirror is protected (M021); the Workshop Studio source zip is not (M022).
+- **Assessment State**: Current
 
 #### T23: workshop attendee
 
@@ -808,14 +874,221 @@ Post-Quantum Cryptography Migration for IoT workshop (AWS Workshop Studio / re:I
 - **Impact**: capture of key-bearing firmware images, and installation of a modified image on any device sent an unsigned OTA
 - **Impacted Assets**: A006, A001, A005
 - **Tags**: ota, tls, rogue-ap
+- **Residual Risk Decision**: Open
+- **Residual Severity**: High
+- **Residual Likelihood**: Possible
+- **Residual Risk Rationale**: Signed pushes are protected by M026, but unverified TLS exposes key-bearing images and unsigned pushes. M001 and M002.
+- **Assessment State**: Current
+
+### Resolved Threats
+
+#### T5: workshop attendee
+
+**Statement**: A workshop attendee with physical access to their own ESP32 board can dump the board's flash over USB and recover its device private key, certificate and the WiFi PSK, which leads to the attendee holding a broker-trusted device identity and access to the workshop AP, enabling the broker-level attacks
+
+- **Prerequisites**: with physical access to their own ESP32 board
+- **Action**: dump the board's flash over USB and recover its device private key, certificate and the WiFi PSK
+- **Impact**: the attendee holding a broker-trusted device identity and access to the workshop AP, enabling the broker-level attacks
+- **Impacted Assets**: A001, A005
+- **Tags**: physical, no-flash-encryption
+- **Residual Risk Decision**: Accepted
+- **Residual Severity**: Medium
+- **Residual Likelihood**: Very Likely
+- **Residual Risk Rationale**: Accepted for the workshop: boards are handed to attendees and flash encryption/secure boot would complicate re-flashing. The design must not rely on key secrecy (see T006/T008), and M008 is documented as production guidance.
+- **Assessment State**: Current
+
+#### T18: internet attacker
+
+**Statement**: A internet attacker with modest bandwidth can flood the NLB on 8883/8884 with TLS handshakes, which leads to exhaustion of the single Fargate broker task, disconnecting every device
+
+- **Prerequisites**: with modest bandwidth
+- **Action**: flood the NLB on 8883/8884 with TLS handshakes
+- **Impact**: exhaustion of the single Fargate broker task, disconnecting every device
+- **Tags**: availability
+- **Residual Risk Decision**: Accepted
+- **Residual Severity**: Medium
+- **Residual Likelihood**: Possible
+- **Residual Risk Rationale**: Accepted at workshop scale: a single task is enough for tens of devices and the event is short; M018 recorded for production use.
+- **Assessment State**: Current
+
+#### T22: harvest-now-decrypt-later adversary
+
+**Statement**: A harvest-now-decrypt-later adversary with a future cryptographically relevant quantum computer can record and later decrypt the classical-only links: bridge TLS 1.2, Builder-Pi HTTPS and the OTA firmware download from S3, which leads to future disclosure of telemetry and of key-bearing firmware images, contrary to the workshop's PQC message
+
+- **Prerequisites**: with a future cryptographically relevant quantum computer
+- **Action**: record and later decrypt the classical-only links: bridge TLS 1.2, Builder-Pi HTTPS and the OTA firmware download from S3
+- **Impact**: future disclosure of telemetry and of key-bearing firmware images, contrary to the workshop's PQC message
+- **Impacted Assets**: A006, A008
+- **Tags**: pqc, hndl
+- **Residual Risk Decision**: Accepted
+- **Residual Severity**: Low
+- **Residual Likelihood**: Unlikely
+- **Residual Risk Rationale**: Accepted: short-lived workshop data has no long-term secrecy value; the classical links are part of the teaching story (M023).
+- **Assessment State**: Current
 
 ## Mitigations
 
-*No mitigations defined.*
+### Identified Mitigations
+
+#### M1: Make every firmware variant refuse any OTA that does not carry a valid signature chained to the baked signer root (fail closed when sigAlg is missing), and have publish-ota sign every push including the classical era.
+
+**Addresses Threats**: T6, T23
+
+#### M2: Verify the OTA download server: fix the wolfSSL chain issue (load the Amazon intermediate/roots and enable WOLFSSL_VERIFY_PEER with SNI and domain check) and only accept URLs whose host is the workshop firmware bucket's regional S3 endpoint.
+
+**Addresses Threats**: T6, T22, T23
+
+#### M3: Add a Mosquitto ACL that confines each device to its own topics: write dt/%u/#, read cmd/%u/#, using the certificate CN as the username (use_identity_as_username is already on).
+
+**Addresses Threats**: T6, T7, T20
+
+#### M4: Replace anonymous dashboard access: add a Cognito user pool (operator and per-event attendee sign-in), keep the unauthenticated role read-only, and allow mutations only to authenticated users scoped to their own device where possible.
+
+**Addresses Threats**: T1, T2, T3, T4, T17, T19
+
+#### M5: Remove updateDevice from browser-callable access: only the telemetry processor writes device state, so scope the guest role's appsync:GraphQL to specific Query fields.
+
+**Addresses Threats**: T2
+
+#### M7: Redact presigned URLs from logged OTA commands and shorten the presign expiry to the minimum the download needs.
+
+**Addresses Threats**: T3
+
+#### M8: Enable ESP32 flash encryption and secure boot v2 so device keys and the PSK cannot be read back over USB (production guidance; accepted for the workshop).
+
+**Addresses Threats**: T5
+
+#### M9: Make device identity revocable: enable CRLs on both Private CAs, revoke the device cert in the deregistrar, and have Mosquitto check the CRL (or an auth plugin that checks the registry).
+
+**Addresses Threats**: T8
+
+#### M10: Lock down the Builder-Pi GUI: require an operator token, add CSRF protection, make /api/config read-only at runtime, and bind the GUI away from the attendee AP interface.
+
+**Addresses Threats**: T9, T10
+
+#### M11: Least-privilege Builder-Pi role: drop bucket-wide firmware read and registry Scan; the builder API returns a short-lived presigned URL for just the device being flashed.
+
+**Addresses Threats**: T11
+
+#### M12: Stop persisting device private keys in stored firmware: expire per-device images after flashing/OTA (lifecycle rule, short noncurrent-version expiry) or move the key to a separately flashed NVS partition that is never uploaded.
+
+**Addresses Threats**: T3, T11, T23
+
+#### M13: Keep the WiFi PSK only in SSM: drop wifiPassword from the registry and pass it to CodeBuild as a PARAMETER_STORE environment variable instead of PLAINTEXT (project env, registrar override and state machine).
+
+**Addresses Threats**: T13
+
+#### M15: Enforce broker hostname checks on devices: add stable DNS names as SANs on both broker certificates and enable wolfSSL domain-name checking.
+
+**Addresses Threats**: T14
+
+#### M18: Improve broker availability: run at least two broker tasks across AZs, set Mosquitto connection limits, and rely on Shield Standard on the NLB.
+
+**Addresses Threats**: T18
+
+#### M19: Make dashboard actions auditable: enable AppSync request logging and record caller identity once sign-in exists.
+
+**Addresses Threats**: T19
+
+#### M20: Narrow the bridge IoT policy to the device topic shapes (dt/esp32-*/telemetry, cmd/esp32-*/*) and remove the shadow wildcards it does not use.
+
+**Addresses Threats**: T20
+
+#### M22: Apply the same curation to the Workshop Studio source zip (package-workshop-src.sh), which currently ships .kiro/, .threatmodel/ and real account IDs.
+
+**Addresses Threats**: T21
+
+#### M23: Track the remaining classical-only links (IoT Core bridge TLS 1.2, OTA download, Builder-Pi HTTPS) and move them to hybrid ML-KEM where AWS endpoints support it; explain them in the workshop as the next migration step.
+
+**Addresses Threats**: T22
+
+### In Progress Mitigations
+
+#### M6: Throttle migrations: reject migrateFirmware while a device already has a migration in progress, cap start-migration concurrency, and set a CodeBuild concurrent-build limit.
+
+**Addresses Threats**: T1, T17
+
+#### M14: Limit the SSM hybrid activation: registration limit of 1, expiry of hours not 7 days, and auto-deregister stale managed instances.
+
+**Addresses Threats**: T12
+
+#### M16: Harden the build supply chain: pin base images by digest, pin oqs-provider/OpenSSL commits and package versions, verify Arduino index signatures, use npm ci with a lockfile, and deploy images by digest with immutable ECR tags.
+
+**Addresses Threats**: T15, T16
+
+### Resolved Mitigations
+
+#### M17: ECR scan on push for all three images.
+
+**Addresses Threats**: T16
+
+#### M21: Fail-closed public-mirror curation: publish-public-mirror.sh strips .kiro/ and .threatmodel/, scrubs account IDs, the PSK and internal URLs, and aborts if any survive.
+
+**Addresses Threats**: T21
+
+#### M24: Mutual TLS required on both broker listeners, each trusting only its own Private CA, TLS 1.3 only.
+
+**Addresses Threats**: T7
+
+#### M25: Telemetry processor only updates devices that were registered (attribute_exists(serialNumber)), so unknown things cannot create dashboard cards.
+
+**Addresses Threats**: T7
+
+#### M26: Signed OTA verification when the command declares sigAlg: signer leaf must chain to the baked signer root (fails closed without a root), then the ECDSA-P256 or ML-DSA-44 signature must verify; signer keys are scrubbed from the build disk after signing.
+
+**Addresses Threats**: T6, T23
+
+#### M27: Broker runs in private subnets with no public IP; its task role can read only the named broker and bridge secrets.
+
+**Addresses Threats**: T20
+
+#### M28: start-migration validates the requested variant against an allow-list before starting a migration.
+
+**Addresses Threats**: T1
 
 ## Assumptions
 
-*No assumptions defined.*
+### A011: Deployment
+
+**Description**: Each workshop runs in a throwaway AWS account (Workshop Studio per-event account, or pqc-a/pqc-b test accounts) that is torn down after the event.
+
+- **Impact**: Bounds the lifetime of leaked credentials, device keys and cost abuse to the event window.
+- **Rationale**: Stated deployment model in the project steering and DEPLOYMENT.md.
+
+### A012: Data
+
+**Description**: The system holds no customer data, PII beyond optional dashboard identities, or regulated data; telemetry is synthetic device health data.
+
+- **Impact**: Disruption, not data theft, is the main business impact; this drives the risk ratings.
+- **Rationale**: Phase 1 data asset review.
+
+### A013: Users
+
+**Description**: Attendees are semi-trusted: many are security practitioners with physical access to a board, the Builder-Pi station and the workshop WiFi.
+
+- **Impact**: Device keys and the WiFi PSK are treated as extractable; controls must not depend on their secrecy.
+- **Rationale**: Room setup in the workshop documentation.
+
+### A014: Risk acceptance
+
+**Description**: Risk tolerance: a disrupted or visibly compromised live session at re:Invent is a reputational failure for a security workshop, so fleet-wide or cross-attendee attacks are not acceptable; single-device or workshop-scale availability issues are tolerable.
+
+- **Impact**: Threats whose only outcome is a degraded session at workshop scale may be accepted; anything that lets one attendee or an internet user take over other devices, or that would be copied into production designs, stays open.
+- **Rationale**: Business context: Medium criticality, Low financial impact, high reputational sensitivity.
+
+### A015: Scope
+
+**Description**: The public aws-samples repo is reference material; readers may reuse the design.
+
+- **Impact**: Production readers need the documented hardening (flash encryption, secure boot, sign-in, revocation) rather than copying the workshop defaults.
+- **Rationale**: Published as an MIT-0 sample.
+
+### A016: Operations
+
+**Description**: Operator Admin credentials are short-lived Isengard credentials obtained via ada, and upstream sources are pinned to release tags.
+
+- **Impact**: Supply-chain and operator-mistake threats are rated Unlikely/Possible rather than Likely.
+- **Rationale**: Observed operator workflow and Dockerfile pins.
 
 ## Phase Progress
 
@@ -827,9 +1100,9 @@ Post-Quantum Cryptography Migration for IoT workshop (AWS Workshop Studio / re:I
 | 4 | Trust Boundary Analysis | 100% ✅ |
 | 5 | Asset Flow Analysis | 100% ✅ |
 | 6 | Threat Identification | 100% ✅ |
-| 7 | Mitigation Planning | 0% ⏳ |
-| 7.5 | Code Validation Analysis | 0% ⏳ |
-| 8 | Residual Risk Analysis | 0% ⏳ |
+| 7 | Mitigation Planning | 100% ✅ |
+| 7.5 | Code Validation Analysis | 100% ✅ |
+| 8 | Residual Risk Analysis | 100% ✅ |
 | 9 | Output Generation and Documentation | 100% ✅ |
 
 ---
