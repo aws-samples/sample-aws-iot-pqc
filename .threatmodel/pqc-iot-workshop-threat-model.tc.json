@@ -14,5 +14,483 @@
   "mitigations": [],
   "assumptionLinks": [],
   "mitigationLinks": [],
-  "threats": []
+  "threats": [
+    {
+      "id": "ba25dd1d-cee0-5e02-a7d7-fde24d6d0f26",
+      "numericId": 1,
+      "threatSource": "anonymous internet user",
+      "prerequisites": "with the identity pool ID from the public dashboard config.json",
+      "threatAction": "obtain Cognito guest credentials and call the AppSync migrateFirmware mutation for any thingName",
+      "threatImpact": "unrequested firmware builds and OTA pushes to any attendee's device, disrupting the live workshop and spending account resources",
+      "impactedGoal": [],
+      "impactedAssets": [
+        "A009",
+        "A006",
+        "A007"
+      ],
+      "statement": "A anonymous internet user with the identity pool ID from the public dashboard config.json can obtain Cognito guest credentials and call the AppSync migrateFirmware mutation for any thingName, which leads to unrequested firmware builds and OTA pushes to any attendee's device, disrupting the live workshop and spending account resources",
+      "displayOrder": 1,
+      "status": "threatIdentified",
+      "tags": [
+        "appsync",
+        "anonymous-access"
+      ],
+      "metadata": []
+    },
+    {
+      "id": "3d6631e1-af13-5fa7-9f0a-946747b7422d",
+      "numericId": 2,
+      "threatSource": "anonymous internet user",
+      "prerequisites": "with Cognito guest credentials",
+      "threatAction": "call the AppSync updateDevice mutation to overwrite any device's firmwareVersion, pqcAlgorithm, tlsVersion or status",
+      "threatImpact": "a dashboard that shows false migration results, undermining the workshop's proof that devices negotiated ML-KEM",
+      "impactedGoal": [],
+      "impactedAssets": [
+        "A008",
+        "A009"
+      ],
+      "statement": "A anonymous internet user with Cognito guest credentials can call the AppSync updateDevice mutation to overwrite any device's firmwareVersion, pqcAlgorithm, tlsVersion or status, which leads to a dashboard that shows false migration results, undermining the workshop's proof that devices negotiated ML-KEM",
+      "displayOrder": 2,
+      "status": "threatIdentified",
+      "tags": [
+        "appsync",
+        "anonymous-access",
+        "integrity"
+      ],
+      "metadata": []
+    },
+    {
+      "id": "9118901f-6eb5-5fe1-9f5f-a3fea4274ca2",
+      "numericId": 3,
+      "threatSource": "anonymous internet user",
+      "prerequisites": "with Cognito guest credentials within 15 minutes of a migration",
+      "threatAction": "read OTA commands through getDeviceLog and use a still-valid presigned URL to download that device's firmware image",
+      "threatImpact": "disclosure of the device private key and WiFi PSK embedded in the image, enabling impersonation of that device",
+      "impactedGoal": [],
+      "impactedAssets": [
+        "A007",
+        "A006",
+        "A001",
+        "A005"
+      ],
+      "statement": "A anonymous internet user with Cognito guest credentials within 15 minutes of a migration can read OTA commands through getDeviceLog and use a still-valid presigned URL to download that device's firmware image, which leads to disclosure of the device private key and WiFi PSK embedded in the image, enabling impersonation of that device",
+      "displayOrder": 3,
+      "status": "threatIdentified",
+      "tags": [
+        "appsync",
+        "presigned-url",
+        "key-exposure"
+      ],
+      "metadata": []
+    },
+    {
+      "id": "4f7d8c3d-523a-59f9-8629-6255e6c92d81",
+      "numericId": 4,
+      "threatSource": "anonymous internet user",
+      "prerequisites": "with Cognito guest credentials",
+      "threatAction": "read broker connection logs and all device message payloads through getBrokerLog and getDeviceLog",
+      "threatImpact": "disclosure of device client IDs, source IP addresses and full telemetry and command history",
+      "impactedGoal": [],
+      "impactedAssets": [
+        "A008",
+        "A007"
+      ],
+      "statement": "A anonymous internet user with Cognito guest credentials can read broker connection logs and all device message payloads through getBrokerLog and getDeviceLog, which leads to disclosure of device client IDs, source IP addresses and full telemetry and command history",
+      "displayOrder": 4,
+      "status": "threatIdentified",
+      "tags": [
+        "appsync",
+        "anonymous-access"
+      ],
+      "metadata": []
+    },
+    {
+      "id": "08076e24-45d9-5f2c-a1c4-293bff49fdab",
+      "numericId": 5,
+      "threatSource": "workshop attendee",
+      "prerequisites": "with physical access to their own ESP32 board",
+      "threatAction": "dump the board's flash over USB and recover its device private key, certificate and the WiFi PSK",
+      "threatImpact": "the attendee holding a broker-trusted device identity and access to the workshop AP, enabling the broker-level attacks",
+      "impactedGoal": [],
+      "impactedAssets": [
+        "A001",
+        "A005"
+      ],
+      "statement": "A workshop attendee with physical access to their own ESP32 board can dump the board's flash over USB and recover its device private key, certificate and the WiFi PSK, which leads to the attendee holding a broker-trusted device identity and access to the workshop AP, enabling the broker-level attacks",
+      "displayOrder": 5,
+      "status": "threatIdentified",
+      "tags": [
+        "physical",
+        "no-flash-encryption"
+      ],
+      "metadata": []
+    },
+    {
+      "id": "15c4d825-3519-5999-a894-88185c6b42c9",
+      "numericId": 6,
+      "threatSource": "workshop attendee",
+      "prerequisites": "with a device certificate extracted from their own board",
+      "threatAction": "publish an ota-update with no sigAlg, a URL to their own HTTPS server and a matching sha256 to another device's cmd/<thing>/ota",
+      "threatImpact": "any device variant installing attacker-chosen firmware, because devices skip signature checks when sigAlg is absent and do not verify the download server's TLS certificate",
+      "impactedGoal": [],
+      "impactedAssets": [
+        "A007",
+        "A006"
+      ],
+      "statement": "A workshop attendee with a device certificate extracted from their own board can publish an ota-update with no sigAlg, a URL to their own HTTPS server and a matching sha256 to another device's cmd/<thing>/ota, which leads to any device variant installing attacker-chosen firmware, because devices skip signature checks when sigAlg is absent and do not verify the download server's TLS certificate",
+      "displayOrder": 6,
+      "status": "threatIdentified",
+      "tags": [
+        "broker-acl",
+        "ota",
+        "signature-downgrade"
+      ],
+      "metadata": []
+    },
+    {
+      "id": "8414df73-8d4b-5e1e-b0bf-4844f86bb045",
+      "numericId": 7,
+      "threatSource": "workshop attendee",
+      "prerequisites": "with a device certificate extracted from their own board",
+      "threatAction": "publish dt/<other-thing>/telemetry or lifecycle messages for devices they do not own",
+      "threatImpact": "fake telemetry and PQC status for other attendees' devices on the dashboard and in the message log",
+      "impactedGoal": [],
+      "impactedAssets": [
+        "A008"
+      ],
+      "statement": "A workshop attendee with a device certificate extracted from their own board can publish dt/<other-thing>/telemetry or lifecycle messages for devices they do not own, which leads to fake telemetry and PQC status for other attendees' devices on the dashboard and in the message log",
+      "displayOrder": 7,
+      "status": "threatIdentified",
+      "tags": [
+        "broker-acl"
+      ],
+      "metadata": []
+    },
+    {
+      "id": "aee0a9dd-0ee6-5f39-b90b-73874cd6a292",
+      "numericId": 8,
+      "threatSource": "attacker",
+      "prerequisites": "who obtained a device private key",
+      "threatAction": "reuse a deregistered or stolen device certificate to keep connecting to the broker indefinitely",
+      "threatImpact": "removed devices staying trusted, because the broker trusts any CA-issued cert, does not check the registry, and both CAs have CRLs disabled",
+      "impactedGoal": [],
+      "impactedAssets": [
+        "A001"
+      ],
+      "statement": "A attacker who obtained a device private key can reuse a deregistered or stolen device certificate to keep connecting to the broker indefinitely, which leads to removed devices staying trusted, because the broker trusts any CA-issued cert, does not check the registry, and both CAs have CRLs disabled",
+      "displayOrder": 8,
+      "status": "threatIdentified",
+      "tags": [
+        "revocation",
+        "pki"
+      ],
+      "metadata": []
+    },
+    {
+      "id": "ddf39fa0-8d1f-5971-b650-962e6ff499fb",
+      "numericId": 9,
+      "threatSource": "user on the workshop WiFi",
+      "prerequisites": "with the shared PSK",
+      "threatAction": "drive the unauthenticated Builder-Pi GUI to deregister or reflash other attendees' devices and read their serial consoles",
+      "threatImpact": "disruption of other attendees' devices and exposure of serial output",
+      "impactedGoal": [],
+      "impactedAssets": [
+        "A010"
+      ],
+      "statement": "A user on the workshop WiFi with the shared PSK can drive the unauthenticated Builder-Pi GUI to deregister or reflash other attendees' devices and read their serial consoles, which leads to disruption of other attendees' devices and exposure of serial output",
+      "displayOrder": 9,
+      "status": "threatIdentified",
+      "tags": [
+        "builder-pi",
+        "no-auth"
+      ],
+      "metadata": []
+    },
+    {
+      "id": "4b6ba760-5baf-5785-938e-e67ad203cedd",
+      "numericId": 10,
+      "threatSource": "user on the workshop WiFi",
+      "prerequisites": "with the shared PSK",
+      "threatAction": "POST to the Builder-Pi /api/config to re-point the firmware bucket or API endpoint to attacker-controlled resources",
+      "threatImpact": "the Pi flashing attacker-supplied firmware onto the next boards plugged into the station",
+      "impactedGoal": [],
+      "impactedAssets": [
+        "A006",
+        "A010"
+      ],
+      "statement": "A user on the workshop WiFi with the shared PSK can POST to the Builder-Pi /api/config to re-point the firmware bucket or API endpoint to attacker-controlled resources, which leads to the Pi flashing attacker-supplied firmware onto the next boards plugged into the station",
+      "displayOrder": 10,
+      "status": "threatIdentified",
+      "tags": [
+        "builder-pi",
+        "no-auth",
+        "csrf"
+      ],
+      "metadata": []
+    },
+    {
+      "id": "73429e61-5b54-54c1-9aa1-7201565b9559",
+      "numericId": 11,
+      "threatSource": "attacker",
+      "prerequisites": "with root on the Builder-Pi or its role credentials",
+      "threatAction": "use the Pi role to download every device's firmware from the firmware bucket",
+      "threatImpact": "disclosure of every device private key and the PSK, allowing impersonation of the whole fleet",
+      "impactedGoal": [],
+      "impactedAssets": [
+        "A001",
+        "A006",
+        "A010"
+      ],
+      "statement": "A attacker with root on the Builder-Pi or its role credentials can use the Pi role to download every device's firmware from the firmware bucket, which leads to disclosure of every device private key and the PSK, allowing impersonation of the whole fleet",
+      "displayOrder": 11,
+      "status": "threatIdentified",
+      "tags": [
+        "builder-pi",
+        "least-privilege"
+      ],
+      "metadata": []
+    },
+    {
+      "id": "6838c8b1-6bac-5053-8e8c-4906b9b53f66",
+      "numericId": 12,
+      "threatSource": "attacker",
+      "prerequisites": "with a leaked Builder-Pi bundle within its 7-day validity",
+      "threatAction": "register their own machine with the hybrid activation code",
+      "threatImpact": "a rogue managed instance holding the Builder-Pi role, with the same bucket, registry and PSK access as the real Pi",
+      "impactedGoal": [],
+      "impactedAssets": [
+        "A010"
+      ],
+      "statement": "A attacker with a leaked Builder-Pi bundle within its 7-day validity can register their own machine with the hybrid activation code, which leads to a rogue managed instance holding the Builder-Pi role, with the same bucket, registry and PSK access as the real Pi",
+      "displayOrder": 12,
+      "status": "threatIdentified",
+      "tags": [
+        "ssm",
+        "builder-pi"
+      ],
+      "metadata": []
+    },
+    {
+      "id": "a06ec6cc-22bc-58a1-9f1f-03d540a3f0cf",
+      "numericId": 13,
+      "threatSource": "user or role with read-only account access",
+      "prerequisites": "with CodeBuild, Step Functions or DynamoDB read permissions",
+      "threatAction": "read the workshop WiFi PSK from the CodeBuild project environment, build details, Step Functions execution history or the registry table",
+      "threatImpact": "disclosure of the PSK outside its SecureString",
+      "impactedGoal": [],
+      "impactedAssets": [
+        "A005"
+      ],
+      "statement": "A user or role with read-only account access with CodeBuild, Step Functions or DynamoDB read permissions can read the workshop WiFi PSK from the CodeBuild project environment, build details, Step Functions execution history or the registry table, which leads to disclosure of the PSK outside its SecureString",
+      "displayOrder": 13,
+      "status": "threatIdentified",
+      "tags": [
+        "secrets-handling"
+      ],
+      "metadata": []
+    },
+    {
+      "id": "0fa4615b-7141-5ac3-a394-94cb554ad2ae",
+      "numericId": 14,
+      "threatSource": "workshop attendee",
+      "prerequisites": "with the extracted PSK and network position in the room",
+      "threatAction": "run a rogue AP with the workshop SSID and PSK and present any certificate chaining to the workshop CA",
+      "threatImpact": "a man-in-the-middle on devices that associate with it, because the firmware checks the chain but not the broker hostname or SAN",
+      "impactedGoal": [],
+      "impactedAssets": [
+        "A008",
+        "A007"
+      ],
+      "statement": "A workshop attendee with the extracted PSK and network position in the room can run a rogue AP with the workshop SSID and PSK and present any certificate chaining to the workshop CA, which leads to a man-in-the-middle on devices that associate with it, because the firmware checks the chain but not the broker hostname or SAN",
+      "displayOrder": 14,
+      "status": "threatIdentified",
+      "tags": [
+        "tls",
+        "hostname-check"
+      ],
+      "metadata": []
+    },
+    {
+      "id": "73035e02-c29a-5993-8777-c3719275c91b",
+      "numericId": 15,
+      "threatSource": "compromised upstream package source",
+      "prerequisites": "such as the Ubuntu apt mirror, oqs-provider source, Arduino ESP32 core or npm registry",
+      "threatAction": "inject code into the broker, cert-issuer or firmware-builder image builds",
+      "threatImpact": "theft of the OTA signer keys and abuse of CA issuance, so malicious firmware can be signed for the whole fleet",
+      "impactedGoal": [],
+      "impactedAssets": [
+        "A002",
+        "A003",
+        "A006"
+      ],
+      "statement": "A compromised upstream package source such as the Ubuntu apt mirror, oqs-provider source, Arduino ESP32 core or npm registry can inject code into the broker, cert-issuer or firmware-builder image builds, which leads to theft of the OTA signer keys and abuse of CA issuance, so malicious firmware can be signed for the whole fleet",
+      "displayOrder": 15,
+      "status": "threatIdentified",
+      "tags": [
+        "supply-chain"
+      ],
+      "metadata": []
+    },
+    {
+      "id": "16017c77-52e6-532b-82b1-5b72bf3f46a7",
+      "numericId": 16,
+      "threatSource": "insider or compromised principal",
+      "prerequisites": "with ECR push permissions",
+      "threatAction": "push a replacement image under the mutable :latest tag in ECR",
+      "threatImpact": "Fargate and CodeBuild silently running attacker code with broker secrets or signer-key access on the next start",
+      "impactedGoal": [],
+      "impactedAssets": [
+        "A002",
+        "A004"
+      ],
+      "statement": "A insider or compromised principal with ECR push permissions can push a replacement image under the mutable :latest tag in ECR, which leads to Fargate and CodeBuild silently running attacker code with broker secrets or signer-key access on the next start",
+      "displayOrder": 16,
+      "status": "threatIdentified",
+      "tags": [
+        "supply-chain",
+        "ecr"
+      ],
+      "metadata": []
+    },
+    {
+      "id": "27084191-d624-5f92-8355-12a1051fc150",
+      "numericId": 17,
+      "threatSource": "anonymous internet user",
+      "prerequisites": "with Cognito guest credentials",
+      "threatAction": "repeatedly call migrateFirmware across many devices",
+      "threatImpact": "queued or throttled CodeBuild builds that stall real migrations during the session, plus avoidable build cost",
+      "impactedGoal": [],
+      "impactedAssets": [
+        "A009"
+      ],
+      "statement": "A anonymous internet user with Cognito guest credentials can repeatedly call migrateFirmware across many devices, which leads to queued or throttled CodeBuild builds that stall real migrations during the session, plus avoidable build cost",
+      "displayOrder": 17,
+      "status": "threatIdentified",
+      "tags": [
+        "appsync",
+        "cost"
+      ],
+      "metadata": []
+    },
+    {
+      "id": "74165ea7-f6e5-5082-baa1-e74c478b20d8",
+      "numericId": 18,
+      "threatSource": "internet attacker",
+      "prerequisites": "with modest bandwidth",
+      "threatAction": "flood the NLB on 8883/8884 with TLS handshakes",
+      "threatImpact": "exhaustion of the single Fargate broker task, disconnecting every device",
+      "impactedGoal": [],
+      "impactedAssets": [],
+      "statement": "A internet attacker with modest bandwidth can flood the NLB on 8883/8884 with TLS handshakes, which leads to exhaustion of the single Fargate broker task, disconnecting every device",
+      "displayOrder": 18,
+      "status": "threatIdentified",
+      "tags": [
+        "availability"
+      ],
+      "metadata": []
+    },
+    {
+      "id": "96318db1-ff7e-59af-a3b3-cd61b9bf9ee0",
+      "numericId": 19,
+      "threatSource": "anonymous internet user",
+      "prerequisites": "with Cognito guest credentials",
+      "threatAction": "migrate or overwrite devices through AppSync",
+      "threatImpact": "actions that cannot be attributed to a person, because all callers share the unauthenticated role",
+      "impactedGoal": [],
+      "impactedAssets": [
+        "A009"
+      ],
+      "statement": "A anonymous internet user with Cognito guest credentials can migrate or overwrite devices through AppSync, which leads to actions that cannot be attributed to a person, because all callers share the unauthenticated role",
+      "displayOrder": 19,
+      "status": "threatIdentified",
+      "tags": [
+        "audit",
+        "anonymous-access"
+      ],
+      "metadata": []
+    },
+    {
+      "id": "140dbbb7-7fb8-58f0-bf12-0692363919eb",
+      "numericId": 20,
+      "threatSource": "attacker",
+      "prerequisites": "who compromises the broker task, e.g. via a Mosquitto or oqs-provider flaw",
+      "threatAction": "publish to dt/* and $aws/things/*/shadow/* and receive cmd/* for every device through the bridge identity",
+      "threatImpact": "fleet-wide telemetry spoofing and command interception in IoT Core from one compromised component",
+      "impactedGoal": [],
+      "impactedAssets": [
+        "A004",
+        "A008",
+        "A007"
+      ],
+      "statement": "A attacker who compromises the broker task, e.g. via a Mosquitto or oqs-provider flaw can publish to dt/* and $aws/things/*/shadow/* and receive cmd/* for every device through the bridge identity, which leads to fleet-wide telemetry spoofing and command interception in IoT Core from one compromised component",
+      "displayOrder": 20,
+      "status": "threatIdentified",
+      "tags": [
+        "broker",
+        "least-privilege"
+      ],
+      "metadata": []
+    },
+    {
+      "id": "095d43bc-590e-5c10-9083-b9465aafbea3",
+      "numericId": 21,
+      "threatSource": "maintainer making a mistake",
+      "prerequisites": "with publish rights",
+      "threatAction": "publish real account IDs, the PSK, .kiro notes or the threat model to the public mirror or the Workshop Studio source zip",
+      "threatImpact": "public disclosure of internal details and an attack roadmap",
+      "impactedGoal": [],
+      "impactedAssets": [],
+      "statement": "A maintainer making a mistake with publish rights can publish real account IDs, the PSK, .kiro notes or the threat model to the public mirror or the Workshop Studio source zip, which leads to public disclosure of internal details and an attack roadmap",
+      "displayOrder": 21,
+      "status": "threatIdentified",
+      "tags": [
+        "release-process"
+      ],
+      "metadata": []
+    },
+    {
+      "id": "398f8cd8-b686-554d-ac4c-79f8b832bda3",
+      "numericId": 22,
+      "threatSource": "harvest-now-decrypt-later adversary",
+      "prerequisites": "with a future cryptographically relevant quantum computer",
+      "threatAction": "record and later decrypt the classical-only links: bridge TLS 1.2, Builder-Pi HTTPS and the OTA firmware download from S3",
+      "threatImpact": "future disclosure of telemetry and of key-bearing firmware images, contrary to the workshop's PQC message",
+      "impactedGoal": [],
+      "impactedAssets": [
+        "A006",
+        "A008"
+      ],
+      "statement": "A harvest-now-decrypt-later adversary with a future cryptographically relevant quantum computer can record and later decrypt the classical-only links: bridge TLS 1.2, Builder-Pi HTTPS and the OTA firmware download from S3, which leads to future disclosure of telemetry and of key-bearing firmware images, contrary to the workshop's PQC message",
+      "displayOrder": 22,
+      "status": "threatIdentified",
+      "tags": [
+        "pqc",
+        "hndl"
+      ],
+      "metadata": []
+    },
+    {
+      "id": "477d100c-666d-543d-98e1-038585bc15c6",
+      "numericId": 23,
+      "threatSource": "workshop attendee",
+      "prerequisites": "with a rogue AP using the workshop SSID and extracted PSK",
+      "threatAction": "intercept a device's OTA download, which does not verify the server certificate, and serve or capture the image",
+      "threatImpact": "capture of key-bearing firmware images, and installation of a modified image on any device sent an unsigned OTA",
+      "impactedGoal": [],
+      "impactedAssets": [
+        "A006",
+        "A001",
+        "A005"
+      ],
+      "statement": "A workshop attendee with a rogue AP using the workshop SSID and extracted PSK can intercept a device's OTA download, which does not verify the server certificate, and serve or capture the image, which leads to capture of key-bearing firmware images, and installation of a modified image on any device sent an unsigned OTA",
+      "displayOrder": 23,
+      "status": "threatIdentified",
+      "tags": [
+        "ota",
+        "tls",
+        "rogue-ap"
+      ],
+      "metadata": []
+    }
+  ]
 }

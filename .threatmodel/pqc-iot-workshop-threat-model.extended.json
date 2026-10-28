@@ -3,7 +3,657 @@
   "importableIntoThreatComposer": false,
   "notice": "Full server state snapshot. Not a Threat Composer import file; import pqc-iot-workshop-threat-model.tc.json instead.",
   "threatComposerFile": "pqc-iot-workshop-threat-model.tc.json",
-  "threats": [],
+  "threats": [
+    {
+      "id": "T001",
+      "numericId": 1,
+      "threatSource": "anonymous internet user",
+      "prerequisites": "with the identity pool ID from the public dashboard config.json",
+      "threatAction": "obtain Cognito guest credentials and call the AppSync migrateFirmware mutation for any thingName",
+      "threatImpact": "unrequested firmware builds and OTA pushes to any attendee's device, disrupting the live workshop and spending account resources",
+      "impactedGoal": [],
+      "impactedAssets": [
+        "A009",
+        "A006",
+        "A007"
+      ],
+      "metadata": [],
+      "statement": "A anonymous internet user with the identity pool ID from the public dashboard config.json can obtain Cognito guest credentials and call the AppSync migrateFirmware mutation for any thingName, which leads to unrequested firmware builds and OTA pushes to any attendee's device, disrupting the live workshop and spending account resources",
+      "displayOrder": 1,
+      "status": "threatIdentified",
+      "tags": [
+        "appsync",
+        "anonymous-access"
+      ],
+      "category": "Elevation of Privilege",
+      "severity": "High",
+      "likelihood": "Likely",
+      "affected_components": [
+        "C023",
+        "C022",
+        "C014",
+        "C015",
+        "C016"
+      ]
+    },
+    {
+      "id": "T002",
+      "numericId": 2,
+      "threatSource": "anonymous internet user",
+      "prerequisites": "with Cognito guest credentials",
+      "threatAction": "call the AppSync updateDevice mutation to overwrite any device's firmwareVersion, pqcAlgorithm, tlsVersion or status",
+      "threatImpact": "a dashboard that shows false migration results, undermining the workshop's proof that devices negotiated ML-KEM",
+      "impactedGoal": [],
+      "impactedAssets": [
+        "A008",
+        "A009"
+      ],
+      "metadata": [],
+      "statement": "A anonymous internet user with Cognito guest credentials can call the AppSync updateDevice mutation to overwrite any device's firmwareVersion, pqcAlgorithm, tlsVersion or status, which leads to a dashboard that shows false migration results, undermining the workshop's proof that devices negotiated ML-KEM",
+      "displayOrder": 2,
+      "status": "threatIdentified",
+      "tags": [
+        "appsync",
+        "anonymous-access",
+        "integrity"
+      ],
+      "category": "Tampering",
+      "severity": "High",
+      "likelihood": "Very Likely",
+      "affected_components": [
+        "C022",
+        "C023"
+      ]
+    },
+    {
+      "id": "T003",
+      "numericId": 3,
+      "threatSource": "anonymous internet user",
+      "prerequisites": "with Cognito guest credentials within 15 minutes of a migration",
+      "threatAction": "read OTA commands through getDeviceLog and use a still-valid presigned URL to download that device's firmware image",
+      "threatImpact": "disclosure of the device private key and WiFi PSK embedded in the image, enabling impersonation of that device",
+      "impactedGoal": [],
+      "impactedAssets": [
+        "A007",
+        "A006",
+        "A001",
+        "A005"
+      ],
+      "metadata": [],
+      "statement": "A anonymous internet user with Cognito guest credentials within 15 minutes of a migration can read OTA commands through getDeviceLog and use a still-valid presigned URL to download that device's firmware image, which leads to disclosure of the device private key and WiFi PSK embedded in the image, enabling impersonation of that device",
+      "displayOrder": 3,
+      "status": "threatIdentified",
+      "tags": [
+        "appsync",
+        "presigned-url",
+        "key-exposure"
+      ],
+      "category": "Information Disclosure",
+      "severity": "High",
+      "likelihood": "Possible",
+      "affected_components": [
+        "C022",
+        "C009"
+      ]
+    },
+    {
+      "id": "T004",
+      "numericId": 4,
+      "threatSource": "anonymous internet user",
+      "prerequisites": "with Cognito guest credentials",
+      "threatAction": "read broker connection logs and all device message payloads through getBrokerLog and getDeviceLog",
+      "threatImpact": "disclosure of device client IDs, source IP addresses and full telemetry and command history",
+      "impactedGoal": [],
+      "impactedAssets": [
+        "A008",
+        "A007"
+      ],
+      "metadata": [],
+      "statement": "A anonymous internet user with Cognito guest credentials can read broker connection logs and all device message payloads through getBrokerLog and getDeviceLog, which leads to disclosure of device client IDs, source IP addresses and full telemetry and command history",
+      "displayOrder": 4,
+      "status": "threatIdentified",
+      "tags": [
+        "appsync",
+        "anonymous-access"
+      ],
+      "category": "Information Disclosure",
+      "severity": "Medium",
+      "likelihood": "Likely",
+      "affected_components": [
+        "C022",
+        "C026"
+      ]
+    },
+    {
+      "id": "T005",
+      "numericId": 5,
+      "threatSource": "workshop attendee",
+      "prerequisites": "with physical access to their own ESP32 board",
+      "threatAction": "dump the board's flash over USB and recover its device private key, certificate and the WiFi PSK",
+      "threatImpact": "the attendee holding a broker-trusted device identity and access to the workshop AP, enabling the broker-level attacks",
+      "impactedGoal": [],
+      "impactedAssets": [
+        "A001",
+        "A005"
+      ],
+      "metadata": [],
+      "statement": "A workshop attendee with physical access to their own ESP32 board can dump the board's flash over USB and recover its device private key, certificate and the WiFi PSK, which leads to the attendee holding a broker-trusted device identity and access to the workshop AP, enabling the broker-level attacks",
+      "displayOrder": 5,
+      "status": "threatIdentified",
+      "tags": [
+        "physical",
+        "no-flash-encryption"
+      ],
+      "category": "Information Disclosure",
+      "severity": "Medium",
+      "likelihood": "Very Likely",
+      "affected_components": [
+        "C001"
+      ]
+    },
+    {
+      "id": "T006",
+      "numericId": 6,
+      "threatSource": "workshop attendee",
+      "prerequisites": "with a device certificate extracted from their own board",
+      "threatAction": "publish an ota-update with no sigAlg, a URL to their own HTTPS server and a matching sha256 to another device's cmd/<thing>/ota",
+      "threatImpact": "any device variant installing attacker-chosen firmware, because devices skip signature checks when sigAlg is absent and do not verify the download server's TLS certificate",
+      "impactedGoal": [],
+      "impactedAssets": [
+        "A007",
+        "A006"
+      ],
+      "metadata": [],
+      "statement": "A workshop attendee with a device certificate extracted from their own board can publish an ota-update with no sigAlg, a URL to their own HTTPS server and a matching sha256 to another device's cmd/<thing>/ota, which leads to any device variant installing attacker-chosen firmware, because devices skip signature checks when sigAlg is absent and do not verify the download server's TLS certificate",
+      "displayOrder": 6,
+      "status": "threatIdentified",
+      "tags": [
+        "broker-acl",
+        "ota",
+        "signature-downgrade"
+      ],
+      "category": "Tampering",
+      "severity": "Critical",
+      "likelihood": "Likely",
+      "affected_components": [
+        "C005",
+        "C001"
+      ]
+    },
+    {
+      "id": "T007",
+      "numericId": 7,
+      "threatSource": "workshop attendee",
+      "prerequisites": "with a device certificate extracted from their own board",
+      "threatAction": "publish dt/<other-thing>/telemetry or lifecycle messages for devices they do not own",
+      "threatImpact": "fake telemetry and PQC status for other attendees' devices on the dashboard and in the message log",
+      "impactedGoal": [],
+      "impactedAssets": [
+        "A008"
+      ],
+      "metadata": [],
+      "statement": "A workshop attendee with a device certificate extracted from their own board can publish dt/<other-thing>/telemetry or lifecycle messages for devices they do not own, which leads to fake telemetry and PQC status for other attendees' devices on the dashboard and in the message log",
+      "displayOrder": 7,
+      "status": "threatIdentified",
+      "tags": [
+        "broker-acl"
+      ],
+      "category": "Spoofing",
+      "severity": "Medium",
+      "likelihood": "Likely",
+      "affected_components": [
+        "C005",
+        "C006",
+        "C008"
+      ]
+    },
+    {
+      "id": "T008",
+      "numericId": 8,
+      "threatSource": "attacker",
+      "prerequisites": "who obtained a device private key",
+      "threatAction": "reuse a deregistered or stolen device certificate to keep connecting to the broker indefinitely",
+      "threatImpact": "removed devices staying trusted, because the broker trusts any CA-issued cert, does not check the registry, and both CAs have CRLs disabled",
+      "impactedGoal": [],
+      "impactedAssets": [
+        "A001"
+      ],
+      "metadata": [],
+      "statement": "A attacker who obtained a device private key can reuse a deregistered or stolen device certificate to keep connecting to the broker indefinitely, which leads to removed devices staying trusted, because the broker trusts any CA-issued cert, does not check the registry, and both CAs have CRLs disabled",
+      "displayOrder": 8,
+      "status": "threatIdentified",
+      "tags": [
+        "revocation",
+        "pki"
+      ],
+      "category": "Spoofing",
+      "severity": "High",
+      "likelihood": "Likely",
+      "affected_components": [
+        "C005",
+        "C020",
+        "C021",
+        "C013"
+      ]
+    },
+    {
+      "id": "T009",
+      "numericId": 9,
+      "threatSource": "user on the workshop WiFi",
+      "prerequisites": "with the shared PSK",
+      "threatAction": "drive the unauthenticated Builder-Pi GUI to deregister or reflash other attendees' devices and read their serial consoles",
+      "threatImpact": "disruption of other attendees' devices and exposure of serial output",
+      "impactedGoal": [],
+      "impactedAssets": [
+        "A010"
+      ],
+      "metadata": [],
+      "statement": "A user on the workshop WiFi with the shared PSK can drive the unauthenticated Builder-Pi GUI to deregister or reflash other attendees' devices and read their serial consoles, which leads to disruption of other attendees' devices and exposure of serial output",
+      "displayOrder": 9,
+      "status": "threatIdentified",
+      "tags": [
+        "builder-pi",
+        "no-auth"
+      ],
+      "category": "Elevation of Privilege",
+      "severity": "High",
+      "likelihood": "Likely",
+      "affected_components": [
+        "C003",
+        "C002"
+      ]
+    },
+    {
+      "id": "T010",
+      "numericId": 10,
+      "threatSource": "user on the workshop WiFi",
+      "prerequisites": "with the shared PSK",
+      "threatAction": "POST to the Builder-Pi /api/config to re-point the firmware bucket or API endpoint to attacker-controlled resources",
+      "threatImpact": "the Pi flashing attacker-supplied firmware onto the next boards plugged into the station",
+      "impactedGoal": [],
+      "impactedAssets": [
+        "A006",
+        "A010"
+      ],
+      "metadata": [],
+      "statement": "A user on the workshop WiFi with the shared PSK can POST to the Builder-Pi /api/config to re-point the firmware bucket or API endpoint to attacker-controlled resources, which leads to the Pi flashing attacker-supplied firmware onto the next boards plugged into the station",
+      "displayOrder": 10,
+      "status": "threatIdentified",
+      "tags": [
+        "builder-pi",
+        "no-auth",
+        "csrf"
+      ],
+      "category": "Tampering",
+      "severity": "High",
+      "likelihood": "Possible",
+      "affected_components": [
+        "C003"
+      ]
+    },
+    {
+      "id": "T011",
+      "numericId": 11,
+      "threatSource": "attacker",
+      "prerequisites": "with root on the Builder-Pi or its role credentials",
+      "threatAction": "use the Pi role to download every device's firmware from the firmware bucket",
+      "threatImpact": "disclosure of every device private key and the PSK, allowing impersonation of the whole fleet",
+      "impactedGoal": [],
+      "impactedAssets": [
+        "A001",
+        "A006",
+        "A010"
+      ],
+      "metadata": [],
+      "statement": "A attacker with root on the Builder-Pi or its role credentials can use the Pi role to download every device's firmware from the firmware bucket, which leads to disclosure of every device private key and the PSK, allowing impersonation of the whole fleet",
+      "displayOrder": 11,
+      "status": "threatIdentified",
+      "tags": [
+        "builder-pi",
+        "least-privilege"
+      ],
+      "category": "Information Disclosure",
+      "severity": "High",
+      "likelihood": "Possible",
+      "affected_components": [
+        "C003",
+        "D001"
+      ]
+    },
+    {
+      "id": "T012",
+      "numericId": 12,
+      "threatSource": "attacker",
+      "prerequisites": "with a leaked Builder-Pi bundle within its 7-day validity",
+      "threatAction": "register their own machine with the hybrid activation code",
+      "threatImpact": "a rogue managed instance holding the Builder-Pi role, with the same bucket, registry and PSK access as the real Pi",
+      "impactedGoal": [],
+      "impactedAssets": [
+        "A010"
+      ],
+      "metadata": [],
+      "statement": "A attacker with a leaked Builder-Pi bundle within its 7-day validity can register their own machine with the hybrid activation code, which leads to a rogue managed instance holding the Builder-Pi role, with the same bucket, registry and PSK access as the real Pi",
+      "displayOrder": 12,
+      "status": "threatIdentified",
+      "tags": [
+        "ssm",
+        "builder-pi"
+      ],
+      "category": "Elevation of Privilege",
+      "severity": "High",
+      "likelihood": "Possible",
+      "affected_components": [
+        "C027",
+        "C003"
+      ]
+    },
+    {
+      "id": "T013",
+      "numericId": 13,
+      "threatSource": "user or role with read-only account access",
+      "prerequisites": "with CodeBuild, Step Functions or DynamoDB read permissions",
+      "threatAction": "read the workshop WiFi PSK from the CodeBuild project environment, build details, Step Functions execution history or the registry table",
+      "threatImpact": "disclosure of the PSK outside its SecureString",
+      "impactedGoal": [],
+      "impactedAssets": [
+        "A005"
+      ],
+      "metadata": [],
+      "statement": "A user or role with read-only account access with CodeBuild, Step Functions or DynamoDB read permissions can read the workshop WiFi PSK from the CodeBuild project environment, build details, Step Functions execution history or the registry table, which leads to disclosure of the PSK outside its SecureString",
+      "displayOrder": 13,
+      "status": "threatIdentified",
+      "tags": [
+        "secrets-handling"
+      ],
+      "category": "Information Disclosure",
+      "severity": "Medium",
+      "likelihood": "Likely",
+      "affected_components": [
+        "C017",
+        "C015",
+        "D002",
+        "C003"
+      ]
+    },
+    {
+      "id": "T014",
+      "numericId": 14,
+      "threatSource": "workshop attendee",
+      "prerequisites": "with the extracted PSK and network position in the room",
+      "threatAction": "run a rogue AP with the workshop SSID and PSK and present any certificate chaining to the workshop CA",
+      "threatImpact": "a man-in-the-middle on devices that associate with it, because the firmware checks the chain but not the broker hostname or SAN",
+      "impactedGoal": [],
+      "impactedAssets": [
+        "A008",
+        "A007"
+      ],
+      "metadata": [],
+      "statement": "A workshop attendee with the extracted PSK and network position in the room can run a rogue AP with the workshop SSID and PSK and present any certificate chaining to the workshop CA, which leads to a man-in-the-middle on devices that associate with it, because the firmware checks the chain but not the broker hostname or SAN",
+      "displayOrder": 14,
+      "status": "threatIdentified",
+      "tags": [
+        "tls",
+        "hostname-check"
+      ],
+      "category": "Spoofing",
+      "severity": "High",
+      "likelihood": "Possible",
+      "affected_components": [
+        "C001",
+        "C002"
+      ]
+    },
+    {
+      "id": "T015",
+      "numericId": 15,
+      "threatSource": "compromised upstream package source",
+      "prerequisites": "such as the Ubuntu apt mirror, oqs-provider source, Arduino ESP32 core or npm registry",
+      "threatAction": "inject code into the broker, cert-issuer or firmware-builder image builds",
+      "threatImpact": "theft of the OTA signer keys and abuse of CA issuance, so malicious firmware can be signed for the whole fleet",
+      "impactedGoal": [],
+      "impactedAssets": [
+        "A002",
+        "A003",
+        "A006"
+      ],
+      "metadata": [],
+      "statement": "A compromised upstream package source such as the Ubuntu apt mirror, oqs-provider source, Arduino ESP32 core or npm registry can inject code into the broker, cert-issuer or firmware-builder image builds, which leads to theft of the OTA signer keys and abuse of CA issuance, so malicious firmware can be signed for the whole fleet",
+      "displayOrder": 15,
+      "status": "threatIdentified",
+      "tags": [
+        "supply-chain"
+      ],
+      "category": "Tampering",
+      "severity": "Critical",
+      "likelihood": "Unlikely",
+      "affected_components": [
+        "C029",
+        "C017",
+        "C018"
+      ]
+    },
+    {
+      "id": "T016",
+      "numericId": 16,
+      "threatSource": "insider or compromised principal",
+      "prerequisites": "with ECR push permissions",
+      "threatAction": "push a replacement image under the mutable :latest tag in ECR",
+      "threatImpact": "Fargate and CodeBuild silently running attacker code with broker secrets or signer-key access on the next start",
+      "impactedGoal": [],
+      "impactedAssets": [
+        "A002",
+        "A004"
+      ],
+      "metadata": [],
+      "statement": "A insider or compromised principal with ECR push permissions can push a replacement image under the mutable :latest tag in ECR, which leads to Fargate and CodeBuild silently running attacker code with broker secrets or signer-key access on the next start",
+      "displayOrder": 16,
+      "status": "threatIdentified",
+      "tags": [
+        "supply-chain",
+        "ecr"
+      ],
+      "category": "Tampering",
+      "severity": "High",
+      "likelihood": "Unlikely",
+      "affected_components": [
+        "D007",
+        "C005",
+        "C017"
+      ]
+    },
+    {
+      "id": "T017",
+      "numericId": 17,
+      "threatSource": "anonymous internet user",
+      "prerequisites": "with Cognito guest credentials",
+      "threatAction": "repeatedly call migrateFirmware across many devices",
+      "threatImpact": "queued or throttled CodeBuild builds that stall real migrations during the session, plus avoidable build cost",
+      "impactedGoal": [],
+      "impactedAssets": [
+        "A009"
+      ],
+      "metadata": [],
+      "statement": "A anonymous internet user with Cognito guest credentials can repeatedly call migrateFirmware across many devices, which leads to queued or throttled CodeBuild builds that stall real migrations during the session, plus avoidable build cost",
+      "displayOrder": 17,
+      "status": "threatIdentified",
+      "tags": [
+        "appsync",
+        "cost"
+      ],
+      "category": "Denial of Service",
+      "severity": "Medium",
+      "likelihood": "Possible",
+      "affected_components": [
+        "C022",
+        "C014",
+        "C015",
+        "C017"
+      ]
+    },
+    {
+      "id": "T018",
+      "numericId": 18,
+      "threatSource": "internet attacker",
+      "prerequisites": "with modest bandwidth",
+      "threatAction": "flood the NLB on 8883/8884 with TLS handshakes",
+      "threatImpact": "exhaustion of the single Fargate broker task, disconnecting every device",
+      "impactedGoal": [],
+      "impactedAssets": [],
+      "metadata": [],
+      "statement": "A internet attacker with modest bandwidth can flood the NLB on 8883/8884 with TLS handshakes, which leads to exhaustion of the single Fargate broker task, disconnecting every device",
+      "displayOrder": 18,
+      "status": "threatIdentified",
+      "tags": [
+        "availability"
+      ],
+      "category": "Denial of Service",
+      "severity": "Medium",
+      "likelihood": "Possible",
+      "affected_components": [
+        "C004",
+        "C005"
+      ]
+    },
+    {
+      "id": "T019",
+      "numericId": 19,
+      "threatSource": "anonymous internet user",
+      "prerequisites": "with Cognito guest credentials",
+      "threatAction": "migrate or overwrite devices through AppSync",
+      "threatImpact": "actions that cannot be attributed to a person, because all callers share the unauthenticated role",
+      "impactedGoal": [],
+      "impactedAssets": [
+        "A009"
+      ],
+      "metadata": [],
+      "statement": "A anonymous internet user with Cognito guest credentials can migrate or overwrite devices through AppSync, which leads to actions that cannot be attributed to a person, because all callers share the unauthenticated role",
+      "displayOrder": 19,
+      "status": "threatIdentified",
+      "tags": [
+        "audit",
+        "anonymous-access"
+      ],
+      "category": "Repudiation",
+      "severity": "Medium",
+      "likelihood": "Likely",
+      "affected_components": [
+        "C022",
+        "C023"
+      ]
+    },
+    {
+      "id": "T020",
+      "numericId": 20,
+      "threatSource": "attacker",
+      "prerequisites": "who compromises the broker task, e.g. via a Mosquitto or oqs-provider flaw",
+      "threatAction": "publish to dt/* and $aws/things/*/shadow/* and receive cmd/* for every device through the bridge identity",
+      "threatImpact": "fleet-wide telemetry spoofing and command interception in IoT Core from one compromised component",
+      "impactedGoal": [],
+      "impactedAssets": [
+        "A004",
+        "A008",
+        "A007"
+      ],
+      "metadata": [],
+      "statement": "A attacker who compromises the broker task, e.g. via a Mosquitto or oqs-provider flaw can publish to dt/* and $aws/things/*/shadow/* and receive cmd/* for every device through the bridge identity, which leads to fleet-wide telemetry spoofing and command interception in IoT Core from one compromised component",
+      "displayOrder": 20,
+      "status": "threatIdentified",
+      "tags": [
+        "broker",
+        "least-privilege"
+      ],
+      "category": "Elevation of Privilege",
+      "severity": "Medium",
+      "likelihood": "Unlikely",
+      "affected_components": [
+        "C005",
+        "C006",
+        "C007"
+      ]
+    },
+    {
+      "id": "T021",
+      "numericId": 21,
+      "threatSource": "maintainer making a mistake",
+      "prerequisites": "with publish rights",
+      "threatAction": "publish real account IDs, the PSK, .kiro notes or the threat model to the public mirror or the Workshop Studio source zip",
+      "threatImpact": "public disclosure of internal details and an attack roadmap",
+      "impactedGoal": [],
+      "impactedAssets": [],
+      "metadata": [],
+      "statement": "A maintainer making a mistake with publish rights can publish real account IDs, the PSK, .kiro notes or the threat model to the public mirror or the Workshop Studio source zip, which leads to public disclosure of internal details and an attack roadmap",
+      "displayOrder": 21,
+      "status": "threatIdentified",
+      "tags": [
+        "release-process"
+      ],
+      "category": "Information Disclosure",
+      "severity": "Medium",
+      "likelihood": "Possible",
+      "affected_components": [
+        "C028"
+      ]
+    },
+    {
+      "id": "T022",
+      "numericId": 22,
+      "threatSource": "harvest-now-decrypt-later adversary",
+      "prerequisites": "with a future cryptographically relevant quantum computer",
+      "threatAction": "record and later decrypt the classical-only links: bridge TLS 1.2, Builder-Pi HTTPS and the OTA firmware download from S3",
+      "threatImpact": "future disclosure of telemetry and of key-bearing firmware images, contrary to the workshop's PQC message",
+      "impactedGoal": [],
+      "impactedAssets": [
+        "A006",
+        "A008"
+      ],
+      "metadata": [],
+      "statement": "A harvest-now-decrypt-later adversary with a future cryptographically relevant quantum computer can record and later decrypt the classical-only links: bridge TLS 1.2, Builder-Pi HTTPS and the OTA firmware download from S3, which leads to future disclosure of telemetry and of key-bearing firmware images, contrary to the workshop's PQC message",
+      "displayOrder": 22,
+      "status": "threatIdentified",
+      "tags": [
+        "pqc",
+        "hndl"
+      ],
+      "category": "Information Disclosure",
+      "severity": "Low",
+      "likelihood": "Unlikely",
+      "affected_components": [
+        "C006",
+        "C003",
+        "C001"
+      ]
+    },
+    {
+      "id": "T023",
+      "numericId": 23,
+      "threatSource": "workshop attendee",
+      "prerequisites": "with a rogue AP using the workshop SSID and extracted PSK",
+      "threatAction": "intercept a device's OTA download, which does not verify the server certificate, and serve or capture the image",
+      "threatImpact": "capture of key-bearing firmware images, and installation of a modified image on any device sent an unsigned OTA",
+      "impactedGoal": [],
+      "impactedAssets": [
+        "A006",
+        "A001",
+        "A005"
+      ],
+      "metadata": [],
+      "statement": "A workshop attendee with a rogue AP using the workshop SSID and extracted PSK can intercept a device's OTA download, which does not verify the server certificate, and serve or capture the image, which leads to capture of key-bearing firmware images, and installation of a modified image on any device sent an unsigned OTA",
+      "displayOrder": 23,
+      "status": "threatIdentified",
+      "tags": [
+        "ota",
+        "tls",
+        "rogue-ap"
+      ],
+      "category": "Tampering",
+      "severity": "High",
+      "likelihood": "Possible",
+      "affected_components": [
+        "C001",
+        "C002"
+      ]
+    }
+  ],
   "mitigations": [],
   "assumptions": [],
   "mitigationLinks": [],
@@ -39,7 +689,7 @@
       "service_provider": "Other",
       "specific_service": "ESP32-S3 (XIAO) Arduino firmware, wolfSSL 5.7+, FreeRTOS",
       "version": null,
-      "description": "Three variants: v1 classical (ECDHE + ECDSA cert, port 8883), pqc (SecP256r1MLKEM768 + ECDSA cert, 8883), v3 mldsa (ML-KEM + ML-DSA-44 cert, 8884). mTLS to the broker with WOLFSSL_VERIFY_PEER chain check only (no hostname/SAN check). Publishes dt/<thing>/telemetry and lifecycle, subscribes cmd/<thing>/+. Dual-boot OTA: downloads firmware over HTTPS from a presigned S3 URL, checks sha256 and (signed variants) an ECDSA-P256 or ML-DSA-44 signature chained to a baked signer CA root.",
+      "description": "Three variants: v1 classical (ECDHE + ECDSA cert, port 8883), pqc (SecP256r1MLKEM768 + ECDSA cert, 8883), v3 mldsa (ML-KEM + ML-DSA-44 cert, 8884). mTLS to the broker with WOLFSSL_VERIFY_PEER chain check only (no hostname/SAN check). Publishes dt/<thing>/telemetry and lifecycle, subscribes cmd/<thing>/+. Dual-boot OTA: downloads from the URL in the command over TLS with WOLFSSL_VERIFY_NONE (no server cert check), enforces the sha256 from the same command if present, and verifies an ECDSA-P256 or ML-DSA-44 signature ONLY when the command includes sigAlg; an OTA without sigAlg is installed unsigned in all three variants.",
       "configuration": null
     },
     {
@@ -683,7 +1333,7 @@
       "protocol": "HTTPS",
       "port": 443,
       "encryption": true,
-      "description": "Device downloads firmware.bin (+ .sig, signer.crt) from the presigned regional S3 URL over the workshop WiFi and internet; TLS verified against a baked S3 root CA; sha256 and signature checked before applying."
+      "description": "Device downloads firmware.bin (+ .sig, signer.crt) from the URL in the OTA command. TLS uses WOLFSSL_VERIFY_NONE, so the server certificate is not checked and the host is whatever the command says. sha256 (from the command) is enforced if present; the signature is checked only when the command carries sigAlg."
     },
     {
       "id": "CN040",
@@ -1129,12 +1779,1408 @@
       "description": "Device private key, certificate, CA roots, OTA signer roots and WiFi PSK compiled into the app image in flash (PROGMEM). No ESP32 flash encryption or secure boot configured in the build FQBN as far as found, so anyone with the board can read them over USB."
     }
   ],
-  "threatActors": [],
-  "trustZones": [],
-  "crossingPoints": [],
-  "trustBoundaries": [],
-  "assets": [],
-  "flows": [],
+  "threatActors": [
+    {
+      "id": "TA001",
+      "type": "Insider Threat",
+      "name": "Insider",
+      "sophistication_tier": "Tier 2 - Hacktivist / campaign-driven",
+      "motivations": [
+        "Financial gain",
+        "Revenge / grievance"
+      ],
+      "resources": "Individual",
+      "description": "A team member or contractor with repo or account access (GitLab, Workshop Studio, pqc-a/pqc-b) who abuses it. Covers the disgruntled-employee case.",
+      "priority": 8,
+      "is_relevant": true,
+      "reviewed": true,
+      "relationship_to_target": "Internal",
+      "state_nexus": "None",
+      "targeting_specificity": "Targeted"
+    },
+    {
+      "id": "TA002",
+      "type": "External Attacker",
+      "name": "External Attacker",
+      "sophistication_tier": "Tier 2 - Hacktivist / campaign-driven",
+      "motivations": [
+        "Thrill-seeking / notoriety",
+        "Disruption / destruction"
+      ],
+      "resources": "Club / small group",
+      "description": "An external attacker who has read the public aws-samples repo, so knows the architecture, topic layout, resource names and the anonymous Cognito/AppSync design, and targets a live workshop deployment during an event window. Can abuse AppSync migrateFirmware to start CodeBuild builds and OTA pushes, tamper with dashboard state, and read message/broker logs.",
+      "priority": 3,
+      "is_relevant": true,
+      "reviewed": true,
+      "relationship_to_target": "External",
+      "state_nexus": "None",
+      "targeting_specificity": "Targeted"
+    },
+    {
+      "id": "TA003",
+      "type": "Nation-State / APT",
+      "name": "Nation-state Actor",
+      "sophistication_tier": "Tier 5 - Nation-state APT / elite",
+      "motivations": [
+        "Espionage / intelligence collection"
+      ],
+      "resources": "Government",
+      "description": "Harvest-now-decrypt-later adversary recording TLS traffic for future quantum decryption. This is the workshop's teaching premise rather than a realistic target: the telemetry has little intelligence value. Relevant mainly to confirm classical-only links (bridge TLS 1.2, Builder-Pi HTTPS, OTA download) are understood.",
+      "priority": 9,
+      "is_relevant": true,
+      "reviewed": true,
+      "relationship_to_target": "External",
+      "state_nexus": "State-executed",
+      "targeting_specificity": "Targeted"
+    },
+    {
+      "id": "TA004",
+      "type": "Hacktivist",
+      "name": "Hacktivist",
+      "sophistication_tier": "Tier 2 - Hacktivist / campaign-driven",
+      "motivations": [
+        "Ideological / hacktivism"
+      ],
+      "resources": "Contest / crowd",
+      "description": "A group wanting a visible stunt at a high-profile event, e.g. defacing or disrupting the live re:Invent PQC demo or showing the 'post-quantum' devices can be hijacked.",
+      "priority": 7,
+      "is_relevant": true,
+      "reviewed": true,
+      "relationship_to_target": "External",
+      "state_nexus": "None",
+      "targeting_specificity": "Sector-focused"
+    },
+    {
+      "id": "TA005",
+      "type": "Financially Motivated Cybercriminal / Organized Crime",
+      "name": "Organized Crime",
+      "sophistication_tier": "Tier 3 - Organized cybercrime",
+      "motivations": [
+        "Financial gain"
+      ],
+      "resources": "Organization",
+      "description": "Criminals who find the anonymous AppSync API or leaked operator/Pi credentials and abuse the account for cost (repeated CodeBuild firmware builds via migrateFirmware, compute) or pivot using the Admin-level operator role. Workshop data itself has little resale value.",
+      "priority": 5,
+      "is_relevant": true,
+      "reviewed": true,
+      "relationship_to_target": "External",
+      "state_nexus": "None",
+      "targeting_specificity": "Opportunistic"
+    },
+    {
+      "id": "TA006",
+      "type": "Competitor / Corporate Espionage",
+      "name": "Competitor",
+      "sophistication_tier": "Tier 3 - Organized cybercrime",
+      "motivations": [
+        "Competitive advantage",
+        "Espionage / intelligence collection"
+      ],
+      "resources": "Organization",
+      "description": "No competitive value in an open-source educational sample.",
+      "priority": 0,
+      "is_relevant": false,
+      "reviewed": true,
+      "relationship_to_target": "External",
+      "state_nexus": "None",
+      "targeting_specificity": "Targeted"
+    },
+    {
+      "id": "TA007",
+      "type": "Script Kiddie / Novice",
+      "name": "Script Kiddie",
+      "sophistication_tier": "Tier 1 - Opportunistic / script kiddie",
+      "motivations": [
+        "Thrill-seeking / notoriety"
+      ],
+      "resources": "Individual",
+      "description": "Automated internet scanning and commodity tooling. Finds the internet-facing NLB on 8883/8884, the public builder API and the CloudFront dashboard; can pull the Cognito identity pool ID from the public config.json and call the anonymous AppSync API (list/overwrite devices, trigger migrations). Mostly blocked at the broker by mTLS.",
+      "priority": 2,
+      "is_relevant": true,
+      "reviewed": true,
+      "relationship_to_target": "External",
+      "state_nexus": "None",
+      "targeting_specificity": "Opportunistic"
+    },
+    {
+      "id": "TA008",
+      "type": "Disgruntled Employee",
+      "name": "Disgruntled Employee",
+      "sophistication_tier": "Tier 1 - Opportunistic / script kiddie",
+      "motivations": [
+        "Revenge / grievance"
+      ],
+      "resources": "Individual",
+      "description": "Covered by TA001 Insider for this system.",
+      "priority": 0,
+      "is_relevant": false,
+      "reviewed": true,
+      "relationship_to_target": "Internal",
+      "state_nexus": "None",
+      "targeting_specificity": "Targeted"
+    },
+    {
+      "id": "TA009",
+      "type": "Privileged User",
+      "name": "Privileged User",
+      "sophistication_tier": "Tier 2 - Hacktivist / campaign-driven",
+      "motivations": [
+        "Financial gain"
+      ],
+      "resources": "Individual",
+      "description": "The workshop operator or sample maintainer making a mistake with Admin credentials: deploying into the wrong account, leaking the Builder-Pi bundle (7-day SSM activation code), committing real account IDs/PSK, or publishing internal content (.kiro/, .threatmodel/) to the public mirror.",
+      "priority": 6,
+      "is_relevant": true,
+      "reviewed": true,
+      "relationship_to_target": "Internal",
+      "state_nexus": "None",
+      "targeting_specificity": "Targeted"
+    },
+    {
+      "id": "TA010",
+      "type": "Third Party",
+      "name": "Supply-chain compromise",
+      "sophistication_tier": "Tier 2 - Hacktivist / campaign-driven",
+      "motivations": [
+        "Financial gain"
+      ],
+      "resources": "Organization",
+      "description": "A compromised upstream the build trusts: the Ubuntu apt mirror and oqs-provider/OpenSSL sources in the broker and firmware-builder image builds, Arduino ESP32 core and library indexes, npm packages in the dashboard build, uvx/npx-fetched tooling, and mutable :latest ECR tags. Malicious code would run with CodeBuild role access to the CAs, signer keys and firmware bucket.",
+      "priority": 4,
+      "is_relevant": true,
+      "reviewed": true,
+      "relationship_to_target": "Partner / third-party",
+      "state_nexus": "None",
+      "targeting_specificity": "Opportunistic"
+    },
+    {
+      "id": "TA011",
+      "type": "Terrorist Organization",
+      "name": "Terrorist Organization",
+      "sophistication_tier": "Tier 2 - Hacktivist / campaign-driven",
+      "motivations": [
+        "Ideological / hacktivism",
+        "Disruption / destruction"
+      ],
+      "resources": "Club / small group",
+      "description": "A group with limited offensive cyber capability, primarily using the internet for propaganda and recruitment",
+      "priority": 0,
+      "is_relevant": false,
+      "reviewed": true,
+      "relationship_to_target": "External",
+      "state_nexus": "None",
+      "targeting_specificity": "Sector-focused"
+    },
+    {
+      "id": "TA012",
+      "type": "Private Sector Offensive Actor / Cyber Mercenary",
+      "name": "Private Sector Offensive Actor",
+      "sophistication_tier": "Tier 4 - State-nexus / advanced",
+      "motivations": [
+        "Financial gain"
+      ],
+      "resources": "Organization",
+      "description": "No high-value individual targets in this system.",
+      "priority": 0,
+      "is_relevant": false,
+      "reviewed": true,
+      "relationship_to_target": "External",
+      "state_nexus": "State-aligned",
+      "targeting_specificity": "Targeted"
+    },
+    {
+      "id": "TA013",
+      "type": "Other",
+      "name": "Curious or malicious on-site attendee",
+      "sophistication_tier": "Tier 2 - Hacktivist / campaign-driven",
+      "motivations": [
+        "Thrill-seeking / notoriety",
+        "Disruption / destruction"
+      ],
+      "resources": "Individual",
+      "description": "A workshop attendee (often a security practitioner) in the room with legitimate physical access to an ESP32 board, the Builder-Pi USB station and the workshop WiFi, plus the public dashboard. Can dump their own board's flash over USB to recover its device private key and the shared WiFi PSK, join the AP, drive the unauthenticated Builder-Pi GUI on :8080, connect to the broker with their extracted cert and publish to other devices' cmd/<thing>/ota or dt topics (no broker ACLs), and call the anonymous AppSync API to migrate or overwrite other attendees' devices. Motive is curiosity, a demo of skill, or disrupting the session; impact is a broken workshop in front of an audience.",
+      "priority": 1,
+      "is_relevant": true,
+      "reviewed": true,
+      "relationship_to_target": "Partner / third-party",
+      "state_nexus": "None",
+      "targeting_specificity": "Targeted"
+    }
+  ],
+  "trustZones": [
+    {
+      "id": "TZ001",
+      "name": "Field devices",
+      "trust_level": "Low",
+      "contained_nodes": [
+        "C001",
+        "D011"
+      ],
+      "description": "ESP32 boards and their flash. Physically in attendees' hands, so device keys and the WiFi PSK must be treated as extractable."
+    },
+    {
+      "id": "TZ002",
+      "name": "Workshop venue network",
+      "trust_level": "Low",
+      "contained_nodes": [
+        "C002"
+      ],
+      "description": "The 2.4GHz WPA2-PSK workshop AP. Everyone in the room shares one PSK, which is also inside every firmware image."
+    },
+    {
+      "id": "TZ003",
+      "name": "Public internet clients",
+      "trust_level": "Untrusted",
+      "contained_nodes": [
+        "C025"
+      ],
+      "description": "Browsers running the dashboard and any anonymous internet client."
+    },
+    {
+      "id": "TZ004",
+      "name": "AWS public edge",
+      "trust_level": "Low",
+      "contained_nodes": [
+        "C004",
+        "C011",
+        "C022",
+        "C023",
+        "C024",
+        "D008"
+      ],
+      "description": "Internet-reachable AWS front doors: broker NLB (0.0.0.0/0 on 8883/8884), builder API (SigV4), Cognito identity pool and AppSync (anonymous guest access), CloudFront and its hosting bucket."
+    },
+    {
+      "id": "TZ005",
+      "name": "Broker VPC private subnets",
+      "trust_level": "Medium",
+      "contained_nodes": [
+        "C005",
+        "C006",
+        "C030"
+      ],
+      "description": "Fargate Mosquitto broker and its IoT Core bridge in private subnets with no public IP; egress via NAT gateway and VPC endpoints."
+    },
+    {
+      "id": "TZ006",
+      "name": "IoT and event processing",
+      "trust_level": "Medium",
+      "contained_nodes": [
+        "C007",
+        "C008",
+        "C009",
+        "C010",
+        "C026",
+        "D003",
+        "D004",
+        "D010"
+      ],
+      "description": "AWS IoT Core and rules, telemetry/message/auto-register/broker-log Lambdas, the dashboard devices table, message log and CloudWatch logs."
+    },
+    {
+      "id": "TZ007",
+      "name": "Device management backend",
+      "trust_level": "Medium",
+      "contained_nodes": [
+        "C012",
+        "C013",
+        "C014",
+        "C015",
+        "C016",
+        "D002"
+      ],
+      "description": "Registrar, deregistrar, firmware-pusher, start-migration, prepare-build and publish-OTA Lambdas, the migration state machine, and the device registry."
+    },
+    {
+      "id": "TZ008",
+      "name": "Build and PKI",
+      "trust_level": "High",
+      "contained_nodes": [
+        "C017",
+        "C018",
+        "C019",
+        "C020",
+        "C021",
+        "C029",
+        "D001",
+        "D005",
+        "D006",
+        "D007",
+        "D009"
+      ],
+      "description": "Firmware and image CodeBuild projects, the cert and bridge provisioners, both ACM Private CAs, Secrets Manager (broker, signer and bridge keys), SSM parameters (WiFi PSK), ECR, the firmware bucket and build source buckets. Compromise here lets an attacker mint identities or sign firmware."
+    },
+    {
+      "id": "TZ009",
+      "name": "Operator administration",
+      "trust_level": "High",
+      "contained_nodes": [
+        "C027",
+        "C028"
+      ],
+      "description": "The operator's deploy workstation with Admin credentials, and SSM fleet management (hybrid activation, Run Command documents) that controls the Builder-Pi."
+    },
+    {
+      "id": "TZ010",
+      "name": "Builder-Pi edge host",
+      "trust_level": "Medium",
+      "contained_nodes": [
+        "C003"
+      ],
+      "description": "On-site Raspberry Pi holding SSM-rotated AWS role credentials (whole firmware bucket, registry, WiFi PSK, builder API). Its Flask GUI on :8080 is unauthenticated."
+    }
+  ],
+  "crossingPoints": [
+    {
+      "id": "CP001",
+      "source_zone_id": "TZ001",
+      "destination_zone_id": "TZ002",
+      "connection_ids": [
+        "CN001"
+      ],
+      "authentication_method": "Password",
+      "authorization_method": "None",
+      "description": "Device joins the workshop AP with the shared WPA2 PSK."
+    },
+    {
+      "id": "CP002",
+      "source_zone_id": "TZ001",
+      "destination_zone_id": "TZ004",
+      "connection_ids": [
+        "CN002",
+        "CN003"
+      ],
+      "authentication_method": "Certificate",
+      "authorization_method": "None",
+      "description": "Device MQTT/TLS 1.3 to the internet-facing NLB on 8883/8884. NLB is TCP passthrough; no auth at the NLB, SG open to 0.0.0.0/0."
+    },
+    {
+      "id": "CP003",
+      "source_zone_id": "TZ004",
+      "destination_zone_id": "TZ005",
+      "connection_ids": [
+        "CN004"
+      ],
+      "authentication_method": "Certificate",
+      "authorization_method": "None",
+      "description": "NLB to Mosquitto. Broker enforces mTLS (require_certificate, CA per listener) but has NO topic ACLs, so any authenticated device can act on any topic."
+    },
+    {
+      "id": "CP004",
+      "source_zone_id": "TZ005",
+      "destination_zone_id": "TZ001",
+      "connection_ids": [
+        "CN006"
+      ],
+      "authentication_method": "Certificate",
+      "authorization_method": "None",
+      "description": "Broker downlink (OTA, control) to devices over their TLS sessions. Device verifies the broker chain only, no hostname/SAN check; topic origin is not authenticated."
+    },
+    {
+      "id": "CP005",
+      "source_zone_id": "TZ005",
+      "destination_zone_id": "TZ006",
+      "connection_ids": [
+        "CN008",
+        "CN013"
+      ],
+      "authentication_method": "Certificate",
+      "authorization_method": "Policy-based",
+      "description": "Bridge publishes dt/+/telemetry to IoT Core with its IoT cert (wildcard dt/* policy); broker logs to CloudWatch via the task role."
+    },
+    {
+      "id": "CP006",
+      "source_zone_id": "TZ006",
+      "destination_zone_id": "TZ005",
+      "connection_ids": [
+        "CN009"
+      ],
+      "authentication_method": "Certificate",
+      "authorization_method": "Policy-based",
+      "description": "IoT Core delivers cmd/# to the bridge subscription (wildcard cmd/* policy)."
+    },
+    {
+      "id": "CP007",
+      "source_zone_id": "TZ005",
+      "destination_zone_id": "TZ008",
+      "connection_ids": [
+        "CN011",
+        "CN012"
+      ],
+      "authentication_method": "IAM Role",
+      "authorization_method": "Policy-based",
+      "description": "Broker task reads its secrets and pulls its image via VPC endpoints (task/execution roles scoped to named secrets and repo)."
+    },
+    {
+      "id": "CP008",
+      "source_zone_id": "TZ006",
+      "destination_zone_id": "TZ004",
+      "connection_ids": [
+        "CN019"
+      ],
+      "authentication_method": "IAM Role",
+      "authorization_method": "Policy-based",
+      "description": "Telemetry processor calls AppSync with its IAM role."
+    },
+    {
+      "id": "CP009",
+      "source_zone_id": "TZ003",
+      "destination_zone_id": "TZ004",
+      "connection_ids": [
+        "CN021",
+        "CN023",
+        "CN024"
+      ],
+      "authentication_method": "None",
+      "authorization_method": "Role-based",
+      "description": "Browser loads the SPA from CloudFront and gets UNAUTHENTICATED Cognito guest credentials whose role allows appsync:GraphQL on the whole API. Effectively anonymous access to all queries and mutations."
+    },
+    {
+      "id": "CP010",
+      "source_zone_id": "TZ004",
+      "destination_zone_id": "TZ006",
+      "connection_ids": [
+        "CN025",
+        "CN026",
+        "CN027"
+      ],
+      "authentication_method": "IAM Role",
+      "authorization_method": "Policy-based",
+      "description": "AppSync resolvers read/update the devices table and message log and invoke the broker log reader via service roles. No per-caller authorization: updateDevice SETs any field on any device."
+    },
+    {
+      "id": "CP011",
+      "source_zone_id": "TZ004",
+      "destination_zone_id": "TZ007",
+      "connection_ids": [
+        "CN029",
+        "CN042",
+        "CN043"
+      ],
+      "authentication_method": "IAM Role",
+      "authorization_method": "Policy-based",
+      "description": "AppSync migrateFirmware invokes start-migration; API Gateway invokes registrar/deregistrar/firmware-pusher. Authorization inherited from the (anonymous) AppSync caller or the SigV4 Pi caller."
+    },
+    {
+      "id": "CP012",
+      "source_zone_id": "TZ007",
+      "destination_zone_id": "TZ008",
+      "connection_ids": [
+        "CN033",
+        "CN034",
+        "CN037",
+        "CN047",
+        "CN048"
+      ],
+      "authentication_method": "IAM Role",
+      "authorization_method": "Policy-based",
+      "description": "Device-management Lambdas and the state machine start firmware builds (WIFI_PASSWORD as plaintext env), read SSM WiFi params, and presign firmware objects."
+    },
+    {
+      "id": "CP013",
+      "source_zone_id": "TZ007",
+      "destination_zone_id": "TZ006",
+      "connection_ids": [
+        "CN036",
+        "CN038",
+        "CN044",
+        "CN046",
+        "CN049"
+      ],
+      "authentication_method": "IAM Role",
+      "authorization_method": "Policy-based",
+      "description": "Registrar/deregistrar/publish-OTA/state machine create and delete IoT Things and policies, publish cmd/<thing>/ota, and write the devices table."
+    },
+    {
+      "id": "CP014",
+      "source_zone_id": "TZ001",
+      "destination_zone_id": "TZ008",
+      "connection_ids": [
+        "CN039"
+      ],
+      "authentication_method": "Token",
+      "authorization_method": "Other",
+      "description": "Device downloads OTA firmware from the URL in the command with TLS server verification disabled (WOLFSSL_VERIFY_NONE). The 900 s presigned URL is a bearer token for the legitimate path. Integrity relies on the command's sha256 and, only for commands that declare sigAlg, the signature check."
+    },
+    {
+      "id": "CP015",
+      "source_zone_id": "TZ010",
+      "destination_zone_id": "TZ004",
+      "connection_ids": [
+        "CN041"
+      ],
+      "authentication_method": "IAM Role",
+      "authorization_method": "Policy-based",
+      "description": "Builder-Pi calls the builder API with SigV4 using its SSM-rotated role credentials."
+    },
+    {
+      "id": "CP016",
+      "source_zone_id": "TZ010",
+      "destination_zone_id": "TZ008",
+      "connection_ids": [
+        "CN056",
+        "CN058"
+      ],
+      "authentication_method": "IAM Role",
+      "authorization_method": "Policy-based",
+      "description": "Builder-Pi reads the whole firmware bucket (every device's key-bearing image) and /pqc-workshop/* SSM params including the WiFi PSK."
+    },
+    {
+      "id": "CP017",
+      "source_zone_id": "TZ010",
+      "destination_zone_id": "TZ007",
+      "connection_ids": [
+        "CN057"
+      ],
+      "authentication_method": "IAM Role",
+      "authorization_method": "Policy-based",
+      "description": "Builder-Pi GetItem/Scan on the device registry (includes plaintext wifiPassword)."
+    },
+    {
+      "id": "CP018",
+      "source_zone_id": "TZ010",
+      "destination_zone_id": "TZ006",
+      "connection_ids": [
+        "CN059"
+      ],
+      "authentication_method": "IAM Role",
+      "authorization_method": "Policy-based",
+      "description": "Builder-Pi CloudWatch agent writes /pqc-workshop/builder-pi."
+    },
+    {
+      "id": "CP019",
+      "source_zone_id": "TZ010",
+      "destination_zone_id": "TZ001",
+      "connection_ids": [
+        "CN060"
+      ],
+      "authentication_method": "None",
+      "authorization_method": "None",
+      "description": "esptool flashing and serial console over USB. Physical access only, no authentication."
+    },
+    {
+      "id": "CP020",
+      "source_zone_id": "TZ002",
+      "destination_zone_id": "TZ010",
+      "connection_ids": [
+        "CN061"
+      ],
+      "authentication_method": "None",
+      "authorization_method": "None",
+      "description": "Anyone on the workshop AP can reach the Builder-Pi Flask GUI on :8080 over plain HTTP with no authentication or CSRF protection."
+    },
+    {
+      "id": "CP021",
+      "source_zone_id": "TZ010",
+      "destination_zone_id": "TZ009",
+      "connection_ids": [
+        "CN062"
+      ],
+      "authentication_method": "Token",
+      "authorization_method": "Policy-based",
+      "description": "Pi SSM agent registers with the hybrid activation code (7-day validity) and polls SSM."
+    },
+    {
+      "id": "CP022",
+      "source_zone_id": "TZ009",
+      "destination_zone_id": "TZ010",
+      "connection_ids": [
+        "CN063"
+      ],
+      "authentication_method": "IAM Role",
+      "authorization_method": "Role-based",
+      "description": "SSM Run Command executes provisioning documents as root on the Pi."
+    },
+    {
+      "id": "CP023",
+      "source_zone_id": "TZ009",
+      "destination_zone_id": "TZ008",
+      "connection_ids": [
+        "CN064",
+        "CN066",
+        "CN067",
+        "CN068"
+      ],
+      "authentication_method": "IAM Role",
+      "authorization_method": "Role-based",
+      "description": "Operator (Admin) writes SSM params, build sources and starts image builds; SSM stores the activation code in Secrets Manager."
+    },
+    {
+      "id": "CP024",
+      "source_zone_id": "TZ008",
+      "destination_zone_id": "TZ004",
+      "connection_ids": [
+        "CN071"
+      ],
+      "authentication_method": "IAM Role",
+      "authorization_method": "Policy-based",
+      "description": "Dashboard build syncs the SPA and config.json into the hosting bucket and invalidates CloudFront."
+    },
+    {
+      "id": "CP025",
+      "source_zone_id": "TZ008",
+      "destination_zone_id": "TZ006",
+      "connection_ids": [
+        "CN076"
+      ],
+      "authentication_method": "IAM Role",
+      "authorization_method": "Policy-based",
+      "description": "Bridge provisioner creates the bridge Thing, keys and wildcard policy in IoT Core."
+    }
+  ],
+  "trustBoundaries": [
+    {
+      "id": "TB001",
+      "name": "Venue physical and RF boundary",
+      "type": "Physical",
+      "crossing_points": [
+        "CP001",
+        "CP019",
+        "CP020"
+      ],
+      "controls": [
+        "Shared WPA2 PSK on the workshop AP",
+        "Physical supervision of the Builder-Pi USB station",
+        "None on the Builder-Pi GUI (gap)"
+      ],
+      "description": "Everything inside the workshop room: boards in attendees' hands, the shared-PSK AP, and USB access to the Builder-Pi. An attendee crosses this boundary legitimately, so it gives little protection."
+    },
+    {
+      "id": "TB002",
+      "name": "Internet to AWS public edge",
+      "type": "Network",
+      "crossing_points": [
+        "CP002",
+        "CP009",
+        "CP014",
+        "CP015"
+      ],
+      "controls": [
+        "Device mTLS terminated at the broker",
+        "SigV4 on the builder API",
+        "HTTPS/OAC on CloudFront",
+        "Presigned-URL expiry 900 s plus on-device sha256 and signature check",
+        "No WAF, no auth on Cognito guest access (gap)"
+      ],
+      "description": "Internet-reachable AWS endpoints: NLB, builder API, Cognito/AppSync, CloudFront, presigned S3 downloads."
+    },
+    {
+      "id": "TB003",
+      "name": "Public edge to broker VPC",
+      "type": "Network",
+      "crossing_points": [
+        "CP003",
+        "CP004"
+      ],
+      "controls": [
+        "Private subnets, no public IP",
+        "Security group 8883/8884",
+        "require_certificate + per-listener CA",
+        "No mosquitto topic ACL (gap)",
+        "No device hostname/SAN check (gap)"
+      ],
+      "description": "NLB into the private broker subnets and the broker's downlink to devices."
+    },
+    {
+      "id": "TB004",
+      "name": "Broker VPC to AWS managed services",
+      "type": "Network",
+      "crossing_points": [
+        "CP005",
+        "CP006",
+        "CP007"
+      ],
+      "controls": [
+        "IoT X.509 bridge identity",
+        "Wildcard bridge IoT policy (gap)",
+        "Task role scoped to named secrets",
+        "VPC endpoints"
+      ],
+      "description": "Bridge to IoT Core and broker task to Secrets Manager, ECR and CloudWatch Logs."
+    },
+    {
+      "id": "TB005",
+      "name": "Dashboard API to backend",
+      "type": "Process",
+      "crossing_points": [
+        "CP008",
+        "CP010",
+        "CP011"
+      ],
+      "controls": [
+        "AppSync AWS_IAM auth (but guest role allows all fields)",
+        "Service roles per data source",
+        "Variant allow-list in start-migration"
+      ],
+      "description": "AppSync resolvers and API Gateway integrations into data and device-management services."
+    },
+    {
+      "id": "TB006",
+      "name": "Device management to IoT",
+      "type": "Process",
+      "crossing_points": [
+        "CP013"
+      ],
+      "controls": [
+        "Lambda/state-machine IAM roles",
+        "Registrar iot:Create*/Attach* on * (broad)"
+      ],
+      "description": "Device-management functions creating Things/policies, publishing OTA commands and writing dashboard state."
+    },
+    {
+      "id": "TB007",
+      "name": "Build and PKI boundary",
+      "type": "Process",
+      "crossing_points": [
+        "CP012",
+        "CP024",
+        "CP025"
+      ],
+      "controls": [
+        "CodeBuild role scoped to both CAs and pqc-broker/signer-*",
+        "Signer and device keys scrubbed from build disk",
+        "Device key persists in firmware artifacts in S3 (gap)",
+        "WiFi PSK as plaintext build env (gap)"
+      ],
+      "description": "Entry into the high-trust zone that issues certificates, holds signer keys and stores key-bearing firmware."
+    },
+    {
+      "id": "TB008",
+      "name": "Builder-Pi to AWS",
+      "type": "Network",
+      "crossing_points": [
+        "CP016",
+        "CP017",
+        "CP018",
+        "CP021",
+        "CP022"
+      ],
+      "controls": [
+        "SSM hybrid activation and rotating role credentials",
+        "Pi role scoped to firmware bucket, registry, /pqc-workshop/*, builder API",
+        "Bucket-wide firmware read and registry Scan (broad)"
+      ],
+      "description": "The on-site Pi's AWS identity and SSM management channel."
+    },
+    {
+      "id": "TB009",
+      "name": "Operator administrative boundary",
+      "type": "Account",
+      "crossing_points": [
+        "CP023"
+      ],
+      "controls": [
+        "Admin IAM via ada/Isengard",
+        "Throwaway per-event accounts"
+      ],
+      "description": "Admin-credentialed operator actions into the build, PKI and secrets plane."
+    }
+  ],
+  "assets": [
+    {
+      "id": "A001",
+      "name": "Device private key and certificate",
+      "type": "Cryptographic Key",
+      "classification": "Restricted",
+      "lifecycle_state": "Active",
+      "data_states": [
+        "At rest",
+        "In transit",
+        "In use"
+      ],
+      "description": "Per-device ECDSA P-256 or ML-DSA-44 key generated in the firmware build and issued by a Private CA. Proves the device's identity to the broker.",
+      "owner": "Firmware build pipeline",
+      "criticality": 5,
+      "metadata": {}
+    },
+    {
+      "id": "A002",
+      "name": "OTA firmware signer keys",
+      "type": "Cryptographic Key",
+      "classification": "Restricted",
+      "lifecycle_state": "Active",
+      "data_states": [
+        "At rest",
+        "In use"
+      ],
+      "description": "Stable per-era classical (ECDSA P-256) and ML-DSA-44 signer private keys in Secrets Manager (pqc-broker/signer-*). Whoever holds them can sign firmware every device will accept.",
+      "owner": "Broker cert provisioner",
+      "criticality": 5,
+      "metadata": {}
+    },
+    {
+      "id": "A003",
+      "name": "Private CA issuance authority",
+      "type": "Process",
+      "classification": "Restricted",
+      "lifecycle_state": "Active",
+      "data_states": [
+        "In use"
+      ],
+      "description": "The ability to get certificates issued from the classical or ML-DSA-44 Private CA (acm-pca:IssueCertificate). Grants broker-trusted device identities or a broker identity devices trust.",
+      "owner": "ACM Private CA",
+      "criticality": 5,
+      "metadata": {}
+    },
+    {
+      "id": "A004",
+      "name": "Broker and bridge TLS keys",
+      "type": "Cryptographic Key",
+      "classification": "Restricted",
+      "lifecycle_state": "Active",
+      "data_states": [
+        "At rest",
+        "In use"
+      ],
+      "description": "Broker server keys (classical and ML-DSA) and the IoT Core bridge client key in Secrets Manager, loaded by the broker task.",
+      "owner": "Broker stack",
+      "criticality": 4,
+      "metadata": {}
+    },
+    {
+      "id": "A005",
+      "name": "Workshop WiFi PSK",
+      "type": "Credential",
+      "classification": "Confidential",
+      "lifecycle_state": "Active",
+      "data_states": [
+        "At rest",
+        "In transit",
+        "In use"
+      ],
+      "description": "Shared WPA2 password for the workshop AP.",
+      "owner": "Workshop operator",
+      "criticality": 3,
+      "metadata": {}
+    },
+    {
+      "id": "A006",
+      "name": "Firmware image",
+      "type": "Data",
+      "classification": "Restricted",
+      "lifecycle_state": "Active",
+      "data_states": [
+        "At rest",
+        "In transit"
+      ],
+      "description": "Compiled per-device firmware (firmware.bin / merged.bin) embedding the device key and WiFi PSK; its integrity decides what code runs on the device.",
+      "owner": "Firmware build pipeline",
+      "criticality": 5,
+      "metadata": {}
+    },
+    {
+      "id": "A007",
+      "name": "OTA command with presigned URL",
+      "type": "Token",
+      "classification": "Internal",
+      "lifecycle_state": "Active",
+      "data_states": [
+        "In transit",
+        "At rest"
+      ],
+      "description": "The ota-update message on cmd/<thing>/ota: firmware URL (900 s bearer token), sha256, signature and signer-cert URLs.",
+      "owner": "Publish-OTA Lambda",
+      "criticality": 4,
+      "metadata": {}
+    },
+    {
+      "id": "A008",
+      "name": "Device telemetry",
+      "type": "Data",
+      "classification": "Internal",
+      "lifecycle_state": "Active",
+      "data_states": [
+        "In transit",
+        "At rest"
+      ],
+      "description": "dt/<thing>/telemetry JSON including firmware version and negotiated PQC group; shown on the dashboard as proof of migration.",
+      "owner": "Device",
+      "criticality": 2,
+      "metadata": {}
+    },
+    {
+      "id": "A009",
+      "name": "Cognito guest credentials",
+      "type": "Token",
+      "classification": "Internal",
+      "lifecycle_state": "Active",
+      "data_states": [
+        "In transit",
+        "In use"
+      ],
+      "description": "Temporary AWS credentials for CognitoUnauthRole, obtainable by anyone with the public identity pool ID; allow every AppSync operation.",
+      "owner": "Cognito identity pool",
+      "criticality": 3,
+      "metadata": {}
+    },
+    {
+      "id": "A010",
+      "name": "Builder-Pi AWS role credentials",
+      "type": "Credential",
+      "classification": "Confidential",
+      "lifecycle_state": "Active",
+      "data_states": [
+        "At rest",
+        "In use"
+      ],
+      "description": "SSM-rotated credentials for the Pi role: whole firmware bucket, registry read, /pqc-workshop/* SSM read with decrypt, builder API invoke.",
+      "owner": "SSM",
+      "criticality": 4,
+      "metadata": {}
+    }
+  ],
+  "flows": [
+    {
+      "id": "F001",
+      "asset_id": "A001",
+      "source_id": "C017",
+      "destination_id": "C020",
+      "transformation_type": "Signing",
+      "controls": [
+        "Authentication",
+        "Authorization",
+        "Audit Logging"
+      ],
+      "description": "Build generates key + CSR in-container and gets the cert from ACM PCA, then writes key and cert into secrets.h.",
+      "protocol": "HTTPS (ACM PCA API)",
+      "encryption": true,
+      "authenticated": true,
+      "authorized": true,
+      "validated": false,
+      "risk_level": 3
+    },
+    {
+      "id": "F002",
+      "asset_id": "A001",
+      "source_id": "C017",
+      "destination_id": "D001",
+      "transformation_type": "Processing",
+      "controls": [
+        "Encryption",
+        "Access Control"
+      ],
+      "description": "Device key leaves the build embedded in firmware.bin / merged.bin and is stored, versioned, in the firmware bucket.",
+      "protocol": "HTTPS (S3)",
+      "encryption": true,
+      "authenticated": true,
+      "authorized": true,
+      "validated": false,
+      "risk_level": 5
+    },
+    {
+      "id": "F003",
+      "asset_id": "A001",
+      "source_id": "C003",
+      "destination_id": "D011",
+      "transformation_type": "Other",
+      "controls": [],
+      "description": "Firmware with the device key and PSK is flashed to the board; flash is not encrypted, so the key can be read back over USB.",
+      "protocol": "USB serial (esptool)",
+      "encryption": false,
+      "authenticated": false,
+      "authorized": false,
+      "validated": false,
+      "risk_level": 5
+    },
+    {
+      "id": "F004",
+      "asset_id": "A001",
+      "source_id": "C001",
+      "destination_id": "C005",
+      "transformation_type": "Verification",
+      "controls": [
+        "Authentication",
+        "Encryption"
+      ],
+      "description": "Device proves possession of its key in the mTLS handshake. Broker accepts any cert from the listener's CA and then allows any topic.",
+      "protocol": "MQTT/TLS 1.3",
+      "encryption": true,
+      "authenticated": true,
+      "authorized": false,
+      "validated": false,
+      "risk_level": 4
+    },
+    {
+      "id": "F005",
+      "asset_id": "A002",
+      "source_id": "C018",
+      "destination_id": "D005",
+      "transformation_type": "Other",
+      "controls": [
+        "Encryption",
+        "Access Control"
+      ],
+      "description": "Provisioner mints signer identities and stores the keys in pqc-broker/signer-*.",
+      "protocol": "HTTPS (Secrets Manager)",
+      "encryption": true,
+      "authenticated": true,
+      "authorized": true,
+      "validated": false,
+      "risk_level": 3
+    },
+    {
+      "id": "F006",
+      "asset_id": "A002",
+      "source_id": "D005",
+      "destination_id": "C017",
+      "transformation_type": "Signing",
+      "controls": [
+        "Access Control",
+        "Audit Logging"
+      ],
+      "description": "Firmware build reads the era signer key to sign firmware.bin, then scrubs it from disk. Any code running in the build (incl. a poisoned builder image) can read it.",
+      "protocol": "HTTPS (Secrets Manager)",
+      "encryption": true,
+      "authenticated": true,
+      "authorized": true,
+      "validated": false,
+      "risk_level": 4
+    },
+    {
+      "id": "F007",
+      "asset_id": "A003",
+      "source_id": "C018",
+      "destination_id": "C021",
+      "transformation_type": "Signing",
+      "controls": [
+        "Authentication",
+        "Authorization",
+        "Audit Logging"
+      ],
+      "description": "Provisioner requests broker and signer certificates from both CAs.",
+      "protocol": "HTTPS (ACM PCA API)",
+      "encryption": true,
+      "authenticated": true,
+      "authorized": true,
+      "validated": false,
+      "risk_level": 3
+    },
+    {
+      "id": "F008",
+      "asset_id": "A003",
+      "source_id": "C017",
+      "destination_id": "C021",
+      "transformation_type": "Signing",
+      "controls": [
+        "Authentication",
+        "Authorization",
+        "Audit Logging"
+      ],
+      "description": "Firmware build requests device certificates from either CA; the CodeBuild role is the only routine issuer.",
+      "protocol": "HTTPS (ACM PCA API)",
+      "encryption": true,
+      "authenticated": true,
+      "authorized": true,
+      "validated": false,
+      "risk_level": 3
+    },
+    {
+      "id": "F009",
+      "asset_id": "A004",
+      "source_id": "D005",
+      "destination_id": "C005",
+      "transformation_type": "Decryption",
+      "controls": [
+        "Access Control",
+        "Encryption"
+      ],
+      "description": "Broker task loads its server keys and the bridge key at startup via VPC endpoints.",
+      "protocol": "HTTPS (Secrets Manager)",
+      "encryption": true,
+      "authenticated": true,
+      "authorized": true,
+      "validated": false,
+      "risk_level": 2
+    },
+    {
+      "id": "F010",
+      "asset_id": "A004",
+      "source_id": "C006",
+      "destination_id": "C007",
+      "transformation_type": "Verification",
+      "controls": [
+        "Authentication",
+        "Authorization"
+      ],
+      "description": "Bridge authenticates to IoT Core with its key; one identity covers all device traffic.",
+      "protocol": "MQTT/TLS 1.2",
+      "encryption": true,
+      "authenticated": true,
+      "authorized": true,
+      "validated": false,
+      "risk_level": 3
+    },
+    {
+      "id": "F011",
+      "asset_id": "A005",
+      "source_id": "C028",
+      "destination_id": "D006",
+      "transformation_type": "Encryption",
+      "controls": [
+        "Encryption",
+        "Access Control"
+      ],
+      "description": "Operator writes the PSK as a SecureString.",
+      "protocol": "HTTPS (SSM)",
+      "encryption": true,
+      "authenticated": true,
+      "authorized": true,
+      "validated": false,
+      "risk_level": 2
+    },
+    {
+      "id": "F012",
+      "asset_id": "A005",
+      "source_id": "C012",
+      "destination_id": "D002",
+      "transformation_type": "Decryption",
+      "controls": [],
+      "description": "Registrar copies the PSK into the registry in PLAINTEXT.",
+      "protocol": "HTTPS (DynamoDB)",
+      "encryption": true,
+      "authenticated": true,
+      "authorized": true,
+      "validated": false,
+      "risk_level": 4
+    },
+    {
+      "id": "F013",
+      "asset_id": "A005",
+      "source_id": "C015",
+      "destination_id": "C017",
+      "transformation_type": "Other",
+      "controls": [],
+      "description": "State machine passes the PSK to CodeBuild as a PLAINTEXT env var; visible in execution history and build details. It is then compiled into every firmware image.",
+      "protocol": "HTTPS (CodeBuild/Step Functions)",
+      "encryption": true,
+      "authenticated": true,
+      "authorized": true,
+      "validated": false,
+      "risk_level": 4
+    },
+    {
+      "id": "F014",
+      "asset_id": "A005",
+      "source_id": "D006",
+      "destination_id": "C003",
+      "transformation_type": "Decryption",
+      "controls": [
+        "Access Control",
+        "Encryption"
+      ],
+      "description": "configure-wifi-ap decrypts the PSK onto the Pi to bring up the AP; the Pi role can also read it at any time.",
+      "protocol": "HTTPS (SSM)",
+      "encryption": true,
+      "authenticated": true,
+      "authorized": true,
+      "validated": false,
+      "risk_level": 3
+    },
+    {
+      "id": "F015",
+      "asset_id": "A006",
+      "source_id": "C017",
+      "destination_id": "D001",
+      "transformation_type": "Signing",
+      "controls": [
+        "Encryption",
+        "Access Control",
+        "Integrity Check"
+      ],
+      "description": "Build uploads firmware.bin, merged.bin, .sig and signer.crt to <serial>/<version>/.",
+      "protocol": "HTTPS (S3)",
+      "encryption": true,
+      "authenticated": true,
+      "authorized": true,
+      "validated": false,
+      "risk_level": 3
+    },
+    {
+      "id": "F016",
+      "asset_id": "A006",
+      "source_id": "D001",
+      "destination_id": "C003",
+      "transformation_type": "Other",
+      "controls": [
+        "Access Control",
+        "Encryption"
+      ],
+      "description": "Builder-Pi downloads merged.bin for USB flashing; its role can read every device's image.",
+      "protocol": "HTTPS (S3)",
+      "encryption": true,
+      "authenticated": true,
+      "authorized": true,
+      "validated": false,
+      "risk_level": 4
+    },
+    {
+      "id": "F017",
+      "asset_id": "A006",
+      "source_id": "D001",
+      "destination_id": "C001",
+      "transformation_type": "Verification",
+      "controls": [
+        "Encryption",
+        "Integrity Check"
+      ],
+      "description": "Device downloads the OTA image over TLS WITHOUT server certificate verification (WOLFSSL_VERIFY_NONE). It checks the sha256 supplied in the same command and, only if the command declares sigAlg, the signature chained to the baked signer root. Removing sigAlg from the command downgrades the update to unsigned.",
+      "protocol": "HTTPS (presigned S3 GET)",
+      "encryption": true,
+      "authenticated": false,
+      "authorized": true,
+      "validated": false,
+      "risk_level": 5
+    },
+    {
+      "id": "F018",
+      "asset_id": "A007",
+      "source_id": "C016",
+      "destination_id": "C007",
+      "transformation_type": "Processing",
+      "controls": [
+        "Authentication",
+        "Authorization"
+      ],
+      "description": "Publish-OTA publishes the ota-update command (presigned URLs) to cmd/<thing>/ota.",
+      "protocol": "HTTPS (iot-data)",
+      "encryption": true,
+      "authenticated": true,
+      "authorized": true,
+      "validated": false,
+      "risk_level": 3
+    },
+    {
+      "id": "F019",
+      "asset_id": "A007",
+      "source_id": "C005",
+      "destination_id": "C001",
+      "transformation_type": "Other",
+      "controls": [],
+      "description": "Command reaches the device via the bridge and Mosquitto. Because the broker has no ACLs, any connected device could inject a forged OTA command on the same topic.",
+      "protocol": "MQTT",
+      "encryption": true,
+      "authenticated": false,
+      "authorized": false,
+      "validated": false,
+      "risk_level": 4
+    },
+    {
+      "id": "F020",
+      "asset_id": "A007",
+      "source_id": "C009",
+      "destination_id": "D004",
+      "transformation_type": "Other",
+      "controls": [],
+      "description": "Message logger stores OTA commands (with presigned URLs) in the message log, readable through anonymous AppSync getDeviceLog.",
+      "protocol": "HTTPS (DynamoDB)",
+      "encryption": true,
+      "authenticated": true,
+      "authorized": true,
+      "validated": false,
+      "risk_level": 3
+    },
+    {
+      "id": "F021",
+      "asset_id": "A008",
+      "source_id": "C001",
+      "destination_id": "C005",
+      "transformation_type": "Other",
+      "controls": [
+        "Authentication",
+        "Encryption"
+      ],
+      "description": "Device publishes telemetry to the broker.",
+      "protocol": "MQTT/TLS 1.3",
+      "encryption": true,
+      "authenticated": true,
+      "authorized": false,
+      "validated": false,
+      "risk_level": 3
+    },
+    {
+      "id": "F022",
+      "asset_id": "A008",
+      "source_id": "C008",
+      "destination_id": "D003",
+      "transformation_type": "Processing",
+      "controls": [
+        "Input Validation",
+        "Authorization"
+      ],
+      "description": "Telemetry processor writes telemetry to the dashboard table (registered-only guard). Anonymous AppSync updateDevice can overwrite the same fields.",
+      "protocol": "HTTPS (DynamoDB)",
+      "encryption": true,
+      "authenticated": true,
+      "authorized": true,
+      "validated": false,
+      "risk_level": 3
+    },
+    {
+      "id": "F023",
+      "asset_id": "A009",
+      "source_id": "C023",
+      "destination_id": "C025",
+      "transformation_type": "Other",
+      "controls": [],
+      "description": "Browser obtains guest credentials with no sign-in.",
+      "protocol": "HTTPS",
+      "encryption": true,
+      "authenticated": false,
+      "authorized": false,
+      "validated": false,
+      "risk_level": 4
+    },
+    {
+      "id": "F024",
+      "asset_id": "A009",
+      "source_id": "C025",
+      "destination_id": "C022",
+      "transformation_type": "Verification",
+      "controls": [],
+      "description": "Guest credentials authorize every AppSync query and mutation, including migrateFirmware and updateDevice.",
+      "protocol": "HTTPS (SigV4 GraphQL)",
+      "encryption": true,
+      "authenticated": false,
+      "authorized": false,
+      "validated": false,
+      "risk_level": 5
+    },
+    {
+      "id": "F025",
+      "asset_id": "A010",
+      "source_id": "C027",
+      "destination_id": "C003",
+      "transformation_type": "Other",
+      "controls": [
+        "Authentication",
+        "Access Control"
+      ],
+      "description": "SSM hybrid activation issues and rotates the Pi's role credentials.",
+      "protocol": "HTTPS (SSM)",
+      "encryption": true,
+      "authenticated": true,
+      "authorized": true,
+      "validated": false,
+      "risk_level": 3
+    },
+    {
+      "id": "F026",
+      "asset_id": "A010",
+      "source_id": "C003",
+      "destination_id": "C011",
+      "transformation_type": "Other",
+      "controls": [
+        "Authentication"
+      ],
+      "description": "Pi uses its credentials to call the builder API; anyone driving the unauthenticated GUI effectively borrows them.",
+      "protocol": "HTTPS (SigV4)",
+      "encryption": true,
+      "authenticated": true,
+      "authorized": true,
+      "validated": false,
+      "risk_level": 4
+    }
+  ],
   "residualRiskAssessments": [],
   "softwareProfile": {
     "software_type": "Embedded / IoT / Firmware",
@@ -1556,10 +3602,10 @@
     "phase_completion": {
       "1": 1.0,
       "2": 1.0,
-      "3": 0.0,
-      "4": 0.0,
-      "5": 0.0,
-      "6": 0.0,
+      "3": 1.0,
+      "4": 1.0,
+      "5": 1.0,
+      "6": 1.0,
       "7": 0.0,
       "7.5": 0.0,
       "8": 0.0,
@@ -1577,7 +3623,7 @@
       "8": "Residual Risk Analysis",
       "9": "Output Generation and Documentation"
     },
-    "overall_completion": 0.3
+    "overall_completion": 0.7
   },
   "referenceCatalogue": {
     "description": "Threat actors the server pre-loaded but that were never assessed for this system. These are NOT part of the threat model.",
