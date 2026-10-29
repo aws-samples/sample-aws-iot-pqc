@@ -197,3 +197,37 @@ def test_invalid_serial_returns_400_without_starting_builds():
 
     cb = boto3.client("codebuild", region_name="us-east-1")
     assert cb.list_builds_for_project(projectName="pqc-workshop-device-identity")["ids"] == []
+
+
+@mock_aws
+def test_identity_only_starts_only_the_identity_build():
+    """Reflash re-issues the identity without rebuilding firmware or touching
+    the Thing/policy/registry."""
+    _setup_aws()
+    _env()
+    mod = load_handler_module(os.path.join(HERE, "index.py"), "device_registrar_index7")
+    mod.handler({"serialNumber": "C69DE0"}, _Ctx())  # initial registration
+
+    result = mod.handler({"serialNumber": "C69DE0", "identityOnly": True}, _Ctx())
+
+    assert result["statusCode"] == 200
+    body = json.loads(result["body"])
+    assert body["identityKey"] == "identity/C69DE0/certs.bin"
+    assert body["identityBuildId"].startswith("pqc-workshop-device-identity:")
+    assert "buildId" not in body
+    cb = boto3.client("codebuild", region_name="us-east-1")
+    assert len(cb.list_builds_for_project(projectName="pqc-workshop-device-identity")["ids"]) == 2
+    assert len(cb.list_builds_for_project(projectName="pqc-workshop-build-firmware")["ids"]) == 1
+
+
+@mock_aws
+def test_identity_only_rejects_unregistered_device():
+    _setup_aws()
+    _env()
+    mod = load_handler_module(os.path.join(HERE, "index.py"), "device_registrar_index8")
+
+    result = mod.handler({"serialNumber": "C69DE0", "identityOnly": True}, _Ctx())
+
+    assert result["statusCode"] == 404
+    cb = boto3.client("codebuild", region_name="us-east-1")
+    assert cb.list_builds_for_project(projectName="pqc-workshop-device-identity")["ids"] == []

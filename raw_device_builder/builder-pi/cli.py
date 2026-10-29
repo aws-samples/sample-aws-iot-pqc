@@ -17,8 +17,8 @@ Examples:
   workshop-builder scan
   workshop-builder register --port /dev/ttyACM0
   workshop-builder register --serial FC22E0          # register without USB
-  workshop-builder reflash --port /dev/ttyACM0
-  workshop-builder flash --port /dev/ttyACM0 --bin /tmp/firmware.merged.bin
+  workshop-builder reflash --port /dev/ttyACM0       # S3 firmware + new identity
+  workshop-builder flash --port /dev/ttyACM0 --bin /tmp/app.bin --offset 0x10000
   workshop-builder deregister --serial FC22E0
   workshop-builder serial --port /dev/ttyACM0 --lines 100
   workshop-builder service {start|stop|status}
@@ -72,49 +72,56 @@ def cmd_register(args, config, log):
     reg = operations.register_device(config, serial, logger=log)
     if not reg["success"]:
         return reg
-    if reg.get("buildId") and not args.no_wait:
-        log.info("Waiting for firmware build...")
-        build = operations.wait_for_build(config, reg["buildId"], logger=log)
-        if not build["success"]:
-            return build
-    # If a port is connected, download + flash.
-    if getattr(args, "port", None) and not args.no_flash:
-        dm = _device_manager(config)
-        # Must detect the device on THIS DeviceManager first — a fresh instance
-        # has an empty devices map, so dm.devices.get(port) would be None and
-        # download_firmware(None)/flash_firmware would crash with
-        # "'NoneType' object has no attribute 'status'".
-        dm.detect_device(args.port)
-        slot = dm.devices.get(args.port)
-        if not slot:
-            return {"success": False, "message": f"No device detected on {args.port} for flashing"}
-        firmware_dir = dm.download_firmware(slot)
-        if not firmware_dir:
-            return {"success": False, "message": "Firmware download failed"}
-        if not dm.flash_firmware(args.port, firmware_dir):
-            return {"success": False, "message": "Flash failed"}
-        log.info("Flashed successfully")
-    return {"success": True, "message": f"Registered {serial}"}
+    flashing = getattr(args, "port", None) and not args.no_flash
+    if args.no_wait and not flashing:
+        return {"success": True, "message": f"Registered {serial}"}
+    result = _wait_and_flash(args, config, log, reg, flashing)
+    if result["success"]:
+        result["message"] = f"Registered {serial}"
+    return result
 
 
-def cmd_reflash(args, config, log):
+def _wait_and_flash(args, config, log, reg, flashing=True):
+    """Wait for the registration's builds, then (if flashing) download the app
+    pieces + identity image and flash them; the identity image is deleted
+    after a successful flash."""
+    log.info("Waiting for builds: " + ", ".join(operations.build_ids(reg)))
+    build = operations.wait_for_builds(config, operations.build_ids(reg), logger=log)
+    if not build["success"]:
+        return build
+    if not flashing:
+        return {"success": True}
     dm = _device_manager(config)
+    # Must detect the device on THIS DeviceManager first — a fresh instance
+    # has an empty devices map, so dm.devices.get(port) would be None.
     dm.detect_device(args.port)
     slot = dm.devices.get(args.port)
     if not slot:
-        return {"success": False, "message": f"No device on {args.port}"}
-    firmware_dir = dm.download_firmware(slot)
+        return {"success": False, "message": f"No device detected on {args.port} for flashing"}
+    firmware_dir = dm.download_firmware(slot, reg["identityKey"])
     if not firmware_dir:
         return {"success": False, "message": "Firmware download failed"}
-    if not dm.flash_firmware(args.port, firmware_dir):
+    if not dm.flash_device(args.port, firmware_dir):
         return {"success": False, "message": "Flash failed"}
-    log.info("Reflashed successfully")
+    log.info("Flashed successfully")
     return {"success": True}
+
+
+def cmd_reflash(args, config, log):
+    """Existing firmware from S3 + a freshly issued identity (the identity
+    image is deleted after every flash, so it is always re-issued)."""
+    serial = _resolve_serial(args, config, log)
+    if not serial:
+        return {"success": False, "message": f"No device on {args.port}"}
+    reg = operations.register_device(config, serial, identity_only=True, logger=log)
+    if not reg["success"]:
+        return reg
+    return _wait_and_flash(args, config, log, reg)
 
 
 def cmd_flash(args, config, log):
     dm = _device_manager(config)
-    if not dm.flash_firmware(args.port, args.bin):
+    if not dm.flash_image(args.port, args.bin, args.offset):
         return {"success": False, "message": f"Flash of {args.bin} failed"}
     log.info(f"Flashed {args.bin}")
     return {"success": True}
@@ -168,6 +175,7 @@ def build_parser():
     s = sub.add_parser("flash", help="Flash a specific binary")
     s.add_argument("--port", required=True)
     s.add_argument("--bin", required=True, help="Path to firmware binary")
+    s.add_argument("--offset", default="0x0", help="Flash offset (default 0x0)")
     s.set_defaults(func=cmd_flash)
 
     s = sub.add_parser("deregister", help="Deregister a device")

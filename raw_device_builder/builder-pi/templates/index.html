@@ -191,7 +191,7 @@
         }
 
         async function reflashDevice(port) {
-            if (!confirm('Reflash this device with the current firmware from S3?')) return;
+            if (!confirm('Reflash this device with the current firmware from S3 and a newly issued identity?')) return;
             try {
                 const response = await fetch('/api/reflash', {
                     method: 'POST',

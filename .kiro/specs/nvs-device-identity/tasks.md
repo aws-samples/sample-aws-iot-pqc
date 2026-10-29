@@ -84,7 +84,7 @@ change the production flow until 0.1–0.3 pass on a real board.
       the pqc-a Private CAs produced a 64 KB image (blobs ~9.4 KB).
 - [x] 1.3 Add `raw_device_builder/codebuild/buildspec-identity.yml`: issue both
       certs, fetch both CA roots, build `certs.bin`, upload to
-      `<serial>/identity/certs.bin`, scrub the working directory.
+      `identity/<serial>/certs.bin`, scrub the working directory.
       **Done differently:** the buildspec is inline in the CodeBuild project
       (one command), the script uploads with boto3 (the image has no AWS CLI),
       and the key is `identity/<serial>/certs.bin`. Work files live in a
@@ -111,18 +111,41 @@ change the production flow until 0.1–0.3 pass on a real board.
 
 ## Workstream 2 — Builder-Pi flashing
 
-- [ ] 2.1 `device_manager.py`: download the app pieces (bootloader,
-      partitions, boot_app0, app) and `<serial>/identity/certs.bin`; flash them
+- [x] 2.1 `device_manager.py`: download the app pieces (bootloader,
+      partitions, boot_app0, app) and `identity/<serial>/certs.bin`; flash them
       in one `esptool write_flash` call at 0x0 / 0x8000 / 0xe000 / 0x10000 /
       0x721000. Do not use `firmware.merged.bin` (8 MB, overlaps `certs`). The
       firmware build must upload the pieces (it already uploads bootloader,
       partitions and boot_app0).
-- [ ] 2.2 After a successful flash, delete `<serial>/identity/`. On failure,
-      keep it for a retry.
-- [ ] 2.3 Reflash without re-registering: re-run identity issuance, then flash.
+      **Done:** `FLASH_LAYOUT` in `device_manager.py` is the single list of
+      offsets/files. The GUI and CLI wait for BOTH builds
+      (`operations.wait_for_builds`) before downloading. The identity image is
+      read with `get_object` (records its `VersionId`, short retry on
+      `NoSuchKey`) and written `0600`. All pieces are required; the buildspec
+      upload of bootloader/partitions/boot_app0 no longer has `|| true`.
+      `cli flash --bin` now takes `--offset` (default `0x0`).
+- [x] 2.2 After a successful flash, delete `identity/<serial>/certs.bin`. On
+      failure, keep it for a retry.
+      **Done:** `DeviceManager.flash_device` = flash, then `delete_identity`
+      (S3 `delete_object` with the downloaded `VersionId`, so no noncurrent copy
+      or delete marker is left; plus the local file). Deletion is best effort;
+      the 1-day lifecycle rule is the backstop.
+- [x] 2.3 Reflash without re-registering: re-run identity issuance, then flash.
       _Requirements: R4.2_
-- [ ] 2.4 Update `builder-pi/tests/` (operations and CLI) for the two-image
+      **Done:** `/register` takes `identityOnly: true`. The registrar checks the
+      device is in the registry (404 if not) and starts only the identity job:
+      no Thing/policy/registry writes and no firmware rebuild. GUI and CLI
+      reflash use it, then flash the existing S3 firmware with the new identity.
+      Note: each reflash issues new device certs; the old ones are not revoked
+      (same as today's re-register).
+- [x] 2.4 Update `builder-pi/tests/` (operations and CLI) for the two-image
       flash and the cleanup.
+      **Done:** new `test_device_manager.py` (moto versioned bucket + mocked
+      esptool: offsets, no merged image, version-exact delete, keep on failure,
+      missing piece); operations (identity fields, `identityOnly`,
+      `wait_for_builds`); CLI (reflash, wait-for-both, no flash on build
+      failure); registrar (`identityOnly`, 404). Full suite: 110 passed.
+      Hardware check of the Pi path happens with the pqc-a deploy after WS3.
 
 ## Workstream 3 — Firmware loads identity from NVS
 
@@ -151,7 +174,7 @@ change the production flow until 0.1–0.3 pass on a real board.
 
 - [ ] 5.1 pqc-a end to end: plug in and register two devices; both online on the
       dashboard; each migrates classical → PQC → ML-DSA; identity intact after
-      every OTA; `<serial>/identity/` removed after flashing. _Requirements: R7.1_
+      every OTA; `identity/<serial>/certs.bin` removed after flashing. _Requirements: R7.1_
 - [ ] 5.2 Teardown: deregister removes the Thing and registry entry; lifecycle
       clears any stale identity objects; update `teardown-workshop.sh` if needed.
 - [ ] 5.3 Update `cloudformation/DEPLOYMENT.md`, the README code walkthrough,

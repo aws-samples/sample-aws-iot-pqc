@@ -1,0 +1,156 @@
+# Copyright 2026 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: MIT-0
+"""
+Unit tests for DeviceManager download/flash/cleanup of the app pieces and the
+per-device identity image. S3 is moto (versioned bucket, like the real
+firmware bucket); esptool is a mocked subprocess.run, so no hardware is used.
+"""
+import os
+import subprocess
+import sys
+
+import boto3
+import pytest
+from moto import mock_aws
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, os.path.abspath(os.path.join(HERE, "..")))
+
+import device_manager  # noqa: E402
+from device_manager import DeviceManager, DeviceSlot  # noqa: E402
+
+BUCKET = "pqc-workshop-firmware-123456789012"
+SERIAL = "C69DE0"
+VERSION = "1.0.0-classical"
+IDENTITY_KEY = f"identity/{SERIAL}/certs.bin"
+PIECES = {
+    "bootloader.bin": b"B" * 16,
+    "partitions.bin": b"P" * 16,
+    "boot_app0.bin": b"O" * 16,
+    "firmware.bin": b"A" * 64,
+}
+
+
+@pytest.fixture
+def env(monkeypatch, tmp_path):
+    monkeypatch.setenv("AWS_DEFAULT_REGION", "us-east-1")
+    monkeypatch.setattr(device_manager, "FIRMWARE_DIR", str(tmp_path / "fw"))
+    monkeypatch.setattr(device_manager, "LOG_DIR", str(tmp_path / "logs"))
+    with mock_aws():
+        s3 = boto3.client("s3", region_name="us-east-1")
+        s3.create_bucket(Bucket=BUCKET)
+        s3.put_bucket_versioning(Bucket=BUCKET,
+                                 VersioningConfiguration={"Status": "Enabled"})
+        for name, body in PIECES.items():
+            s3.put_object(Bucket=BUCKET, Key=f"{SERIAL}/{VERSION}/{name}", Body=body)
+        dm = DeviceManager({"region": "us-east-1", "firmware_bucket": BUCKET,
+                            "firmware_version": VERSION})
+        slot = DeviceSlot(port="/dev/ttyACM0", serial_number=SERIAL)
+        dm.devices[slot.port] = slot
+        yield dm, slot, s3
+
+
+def _put_identity(s3, body=b"N" * 64):
+    return s3.put_object(Bucket=BUCKET, Key=IDENTITY_KEY, Body=body)["VersionId"]
+
+
+class FakeRun:
+    def __init__(self, returncode=0):
+        self.returncode = returncode
+        self.argv = None
+
+    def __call__(self, argv, **kwargs):
+        self.argv = argv
+        return subprocess.CompletedProcess(argv, self.returncode, stdout="Hash of data verified.\n",
+                                           stderr="" if self.returncode == 0 else "A fatal error")
+
+
+def test_download_fetches_pieces_and_identity_with_version(env):
+    dm, slot, s3 = env
+    version = _put_identity(s3)
+
+    fw_dir = dm.download_firmware(slot, IDENTITY_KEY)
+
+    assert fw_dir
+    for _offset, local, s3_name in device_manager.FLASH_LAYOUT:
+        expected = PIECES[s3_name] if s3_name else b"N" * 64
+        with open(os.path.join(fw_dir, local), "rb") as f:
+            assert f.read() == expected
+    assert slot.identity_key == IDENTITY_KEY
+    assert slot.identity_version_id == version
+    # Private keys + WiFi PSK: owner-only on disk.
+    assert os.stat(os.path.join(fw_dir, "certs.bin")).st_mode & 0o077 == 0
+
+
+def test_download_fails_without_identity(env, monkeypatch):
+    dm, slot, _s3 = env
+    monkeypatch.setattr(device_manager.time, "sleep", lambda s: None)
+
+    assert dm.download_firmware(slot, IDENTITY_KEY) is None
+    assert "Download failed" in slot.error
+
+
+def test_flash_writes_pieces_and_identity_at_partition_offsets(env, monkeypatch):
+    dm, slot, s3 = env
+    _put_identity(s3)
+    fw_dir = dm.download_firmware(slot, IDENTITY_KEY)
+    run = FakeRun()
+    monkeypatch.setattr(device_manager.subprocess, "run", run)
+
+    assert dm.flash_firmware(slot.port, fw_dir) is True
+
+    argv = run.argv
+    assert argv[:argv.index("write_flash")] == [
+        "esptool", "--port", slot.port, "--baud", "921600", "--chip", "esp32s3"]
+    pairs = argv[argv.index("8MB") + 1:]
+    assert [(o, os.path.basename(p)) for o, p in zip(pairs[::2], pairs[1::2])] == [
+        ("0x0", "bootloader.bin"),
+        ("0x8000", "partitions.bin"),
+        ("0xe000", "boot_app0.bin"),
+        ("0x10000", "app.bin"),
+        ("0x721000", "certs.bin"),
+    ]
+    # Never the 8 MB merged image: it would overwrite the certs partition.
+    assert not any("merged" in a for a in argv)
+
+
+def test_flash_device_deletes_identity_version_after_success(env, monkeypatch):
+    dm, slot, s3 = env
+    old = _put_identity(s3, b"old")
+    new = _put_identity(s3, b"new")
+    fw_dir = dm.download_firmware(slot, IDENTITY_KEY)
+    monkeypatch.setattr(device_manager.subprocess, "run", FakeRun())
+
+    assert dm.flash_device(slot.port, fw_dir) is True
+
+    versions = s3.list_object_versions(Bucket=BUCKET, Prefix=IDENTITY_KEY).get("Versions", [])
+    # Exactly the flashed version is gone (no delete marker left behind).
+    assert [v["VersionId"] for v in versions] == [old]
+    assert new != old
+    assert not os.path.exists(os.path.join(fw_dir, "certs.bin"))
+    assert slot.identity_key is None
+
+
+def test_flash_device_keeps_identity_on_failure(env, monkeypatch):
+    dm, slot, s3 = env
+    version = _put_identity(s3)
+    fw_dir = dm.download_firmware(slot, IDENTITY_KEY)
+    monkeypatch.setattr(device_manager.subprocess, "run", FakeRun(returncode=2))
+
+    assert dm.flash_device(slot.port, fw_dir) is False
+
+    versions = s3.list_object_versions(Bucket=BUCKET, Prefix=IDENTITY_KEY)["Versions"]
+    assert [v["VersionId"] for v in versions] == [version]
+    assert os.path.exists(os.path.join(fw_dir, "certs.bin"))
+
+
+def test_flash_refuses_when_a_piece_is_missing(env, monkeypatch):
+    dm, slot, _s3 = env
+    fw_dir = os.path.join(device_manager.FIRMWARE_DIR, "x")
+    os.makedirs(fw_dir)
+    run = FakeRun()
+    monkeypatch.setattr(device_manager.subprocess, "run", run)
+
+    assert dm.flash_firmware(slot.port, fw_dir) is False
+    assert run.argv is None
+    assert "certs.bin" in slot.error

@@ -4,13 +4,12 @@
 """
 Device Manager — USB detection, serial identification, and flash operations.
 
-Uses arduino-cli for upload and serial monitoring (matching the proven working
-flow from arduino-cli/build.sh). Handles up to 4 simultaneous USB-connected
-ESP32 devices on the builder-pi.
+Uses arduino-cli to list boards and esptool to read the chip MAC and flash.
+Handles up to 4 simultaneous USB-connected ESP32 devices on the builder-pi.
 
-Key change from previous version: uses `arduino-cli upload` with the merged
-binary instead of esptool with manual offsets. This ensures the bootloader,
-partition table, and app are all flashed correctly.
+Flashing writes the app pieces plus the per-device identity image (the "certs"
+NVS partition) in one esptool call, at the offsets in FLASH_LAYOUT. It does not
+use firmware.merged.bin, which is padded to 8 MB and would overwrite "certs".
 """
 
 import subprocess
@@ -28,6 +27,40 @@ from typing import Optional, Dict, List
 FQBN = "esp32:esp32:XIAO_ESP32S3:USBMode=hwcdc,CDCOnBoot=cdc,DebugLevel=info,PartitionScheme=default_8MB"
 ARDUINO_CLI = "arduino-cli"
 FIRMWARE_DIR = "/opt/pqc-workshop/firmware"
+
+# What is written over USB, as (offset, local file, S3 name under
+# <serial>/<version>/). Offsets match esp32-flash/partitions_pqc_workshop.csv.
+# The identity image comes from identity/<serial>/certs.bin (S3 name None).
+IDENTITY_FILE = "certs.bin"
+FLASH_LAYOUT = [
+    ("0x0", "bootloader.bin", "bootloader.bin"),
+    ("0x8000", "partitions.bin", "partitions.bin"),
+    ("0xe000", "boot_app0.bin", "boot_app0.bin"),  # resets otadata -> boot ota_0
+    ("0x10000", "app.bin", "firmware.bin"),
+    ("0x721000", IDENTITY_FILE, None),             # "certs" NVS partition
+]
+
+
+def flash_args(firmware_dir: str) -> List[str]:
+    """The <offset> <file> pairs for esptool write_flash."""
+    args = []
+    for offset, name, _s3_name in FLASH_LAYOUT:
+        args += [offset, os.path.join(firmware_dir, name)]
+    return args
+
+
+def esptool_argv(port: str, address_args: List[str]) -> List[str]:
+    """Full esptool command line for a write_flash of address_args."""
+    return [
+        'esptool', '--port', port,
+        '--baud', '921600',
+        '--chip', 'esp32s3',
+        'write_flash',
+        '--flash_mode', 'dio',
+        '--flash_freq', '80m',
+        '--flash_size', '8MB',
+        *address_args,
+    ]
 
 # Persistent log directory. Every DeviceSlot.log() line is appended here (in
 # addition to the in-memory ring buffer surfaced to the GUI), so the full
@@ -63,6 +96,10 @@ class DeviceSlot:
     error: Optional[str] = None
     progress: List[str] = field(default_factory=list)
     is_registered: bool = False
+    identity_build_id: Optional[str] = None
+    # S3 key + version of the downloaded identity image, deleted after flashing.
+    identity_key: Optional[str] = None
+    identity_version_id: Optional[str] = None
 
     def log(self, message: str):
         timestamp = time.strftime('%H:%M:%S')
@@ -208,64 +245,51 @@ class DeviceManager:
         except Exception:
             return False
 
-    def download_firmware(self, slot: DeviceSlot) -> Optional[str]:
-        """Download the compiled firmware from S3.
-        Returns the local directory containing the binary, or None on failure.
-        
-        arduino-cli upload --input-file expects companion files in the same
-        directory with specific naming:
-          <name>.merged.bin           — the full flash image
-          <name>.merged.bootloader.bin — bootloader (derived from merged name)
-        We download and rename to match this convention.
-        """
+    def _s3(self):
         import boto3
+        session = boto3.session.Session(region_name=self.config.get('region', 'us-east-1'))
+        return session.client('s3')
 
+    def download_firmware(self, slot: DeviceSlot, identity_key: Optional[str] = None) -> Optional[str]:
+        """Download the app pieces and the device identity image from S3.
+
+        Writes FLASH_LAYOUT's files into FIRMWARE_DIR/<serial>/<version>/ and
+        returns that directory, or None on failure. Every piece is required:
+        a device flashed without its identity cannot connect.
+
+        The identity image (identity/<serial>/certs.bin) is fetched with
+        get_object so its S3 VersionId is recorded; delete_identity() removes
+        exactly that version once the flash succeeds.
+        """
         slot.status = 'downloading'
-        slot.log('Downloading firmware from S3...')
+        slot.log('Downloading firmware and identity from S3...')
 
         firmware_version = self.config.get('firmware_version', '1.0.0-classical')
         s3_prefix = f'{slot.serial_number}/{firmware_version}'
         local_dir = os.path.join(FIRMWARE_DIR, slot.serial_number, firmware_version)
         os.makedirs(local_dir, exist_ok=True)
+        identity_key = identity_key or f'identity/{slot.serial_number}/certs.bin'
 
         try:
-            session = boto3.session.Session(region_name=self.config.get('region', 'us-east-1'))
-            s3 = session.client('s3')
+            s3 = self._s3()
             bucket = self.config['firmware_bucket']
 
-            # Download the merged binary
-            merged_key = f'{s3_prefix}/firmware.merged.bin'
-            merged_path = os.path.join(local_dir, 'firmware.merged.bin')
-            s3.download_file(bucket, merged_key, merged_path)
-            slot.log(f'Downloaded: firmware.merged.bin ({os.path.getsize(merged_path)} bytes)')
+            for _offset, local_name, s3_name in FLASH_LAYOUT:
+                if s3_name is None:
+                    continue  # the identity image, fetched below
+                path = os.path.join(local_dir, local_name)
+                s3.download_file(bucket, f'{s3_prefix}/{s3_name}', path)
+                slot.log(f'Downloaded: {s3_name} ({os.path.getsize(path)} bytes)')
 
-            # Download the bootloader and create the companion file that
-            # arduino-cli expects (firmware.merged.bootloader.bin)
-            try:
-                boot_key = f'{s3_prefix}/bootloader.bin'
-                boot_companion = os.path.join(local_dir, 'firmware.merged.bootloader.bin')
-                s3.download_file(bucket, boot_key, boot_companion)
-                slot.log(f'Downloaded: bootloader → firmware.merged.bootloader.bin')
-            except Exception as e:
-                slot.log(f'WARN: bootloader not available: {e}')
-
-            # Download partitions — arduino-cli expects firmware.merged.partitions.bin
-            try:
-                part_key = f'{s3_prefix}/partitions.bin'
-                part_companion = os.path.join(local_dir, 'firmware.merged.partitions.bin')
-                s3.download_file(bucket, part_key, part_companion)
-                slot.log(f'Downloaded: partitions → firmware.merged.partitions.bin')
-            except Exception as e:
-                slot.log(f'WARN: partitions.bin not available: {e}')
-
-            # Also download the app-only binary (for OTA reference)
-            try:
-                app_key = f'{s3_prefix}/firmware.bin'
-                app_path = os.path.join(local_dir, 'firmware.bin')
-                s3.download_file(bucket, app_key, app_path)
-                slot.log(f'Downloaded: firmware.bin ({os.path.getsize(app_path)} bytes)')
-            except Exception:
-                slot.log('WARN: firmware.bin (OTA binary) not available yet')
+            obj = self._get_identity(s3, bucket, identity_key, slot)
+            path = os.path.join(local_dir, IDENTITY_FILE)
+            # Owner-only: the image holds the device private keys + WiFi PSK.
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, 'wb') as f:
+                f.write(obj['Body'].read())
+            slot.identity_key = identity_key
+            slot.identity_version_id = obj.get('VersionId')
+            slot.log(f'Downloaded: {identity_key} ({os.path.getsize(path)} bytes)')
 
             return local_dir
 
@@ -274,46 +298,101 @@ class DeviceManager:
             slot.log(f'ERROR: {slot.error}')
             return None
 
-    def flash_firmware(self, port: str, firmware_dir: str) -> bool:
-        """Flash firmware to ESP32 using esptool with the merged binary.
+    @staticmethod
+    def _get_identity(s3, bucket, key, slot, attempts=4, delay=3):
+        """get_object with a short retry: a just-finished identity build's
+        object can lag the SUCCEEDED status by a moment."""
+        for attempt in range(1, attempts + 1):
+            try:
+                return s3.get_object(Bucket=bucket, Key=key)
+            except s3.exceptions.NoSuchKey:
+                if attempt == attempts:
+                    raise
+                slot.log(f'Identity image not in S3 yet; retrying ({attempt}/{attempts - 1})')
+                time.sleep(delay)  # nosemgrep: arbitrary-sleep
 
-        The merged binary contains bootloader + partition table + app at the
-        correct offsets, so we flash it at address 0x0 to cover the entire flash.
-        This matches what arduino-cli does internally during a full upload.
+    def delete_identity(self, slot: DeviceSlot, firmware_dir: str) -> bool:
+        """Delete the flashed identity image: the S3 object version that was
+        downloaded, and the local copy. The keys then exist only on the device.
+
+        Best effort: a failure is logged and the S3 lifecycle rule expires the
+        object after a day anyway.
+        """
+        ok = True
+        if slot.identity_key:
+            try:
+                args = {'Bucket': self.config['firmware_bucket'], 'Key': slot.identity_key}
+                if slot.identity_version_id:
+                    args['VersionId'] = slot.identity_version_id
+                self._s3().delete_object(**args)
+                slot.log(f'Deleted {slot.identity_key} from S3')
+            except Exception as e:
+                ok = False
+                slot.log(f'WARN: could not delete {slot.identity_key} from S3: {e}')
+        try:
+            os.remove(os.path.join(firmware_dir, IDENTITY_FILE))
+        except FileNotFoundError:
+            pass
+        except OSError as e:
+            ok = False
+            slot.log(f'WARN: could not delete local identity image: {e}')
+        slot.identity_key = None
+        slot.identity_version_id = None
+        return ok
+
+    def flash_firmware(self, port: str, firmware_dir: str) -> bool:
+        """Flash the app pieces and the identity image in one esptool call.
+
+        Writes each FLASH_LAYOUT file at its offset. Not firmware.merged.bin:
+        arduino-cli pads that to the full 8 MB, so it would overwrite the
+        certs partition at 0x721000.
         """
         slot = self.devices.get(port)
         if not slot:
             return False
 
         slot.status = 'flashing'
-        merged_bin = os.path.join(firmware_dir, 'firmware.merged.bin')
-
-        if not os.path.exists(merged_bin):
-            slot.error = 'firmware.merged.bin not found'
+        missing = [name for _o, name, _s in FLASH_LAYOUT
+                   if not os.path.exists(os.path.join(firmware_dir, name))]
+        if missing:
+            slot.error = f'Missing flash files: {", ".join(missing)}'
             slot.log(f'ERROR: {slot.error}')
             return False
 
         slot.log(f'Flashing via esptool to {port}...')
-        slot.log(f'Binary: {merged_bin} ({os.path.getsize(merged_bin)} bytes)')
+        return self._run_esptool(slot, port, flash_args(firmware_dir))
 
+    def flash_device(self, port: str, firmware_dir: str) -> bool:
+        """Flash firmware + identity; on success delete the identity image.
+
+        On failure the identity image is kept (locally and in S3) so a retry
+        can flash it without re-issuing.
+        """
+        if not self.flash_firmware(port, firmware_dir):
+            slot = self.devices.get(port)
+            if slot:
+                slot.log('Flash failed; keeping the identity image for a retry')
+            return False
+        self.delete_identity(self.devices[port], firmware_dir)
+        return True
+
+    def flash_image(self, port: str, image: str, offset: str = '0x0') -> bool:
+        """Flash a single binary at one offset (CLI `flash --bin`, debugging)."""
+        slot = self.devices.get(port) or DeviceSlot(port=port)
+        if not os.path.exists(image):
+            slot.error = f'{image} not found'
+            slot.log(f'ERROR: {slot.error}')
+            return False
+        slot.status = 'flashing'
+        return self._run_esptool(slot, port, [offset, image])
+
+    def _run_esptool(self, slot: DeviceSlot, port: str, address_args: List[str]) -> bool:
+        """Run esptool write_flash with the given <offset> <file> pairs."""
+        for offset, path in zip(address_args[::2], address_args[1::2]):
+            slot.log(f'  {offset}  {os.path.basename(path)} ({os.path.getsize(path)} bytes)')
         try:
-            # Use esptool to write the merged binary at offset 0x0.
-            # The merged binary already contains:
-            #   0x0000 — bootloader
-            #   0x8000 — partition table
-            #   0xe000 — ota data (boot_app0)
-            #   0x10000 — application
             result = subprocess.run(
-                [
-                    'esptool', '--port', port,
-                    '--baud', '921600',
-                    '--chip', 'esp32s3',
-                    'write_flash',
-                    '--flash_mode', 'dio',
-                    '--flash_freq', '80m',
-                    '--flash_size', '8MB',
-                    '0x0', merged_bin,
-                ],
+                esptool_argv(port, address_args),
                 capture_output=True, text=True, timeout=120
             )
 

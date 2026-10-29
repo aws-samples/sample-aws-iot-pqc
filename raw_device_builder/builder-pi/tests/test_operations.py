@@ -42,12 +42,16 @@ def test_register_success(monkeypatch):
     def fake_post(url, payload, region, timeout=30):
         captured["url"] = url
         captured["payload"] = payload
-        return FakeResp(200, {"buildId": "b-1"})
+        return FakeResp(200, {"buildId": "b-1", "identityBuildId": "i-1",
+                              "identityKey": "identity/FC22E0/certs.bin"})
 
     monkeypatch.setattr(operations.aws, "sigv4_post", fake_post)
     result = operations.register_device(CONFIG, "FC22E0")
     assert result["success"] is True
     assert result["buildId"] == "b-1"
+    assert result["identityBuildId"] == "i-1"
+    assert result["identityKey"] == "identity/FC22E0/certs.bin"
+    assert operations.build_ids(result) == ["b-1", "i-1"]
     assert captured["url"].endswith("/register")
     # Plug-and-flash: the payload carries only the auto-detected serial; WiFi,
     # broker endpoint and firmware version are resolved server-side from SSM.
@@ -75,12 +79,57 @@ def test_deregister_success(monkeypatch):
     assert captured["url"].endswith("/deregister")
 
 
+def test_register_identity_only_sends_flag(monkeypatch):
+    captured = {}
+
+    def fake_post(url, payload, region, timeout=30):
+        captured["payload"] = payload
+        return FakeResp(200, {"identityBuildId": "i-2"})
+
+    monkeypatch.setattr(operations.aws, "sigv4_post", fake_post)
+    result = operations.register_device(CONFIG, "FC22E0", identity_only=True)
+    assert captured["payload"] == {"serialNumber": "FC22E0", "identityOnly": True}
+    assert result["buildId"] is None
+    # Falls back to the well-known key when the API omits it.
+    assert result["identityKey"] == "identity/FC22E0/certs.bin"
+    assert operations.build_ids(result) == ["i-2"]
+
+
 class FakeCodeBuild:
+    """statuses: one entry per poll, either a status for every id or an
+    {id: status} dict."""
+
     def __init__(self, statuses):
         self._statuses = list(statuses)
+        self.calls = []
 
     def batch_get_builds(self, ids):
-        return {"builds": [{"buildStatus": self._statuses.pop(0)}]}
+        self.calls.append(list(ids))
+        step = self._statuses.pop(0)
+        return {"builds": [{"id": i, "buildStatus": step[i] if isinstance(step, dict) else step}
+                           for i in ids]}
+
+
+def test_wait_for_builds_waits_for_all():
+    cb = FakeCodeBuild([
+        {"b-1": "SUCCEEDED", "i-1": "IN_PROGRESS"},
+        {"i-1": "SUCCEEDED"},
+    ])
+    result = operations.wait_for_builds(CONFIG, ["b-1", "i-1"], poll_interval=0,
+                                        codebuild_client=cb)
+    assert result["success"] is True
+    assert result["statuses"] == {"b-1": "SUCCEEDED", "i-1": "SUCCEEDED"}
+    # A build that already succeeded is not polled again.
+    assert cb.calls == [["b-1", "i-1"], ["i-1"]]
+
+
+def test_wait_for_builds_fails_if_any_fails():
+    cb = FakeCodeBuild([{"b-1": "IN_PROGRESS", "i-1": "FAILED"}])
+    result = operations.wait_for_builds(CONFIG, ["b-1", "i-1"], poll_interval=0,
+                                        codebuild_client=cb)
+    assert result["success"] is False
+    assert result["buildId"] == "i-1"
+    assert result["status"] == "FAILED"
 
 
 def test_wait_for_build_succeeds():

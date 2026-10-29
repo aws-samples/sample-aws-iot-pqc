@@ -231,9 +231,12 @@ phases:
       - echo "Uploading firmware artifacts to s3://$FIRMWARE_BUCKET/$S3_PREFIX/..."
       - aws s3 cp "$BIN_FILE" "s3://$FIRMWARE_BUCKET/$S3_PREFIX/firmware.bin"
       - aws s3 cp "$MERGED_FILE" "s3://$FIRMWARE_BUCKET/$S3_PREFIX/firmware.merged.bin"
-      - aws s3 cp "$BUILD_DIR/"*.bootloader.bin "s3://$FIRMWARE_BUCKET/$S3_PREFIX/bootloader.bin" || true
-      - aws s3 cp "$BUILD_DIR/"*.partitions.bin "s3://$FIRMWARE_BUCKET/$S3_PREFIX/partitions.bin" || true
-      - aws s3 cp "$BUILD_DIR/boot_app0.bin" "s3://$FIRMWARE_BUCKET/$S3_PREFIX/boot_app0.bin" || true
+      # The Builder-Pi flashes these pieces (not firmware.merged.bin, which is
+      # padded to 8 MB and would overwrite the "certs" partition), so they
+      # are required.
+      - aws s3 cp "$BUILD_DIR/"*.bootloader.bin "s3://$FIRMWARE_BUCKET/$S3_PREFIX/bootloader.bin"
+      - aws s3 cp "$BUILD_DIR/"*.partitions.bin "s3://$FIRMWARE_BUCKET/$S3_PREFIX/partitions.bin"
+      - aws s3 cp "$BUILD_DIR/boot_app0.bin" "s3://$FIRMWARE_BUCKET/$S3_PREFIX/boot_app0.bin"
       # ─── OTA firmware SIGNING (Workstream 1) ────────────────────────────────
       # Sign firmware.bin with the STABLE per-era signer key from Secrets Manager
       # and upload firmware.bin.sig + the signer leaf cert. The device verifies

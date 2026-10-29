@@ -13,21 +13,20 @@ Flow:
   1. Operator plugs ESP32 into builder-pi USB
   2. GUI auto-detects device and shows serial number
   3. Operator clicks "Register & Flash"
-  4. Lambda registers device (cert from Private CA) and triggers CodeBuild
-  5. CodeBuild compiles classical firmware with device-specific certs
-  6. Builder-pi downloads firmware.merged.bin from S3
-  7. arduino-cli upload flashes the device
-  8. Device boots, connects to broker
+  4. Lambda registers the device and starts two CodeBuild jobs: the classical
+     firmware build and the device-identity job (device certs + WiFi in a
+     "certs" NVS partition image)
+  5. Builder-pi waits for both, downloads the app pieces and the identity image
+  6. esptool flashes both in one call; the identity image is then deleted
+  7. Device boots, connects to broker
+
+Reflash re-issues the identity (identityOnly) and reuses the firmware in S3.
 
 Future OTA updates (PQC firmware) delivered via presigned S3 URL over MQTT.
 """
 
-import json
-import os
 import threading
 import time
-import requests
-import boto3
 from flask import Flask, render_template, jsonify, request
 
 from device_manager import DeviceManager
@@ -252,73 +251,21 @@ def _registration_pipeline(port: str):
     device_manager.stop_serial_monitor(port)
 
     try:
-        # Step 1: Call the device-registrar API
-        slot.log(f'Registering device serial={slot.serial_number}')
-        api_url = f"{config['api_endpoint']}/register"
-
-        # Plug-and-flash: the only device-specific input is the auto-detected
-        # serial. WiFi, broker endpoint and firmware version are resolved
-        # server-side by the registrar Lambda from SSM (the single source of
-        # truth) / its env defaults — no operator input, no drift.
-        payload = {
-            'serialNumber': slot.serial_number,
-        }
-
-        # Use SigV4 auth (builder-pi has SSM role with API access)
-        session = get_fresh_boto3_session()
-        credentials = session.get_credentials().get_frozen_credentials()
-
-        from botocore.auth import SigV4Auth
-        from botocore.awsrequest import AWSRequest
-
-        aws_request = AWSRequest(method='POST', url=api_url,
-                                 data=json.dumps(payload),
-                                 headers={'Content-Type': 'application/json'})
-        SigV4Auth(credentials, 'execute-api', config['region']).add_auth(aws_request)
-        response = requests.post(api_url, json=payload,
-                                 headers=dict(aws_request.headers), timeout=30)
-
-        if response.status_code != 200:
+        # Step 1: register. Plug-and-flash: the only input is the auto-detected
+        # serial; WiFi, broker endpoint and firmware version are resolved
+        # server-side from SSM. Starts the firmware build AND the identity job.
+        reg = operations.register_device(config, slot.serial_number, logger=_SlotLogger(slot))
+        if not reg['success']:
             slot.status = 'error'
-            slot.error = f'Registration API returned {response.status_code}'
-            slot.log(f'ERROR: {slot.error}: {response.text}')
-            return
-
-        result = response.json()
-        slot.build_id = result.get('buildId')
-        slot.log(f'Registered! Build ID: {slot.build_id}')
-        slot.is_registered = True  # nosemgrep: is-function-without-parentheses
-
-        # Step 2: Wait for CodeBuild to complete
-        slot.status = 'building'
-        slot.log('Waiting for firmware compilation...')
-
-        if not _wait_for_build(slot):
-            slot.status = 'error'
-            slot.error = 'Firmware build failed or timed out'
+            slot.error = reg['message']
             slot.log(f'ERROR: {slot.error}')
             return
+        slot.build_id = reg['buildId']
+        slot.identity_build_id = reg['identityBuildId']
+        slot.is_registered = True  # nosemgrep: is-function-without-parentheses
 
-        slot.log('Firmware build complete!')
-
-        # Step 3: Download firmware from S3
-        firmware_dir = device_manager.download_firmware(slot)
-        if not firmware_dir:
-            slot.status = 'error'
-            return
-
-        # Step 4: Flash firmware via arduino-cli upload
-        success = device_manager.flash_firmware(port, firmware_dir)
-        if not success:
-            slot.status = 'error'
-            return
-
-        # Step 5: Verify boot
-        time.sleep(3)  # Wait for device to reset after flash  # nosemgrep: arbitrary-sleep
-        device_manager.verify_boot(port, timeout=45)
-
-        # Start serial monitor for ongoing observation
-        device_manager.start_serial_monitor(port)
+        # Steps 2-5: wait for both builds, download, flash, verify.
+        _build_and_flash(slot, port, reg, 'Waiting for firmware and identity builds...')
 
     except Exception as e:
         slot.status = 'error'
@@ -326,75 +273,75 @@ def _registration_pipeline(port: str):
         slot.log(f'ERROR: Pipeline failed: {e}')
 
 
-def _wait_for_build(slot, timeout: int = 600) -> bool:
-    """Poll CodeBuild until the build completes."""
-    if not slot.build_id:
+class _SlotLogger:
+    """Adapts DeviceSlot.log to the logger interface builder_core expects."""
+
+    def __init__(self, slot):
+        self.slot = slot
+
+    def info(self, message):
+        self.slot.log(message)
+
+    error = info
+
+
+def _build_and_flash(slot, port, reg, waiting_message):
+    """Wait for the registration's builds, then download, flash and verify."""
+    slot.status = 'building'
+    slot.log(waiting_message)
+    build = operations.wait_for_builds(config, operations.build_ids(reg),
+                                       logger=_SlotLogger(slot))
+    if not build['success']:
+        slot.status = 'error'
+        slot.error = build.get('message', 'Build failed or timed out')
+        slot.log(f'ERROR: {slot.error}')
+        return False
+    slot.log('Builds complete')
+
+    firmware_dir = device_manager.download_firmware(slot, reg['identityKey'])
+    if not firmware_dir:
+        slot.status = 'error'
         return False
 
-    session = get_fresh_boto3_session()
-    codebuild = session.client('codebuild')
-    start = time.time()
+    # Flash app + identity; deletes the identity image on success.
+    if not device_manager.flash_device(port, firmware_dir):
+        slot.status = 'error'
+        return False
 
-    while time.time() - start < timeout:
-        try:
-            response = codebuild.batch_get_builds(ids=[slot.build_id])
-            builds = response.get('builds', [])
-            if not builds:
-                time.sleep(10)  # nosemgrep: arbitrary-sleep
-                continue
+    time.sleep(3)  # Wait for device to reset after flash  # nosemgrep: arbitrary-sleep
+    device_manager.verify_boot(port, timeout=45)
 
-            build = builds[0]
-            status = build['buildStatus']
-            phase = build.get('currentPhase', 'UNKNOWN')
-
-            slot.log(f'Build: {status} (phase: {phase})')
-
-            if status == 'SUCCEEDED':
-                return True
-            elif status in ('FAILED', 'FAULT', 'TIMED_OUT', 'STOPPED'):
-                slot.log(f'Build failed: {status}')
-                return False
-
-        except Exception as e:
-            slot.log(f'Build poll error: {e}')
-
-        time.sleep(15)  # nosemgrep: arbitrary-sleep
-
-    slot.log('Build timed out waiting')
-    return False
+    # Start serial monitor for ongoing observation
+    device_manager.start_serial_monitor(port)
+    return True
 
 
 def _reflash_pipeline(port: str):
-    """Re-flash a device with existing firmware from S3 (no re-registration)."""
+    """Re-flash a registered device: existing firmware from S3, new identity.
+
+    The identity image is deleted after every flash, so a reflash asks the
+    registrar for a fresh one (identityOnly) — no firmware rebuild.
+    """
     slot = device_manager.devices.get(port)
     if not slot:
         return
 
     slot.error = None
-    slot.log('Starting reflash (using existing firmware in S3)...')
+    slot.log('Starting reflash (existing firmware, new identity)...')
 
     # Stop serial monitor during flash
     device_manager.stop_serial_monitor(port)
 
     try:
-        # Download firmware
-        firmware_dir = device_manager.download_firmware(slot)
-        if not firmware_dir:
+        reg = operations.register_device(config, slot.serial_number, identity_only=True,
+                                         logger=_SlotLogger(slot))
+        if not reg['success']:
             slot.status = 'error'
+            slot.error = reg['message']
+            slot.log(f'ERROR: {slot.error}')
             return
-
-        # Flash
-        success = device_manager.flash_firmware(port, firmware_dir)
-        if not success:
-            slot.status = 'error'
-            return
-
-        # Verify boot
-        time.sleep(3)  # nosemgrep: arbitrary-sleep -- settle delay after flash before reading boot output
-        device_manager.verify_boot(port, timeout=45)
-
-        # Restart serial monitor
-        device_manager.start_serial_monitor(port)
+        slot.identity_build_id = reg['identityBuildId']
+        _build_and_flash(slot, port, reg, 'Waiting for identity build...')
 
     except Exception as e:
         slot.status = 'error'

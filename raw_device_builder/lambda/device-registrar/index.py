@@ -95,8 +95,27 @@ def broker_from_ssm():
     return _get_ssm(BROKER_SSM_PARAM)
 
 
+def _start_identity_build(serial_number):
+    """Start the device-identity job for one serial; return its build id.
+
+    The job issues both device certs (classical + ML-DSA-44) and uploads the
+    device's certs NVS partition image. It reads the WiFi SSID and password
+    from Parameter Store itself, so only the serial is passed.
+    """
+    response = codebuild.start_build(
+        projectName=IDENTITY_PROJECT,
+        environmentVariablesOverride=[
+            {'name': 'DEVICE_SERIAL', 'value': serial_number, 'type': 'PLAINTEXT'},
+        ]
+    )
+    return response['build']['id']
+
+
 def handler(event, context):
-    """Register a new device and trigger firmware build."""
+    """Register a new device and trigger firmware build.
+
+    With {"identityOnly": true} (reflash), only re-issue the device identity.
+    """
     print(f"Event: {json.dumps(event)}")
 
     # Parse request
@@ -132,6 +151,29 @@ def handler(event, context):
     identity_key = f'identity/{serial_number}/certs.bin'
     account_id = context.invoked_function_arn.split(':')[4]
     region = os.environ.get('AWS_REGION', 'us-east-1')
+
+    # Reflash path: the device is already registered and its firmware is in S3;
+    # it only needs a fresh identity image (the Pi deletes the previous one
+    # after each flash). Start the identity job alone — no Thing/policy/registry
+    # writes and no firmware rebuild.
+    if body.get('identityOnly'):
+        try:
+            if 'Item' not in table.get_item(Key={'serialNumber': serial_number}):
+                return api_response(404, {'error': f'Device {serial_number} is not registered'})
+            identity_build_id = _start_identity_build(serial_number)
+        except Exception as e:
+            print(f"Error starting identity build for {serial_number}: {e}")
+            return api_response(500, {'success': False, 'error': str(e),
+                                      'serialNumber': serial_number})
+        return api_response(200, {
+            'success': True,
+            'thingName': thing_name,
+            'serialNumber': serial_number,
+            'identityBuildId': identity_build_id,
+            'firmwareBucket': FIRMWARE_BUCKET,
+            'identityKey': identity_key,
+            'message': f'Identity build for {thing_name}: {identity_build_id}',
+        })
 
     try:
         # ─── Step 1: Create IoT Thing ─────────────────────────────────────
@@ -262,13 +304,7 @@ def handler(event, context):
         # device's certs NVS partition image. The job reads the WiFi SSID and
         # password from Parameter Store itself, so only the serial is passed.
         print(f"Starting device identity build for {thing_name}...")
-        identity_response = codebuild.start_build(
-            projectName=IDENTITY_PROJECT,
-            environmentVariablesOverride=[
-                {'name': 'DEVICE_SERIAL', 'value': serial_number, 'type': 'PLAINTEXT'},
-            ]
-        )
-        identity_build_id = identity_response['build']['id']
+        identity_build_id = _start_identity_build(serial_number)
 
         # ─── Step 6: Trigger CodeBuild (classical firmware) ───────────────
         # The build issues the classical device cert itself (FIRMWARE_VARIANT
