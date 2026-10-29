@@ -71,22 +71,43 @@ change the production flow until 0.1–0.3 pass on a real board.
 
 ## Workstream 1 — Identity issuance at registration
 
-- [ ] 1.1 Add `esp-idf-nvs-partition-gen` (pinned) to the cert-issuer image.
-- [ ] 1.2 Add an identity mode to the issuer: write DER blobs, take a
+- [x] 1.1 Add `esp-idf-nvs-partition-gen` (pinned) to the cert-issuer image.
+      **Done:** `==0.3.0` in `shared/cert-issuer/Dockerfile` (runs on the image's
+      Python 3.10) and in `requirements-dev.txt` for the tests.
+- [x] 1.2 Add an identity mode to the issuer: write DER blobs, take a
       caller-supplied ML-DSA seed, and build `certs.bin` per the design layout.
       Add unit tests in `shared/cert-issuer/` (moto/mocked PCA).
-- [ ] 1.3 Add `raw_device_builder/codebuild/buildspec-identity.yml`: issue both
+      **Done:** `shared/cert-issuer/issue_device_identity.py`. No supplied seed
+      is needed: a random key exports to the same 54-byte seed-only PKCS#8.
+      Checks each key matches its cert before building. 23 tests with a fake
+      PCA that really signs the CSR. Real run in the cert-issuer image against
+      the pqc-a Private CAs produced a 64 KB image (blobs ~9.4 KB).
+- [x] 1.3 Add `raw_device_builder/codebuild/buildspec-identity.yml`: issue both
       certs, fetch both CA roots, build `certs.bin`, upload to
       `<serial>/identity/certs.bin`, scrub the working directory.
-- [ ] 1.4 CloudFormation: a `pqc-workshop-device-identity` CodeBuild project
+      **Done differently:** the buildspec is inline in the CodeBuild project
+      (one command), the script uploads with boto3 (the image has no AWS CLI),
+      and the key is `identity/<serial>/certs.bin`. Work files live in a
+      temporary directory.
+- [x] 1.4 CloudFormation: a `pqc-workshop-device-identity` CodeBuild project
       (cert-issuer image) with a least-privilege role (both CAs, SSM WiFi params
       with KMS decrypt via SSM, S3 put on `*/identity/*`, scoped logs). Pass the
       WiFi values as `PARAMETER_STORE`, not `PLAINTEXT`. _Requirements: R3.4_
-- [ ] 1.5 Firmware bucket: lifecycle rule to expire `*/identity/` after 1 day.
+      **Done** in `device-builder-stack.yaml` (`DeviceIdentityRole`, auto-named;
+      `DeviceIdentityProject`). cfn-lint clean.
+- [x] 1.5 Firmware bucket: lifecycle rule to expire `*/identity/` after 1 day.
       Builder-Pi role: `s3:DeleteObject` on `*/identity/*`. _Requirements: R3.5_
-- [ ] 1.6 Registrar: start the identity project instead of the firmware build,
+      **Done** on the `identity/` prefix (current and noncurrent versions, 1
+      day). Pi role: `DeleteObject` + `DeleteObjectVersion` on `identity/*` and
+      `BatchGetBuilds` on the identity project.
+- [x] 1.6 Registrar: start the identity project instead of the firmware build,
       and return its build id. Remove `wifiPassword` from the registry write.
       Update `device-registrar/test_index.py`. _Requirements: R3.1–R3.4_
+      **Done, with one change:** the registrar starts the identity job AND
+      still starts the firmware build (shared images are workstream 4, out of
+      scope). Response adds `identityBuildId` and `identityKey`. Serial is
+      validated (400 on bad input). `wifiPassword` removed from the registry,
+      and `prepare-build` no longer falls back to it.
 
 ## Workstream 2 — Builder-Pi flashing
 

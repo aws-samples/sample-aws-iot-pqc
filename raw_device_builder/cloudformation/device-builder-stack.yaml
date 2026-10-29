@@ -261,6 +261,16 @@ Resources:
             Status: Enabled
             NoncurrentVersionExpiration:
               NoncurrentDays: 90
+          # Device identity images (identity/<serial>/certs.bin) hold device
+          # private keys. The Builder-Pi deletes each one after flashing; this
+          # is the backstop for any left behind (failed flash, unplugged
+          # device), including old versions in this versioned bucket.
+          - Id: ExpireDeviceIdentity
+            Status: Enabled
+            Prefix: identity/
+            ExpirationInDays: 1
+            NoncurrentVersionExpiration:
+              NoncurrentDays: 1
 
   # ═══════════════════════════════════════════════════════════════════════════
   # DynamoDB — Device Registry
@@ -361,7 +371,11 @@ Resources:
                 Action:
                   - codebuild:StartBuild
                   - codebuild:BatchGetBuilds
-                Resource: !GetAtt FirmwareBuildProject.Arn
+                Resource:
+                  - !GetAtt FirmwareBuildProject.Arn
+                  # The registrar also starts the device-identity job (both
+                  # device certs + WiFi -> certs NVS image) at registration.
+                  - !GetAtt DeviceIdentityProject.Arn
               - Effect: Allow
                 Action:
                   - s3:PutObject
@@ -428,6 +442,7 @@ Resources:
           DEVICE_TABLE: pqc-workshop-devices
           FIRMWARE_BUCKET: !Sub '${FirmwareBucketName}-${AWS::AccountId}'
           BUILD_PROJECT: !Ref FirmwareBuildProject
+          IDENTITY_PROJECT: !Ref DeviceIdentityProject
           IOT_ENDPOINT: !Ref IoTEndpoint
           DEFAULT_WIFI_SSID: !Ref DefaultWifiSsid
           DEFAULT_WIFI_PASSWORD: !Ref DefaultWifiPassword
@@ -1418,6 +1433,139 @@ Resources:
       TimeoutInMinutes: 15
 
   # ═══════════════════════════════════════════════════════════════════════════
+  # CodeBuild — Device identity (certs NVS partition image)
+  # ═══════════════════════════════════════════════════════════════════════════
+  # Started by the registrar when a device is plugged into the Builder-Pi. Runs
+  # issue_device_identity.py in the shared cert-issuer image (built by the
+  # broker stack): issues the classical and ML-DSA-44 device certs, adds both CA
+  # roots and the workshop WiFi, and uploads the 64 KB "certs" NVS partition
+  # image to identity/<serial>/certs.bin for the Pi to flash at 0x721000.
+  # No firmware is compiled. See .kiro/specs/nvs-device-identity/design.md.
+
+  DeviceIdentityRole:
+    Type: AWS::IAM::Role
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W11
+            reason: "ecr:GetAuthorizationToken does not support resource-level scoping and requires Resource:'*'; kms:Decrypt is constrained by a kms:ViaService condition to SSM"
+      checkov:
+        skip:
+          - id: CKV_AWS_111
+            comment: "ecr:GetAuthorizationToken does not support resource-level scoping and requires Resource:'*'; kms:Decrypt is constrained by a kms:ViaService condition to SSM"
+          - id: CKV_AWS_109
+            comment: "ecr:GetAuthorizationToken does not support resource-level scoping and requires Resource:'*'; kms:Decrypt is constrained by a kms:ViaService condition to SSM"
+    Properties:
+      # No RoleName: auto-named, referenced only via !GetAtt (avoids name
+      # collisions on repeat deploys into a shared test account).
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codebuild.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: DeviceIdentityPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource:
+                  - !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/pqc-workshop-device-identity'
+                  - !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/pqc-workshop-device-identity:*'
+              - Effect: Allow
+                Action:
+                  - ecr:GetAuthorizationToken
+                Resource: '*'
+              # The shared cert-issuer image lives in the broker stack's repo.
+              - Effect: Allow
+                Action:
+                  - ecr:BatchCheckLayerAvailability
+                  - ecr:GetDownloadUrlForLayer
+                  - ecr:BatchGetImage
+                Resource: !Sub 'arn:aws:ecr:${AWS::Region}:${AWS::AccountId}:repository/pqc-workshop-cert-issuer'
+              - Effect: Allow
+                Action:
+                  - acm-pca:IssueCertificate
+                  - acm-pca:GetCertificate
+                  - acm-pca:GetCertificateAuthorityCertificate
+                Resource:
+                  - !Ref PrivateCAArn
+                  - !Ref MlDsaPrivateCAArn
+              # WiFi SSID/password, resolved by CodeBuild as PARAMETER_STORE
+              # environment variables (never plaintext in the project or build).
+              - Effect: Allow
+                Action:
+                  - ssm:GetParameters
+                Resource:
+                  - !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/pqc-workshop/wifi/ssid'
+                  - !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/pqc-workshop/wifi/password'
+              - Effect: Allow
+                Action:
+                  - kms:Decrypt
+                Resource: !Sub 'arn:aws:kms:${AWS::Region}:${AWS::AccountId}:key/*'
+                Condition:
+                  StringEquals:
+                    kms:ViaService: !Sub 'ssm.${AWS::Region}.amazonaws.com'
+              - Effect: Allow
+                Action:
+                  - s3:PutObject
+                Resource: !Sub '${FirmwareBucket.Arn}/identity/*'
+
+  DeviceIdentityProject:
+    Type: AWS::CodeBuild::Project
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W32
+            reason: "default AWS-managed CodeBuild encryption key"
+    Properties:
+      Name: pqc-workshop-device-identity
+      Description: Issues a device's classical + ML-DSA-44 certs and builds its certs NVS partition image
+      ServiceRole: !GetAtt DeviceIdentityRole.Arn
+      TimeoutInMinutes: 10
+      Source:
+        Type: NO_SOURCE
+        # The issuer script is baked into the cert-issuer image; nothing to fetch.
+        BuildSpec: |
+          version: 0.2
+          phases:
+            build:
+              commands:
+                - python3 /var/task/issue_device_identity.py
+      Artifacts:
+        Type: NO_ARTIFACTS
+      Environment:
+        Type: LINUX_CONTAINER
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: !Sub '${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/pqc-workshop-cert-issuer:latest'
+        ImagePullCredentialsType: SERVICE_ROLE
+        EnvironmentVariables:
+          - Name: DEVICE_SERIAL
+            Value: placeholder
+          - Name: CA_ARN
+            Value: !Ref PrivateCAArn
+          - Name: MLDSA_CA_ARN
+            Value: !Ref MlDsaPrivateCAArn
+          - Name: FIRMWARE_BUCKET
+            Value: !Sub '${FirmwareBucketName}-${AWS::AccountId}'
+          - Name: WIFI_SSID
+            Type: PARAMETER_STORE
+            Value: /pqc-workshop/wifi/ssid
+          - Name: WIFI_PASSWORD
+            Type: PARAMETER_STORE
+            Value: /pqc-workshop/wifi/password
+      LogsConfig:
+        CloudWatchLogs:
+          Status: ENABLED
+          GroupName: /aws/codebuild/pqc-workshop-device-identity
+
+  # ═══════════════════════════════════════════════════════════════════════════
   # SSM — Builder-Pi Access Role
   # ═══════════════════════════════════════════════════════════════════════════
 
@@ -1467,7 +1615,18 @@ Resources:
               - Effect: Allow
                 Action:
                   - codebuild:BatchGetBuilds
-                Resource: !GetAtt FirmwareBuildProject.Arn
+                Resource:
+                  - !GetAtt FirmwareBuildProject.Arn
+                  - !GetAtt DeviceIdentityProject.Arn
+              # After flashing a device's identity image the Pi deletes it
+              # (identity/<serial>/certs.bin holds the device private keys).
+              # DeleteObjectVersion removes the exact version it downloaded,
+              # so the keys do not linger as a noncurrent version.
+              - Effect: Allow
+                Action:
+                  - s3:DeleteObject
+                  - s3:DeleteObjectVersion
+                Resource: !Sub '${FirmwareBucket.Arn}/identity/*'
               # Read the workshop config params, incl. the WiFi SSID/password
               # the builder-Pi hostapd AP setup broadcasts. The password is a
               # SecureString, so allow kms:Decrypt scoped to the SSM service.
@@ -1532,6 +1691,10 @@ Outputs:
   CodeBuildProjectName:
     Description: CodeBuild project for firmware compilation
     Value: !Ref FirmwareBuildProject
+
+  DeviceIdentityProjectName:
+    Description: CodeBuild project that builds a device's certs NVS partition image at registration
+    Value: !Ref DeviceIdentityProject
 
   ECRRepositoryUri:
     Description: ECR repository for the build image

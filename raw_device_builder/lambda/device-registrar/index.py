@@ -9,18 +9,21 @@ Performs the device registration workflow:
   1. Creates IoT Thing
   2. Creates per-device IoT policy
   3. Stores metadata in DynamoDB device registry
-  4. Triggers CodeBuild to compile device-specific firmware (classical TLS)
+  4. Starts the device-identity CodeBuild job (IDENTITY_PROJECT): issues the
+     classical + ML-DSA-44 device certs and builds the device's "certs" NVS
+     partition image at identity/<serial>/certs.bin
+  5. Triggers CodeBuild to compile the classical firmware (BUILD_PROJECT)
 
-The device certificate is issued INSIDE the CodeBuild firmware build
-(buildspec.yml), which generates the keypair + CSR and issues from the correct
-AWS Private CA per FIRMWARE_VARIANT — so this Lambda no longer needs openssl or
-a CA ARN, and the private key never flows through Lambda. Firmware 0 uses
-classical TLS — PQC migration happens via OTA (Firmware 1+).
+Device keys are generated inside CodeBuild (the identity job, and for now also
+the firmware build), never in this Lambda. Firmware 0 uses classical TLS — PQC
+migration happens via OTA (Firmware 1+). The WiFi password is NOT stored in the
+registry: SSM is the single source of truth.
 
 Environment variables:
   REGISTRY_TABLE — DynamoDB table for device registry
-  FIRMWARE_BUCKET — S3 bucket for compiled firmware
-  BUILD_PROJECT — CodeBuild project name
+  FIRMWARE_BUCKET — S3 bucket for compiled firmware and identity images
+  BUILD_PROJECT — firmware CodeBuild project name
+  IDENTITY_PROJECT — device-identity CodeBuild project name
   IOT_ENDPOINT — AWS IoT Core data endpoint
   DEFAULT_WIFI_SSID — Default WiFi SSID
   DEFAULT_BROKER_ENDPOINT — Default Mosquitto broker IP/NLB endpoint
@@ -29,7 +32,10 @@ Environment variables:
 import boto3
 import json
 import os
+import re
 from datetime import datetime, timezone
+
+SERIAL_RE = re.compile(r'^[A-Z0-9]{4,16}$')
 
 iot = boto3.client('iot')
 dynamodb = boto3.resource('dynamodb')
@@ -48,6 +54,7 @@ TABLE_NAME = os.environ['REGISTRY_TABLE']
 DEVICE_TABLE_NAME = os.environ.get('DEVICE_TABLE', 'pqc-workshop-devices')
 FIRMWARE_BUCKET = os.environ['FIRMWARE_BUCKET']
 BUILD_PROJECT = os.environ['BUILD_PROJECT']
+IDENTITY_PROJECT = os.environ['IDENTITY_PROJECT']
 IOT_ENDPOINT = os.environ['IOT_ENDPOINT']
 DEFAULT_WIFI_SSID = os.environ.get('DEFAULT_WIFI_SSID', 'workshop-wifi')
 DEFAULT_WIFI_PASSWORD = os.environ.get('DEFAULT_WIFI_PASSWORD', '')
@@ -101,6 +108,10 @@ def handler(event, context):
     serial_number = body.get('serialNumber')
     if not serial_number:
         return api_response(400, {'error': 'Missing serialNumber'})
+    # Same rule as the identity job (issue_device_identity.validate_serial):
+    # the serial becomes a cert CN and an S3 key, so reject anything odd here.
+    if not SERIAL_RE.match(serial_number):
+        return api_response(400, {'error': 'Invalid serialNumber (expected 4-16 of A-Z0-9)'})
 
     # WiFi resolution order: explicit GUI override -> SSM (live source of truth)
     # -> env-var fallback. SSM lets the workshop WiFi be rotated without a
@@ -117,6 +128,8 @@ def handler(event, context):
     firmware_version = body.get('firmwareVersion', '1.0.0-classical')
 
     thing_name = f'esp32-{serial_number}'
+    # Where the identity job uploads the device's certs NVS partition image.
+    identity_key = f'identity/{serial_number}/certs.bin'
     account_id = context.invoked_function_arn.split(':')[4]
     region = os.environ.get('AWS_REGION', 'us-east-1')
 
@@ -205,14 +218,12 @@ def handler(event, context):
             'status': 'registered',
             'registeredAt': datetime.now(timezone.utc).isoformat(),
             'wifiSsid': wifi_ssid,
-            # Persist the WiFi password so the PQC migration (prepare-build)
-            # rebuilds firmware with the SAME credentials the device was flashed
-            # with. Without this the registry entry (recreated from telemetry,
-            # which does not carry the password) lacks wifiPassword and migration
-            # falls back to the deploy default — a mismatch strands the device on
-            # a WPA2 4-way-handshake timeout after it reboots into PQC firmware.
-            'wifiPassword': wifi_password,
-            'brokerEndpoint': broker_endpoint
+            # The WiFi password is deliberately NOT stored here (it used to be,
+            # in plaintext). SSM /pqc-workshop/wifi/password is the single
+            # source of truth: the identity job reads it from Parameter Store,
+            # and prepare-build resolves it from SSM first.
+            'brokerEndpoint': broker_endpoint,
+            'identityKey': identity_key,
         })
 
         # ─── Step 4b: Seed the dashboard device table ─────────────────────
@@ -246,7 +257,20 @@ def handler(event, context):
             # appear once seeded. Log loudly so this is visible.
             print(f"WARNING: failed to seed dashboard row for {thing_name}: {e}")
 
-        # ─── Step 5: Trigger CodeBuild (classical firmware) ───────────────
+        # ─── Step 5: Start the device-identity job ────────────────────────
+        # Issues both device certs (classical + ML-DSA-44) and builds the
+        # device's certs NVS partition image. The job reads the WiFi SSID and
+        # password from Parameter Store itself, so only the serial is passed.
+        print(f"Starting device identity build for {thing_name}...")
+        identity_response = codebuild.start_build(
+            projectName=IDENTITY_PROJECT,
+            environmentVariablesOverride=[
+                {'name': 'DEVICE_SERIAL', 'value': serial_number, 'type': 'PLAINTEXT'},
+            ]
+        )
+        identity_build_id = identity_response['build']['id']
+
+        # ─── Step 6: Trigger CodeBuild (classical firmware) ───────────────
         # The build issues the classical device cert itself (FIRMWARE_VARIANT
         # defaults to 'classical' in the build project); no cert material is
         # passed from here. BROKER_PORT is left unset so the build applies the
@@ -272,9 +296,12 @@ def handler(event, context):
             'serialNumber': serial_number,
             'certType': 'PrivateCA-ECDSA',
             'buildId': build_id,
+            'identityBuildId': identity_build_id,
             'firmwareBucket': FIRMWARE_BUCKET,
             'firmwareKey': f'{serial_number}/{firmware_version}/firmware.bin',
-            'message': f'Device {thing_name} registered. Classical firmware build: {build_id}'
+            'identityKey': identity_key,
+            'message': (f'Device {thing_name} registered. Classical firmware build: '
+                        f'{build_id}; identity build: {identity_build_id}')
         })
 
     except Exception as e:

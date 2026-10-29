@@ -26,11 +26,13 @@ reads identity from NVS at boot.
    **device-identity** CodeBuild project instead of the firmware build.
 3. The identity job (cert-issuer image):
    - issues the classical cert (`--key-mode ec-p256`, classical CA);
-   - issues the ML-DSA-44 cert from a known 32-byte seed (ML-DSA CA);
+   - issues the ML-DSA-44 cert (ML-DSA CA), then exports the key as a 54-byte
+     seed-only PKCS#8 (OpenSSL keeps the seed for a randomly generated key);
    - fetches both CA roots;
-   - converts everything to DER and builds `certs.bin` with
-     `nvs_partition_gen.py`;
-   - uploads `s3://<firmware-bucket>/<serial>/identity/certs.bin`;
+   - checks each private key matches its certificate, converts everything to
+     DER and builds `certs.bin` with `esp-idf-nvs-partition-gen`;
+   - uploads `s3://<firmware-bucket>/identity/<serial>/certs.bin` (one
+     top-level prefix, so a single lifecycle rule can expire them);
    - deletes its working directory.
 4. The Pi polls the build, downloads the shared app pieces and `certs.bin`, and
    flashes them in one call:
@@ -40,7 +42,8 @@ reads identity from NVS at boot.
    (found in spike 0.1). The pieces are about 0.6 MB, so flashing is also much
    faster than today's 8 MB write. `boot_app0.bin` at `0xe000` resets
    `otadata` so the device boots `ota_0`.
-   After a successful flash it deletes `<serial>/identity/`.
+   After a successful flash it deletes `identity/<serial>/certs.bin`, using
+   the exact version it downloaded (`DeleteObjectVersion`).
 5. The device boots, loads identity from NVS, and connects.
 
 ## Partition table
@@ -125,17 +128,23 @@ certificate's.
 
 - Image: `pqc-workshop-cert-issuer` (already has OpenSSL 3.5 and
   `issue_cert.py`). Add a pinned `esp-idf-nvs-partition-gen` from pip.
-- Source: a new `buildspec-identity.yml` alongside `buildspec.yml`.
-- Environment: `DEVICE_SERIAL` (override), both CA ARNs, and the WiFi SSID and
-  password as `PARAMETER_STORE` values from `/pqc-workshop/wifi/*`.
+- Source: none. The buildspec is inline in the project (`python3
+  /var/task/issue_device_identity.py`); the script is baked into the image, so
+  nothing extra is staged by deploy-workshop.sh.
+- Environment: `DEVICE_SERIAL` (override), both CA ARNs, `FIRMWARE_BUCKET`,
+  and the WiFi SSID and password as `PARAMETER_STORE` values from
+  `/pqc-workshop/wifi/*`.
 - Role: `acm-pca:IssueCertificate`/`GetCertificate`/
   `GetCertificateAuthorityCertificate` on both CAs, `ssm:GetParameters` plus
-  `kms:Decrypt` via SSM on `/pqc-workshop/wifi/*`, `s3:PutObject` on
-  `<firmware-bucket>/*/identity/*`, logs scoped to the project.
-- Output: `<serial>/identity/certs.bin` only. No firmware compile.
+  `kms:Decrypt` via SSM on the two WiFi parameters, `s3:PutObject` on
+  `<firmware-bucket>/identity/*`, logs scoped to the project.
+- Output: `identity/<serial>/certs.bin` only. No firmware compile.
+- The registrar also still starts the per-device firmware build; shared
+  images (workstream 4) are out of scope for now.
 
-The Pi needs `s3:DeleteObject` on `*/identity/*`. Add an S3 lifecycle rule that
-expires `*/identity/` objects after 1 day as a backstop.
+The Pi needs `s3:DeleteObject` and `s3:DeleteObjectVersion` on `identity/*`.
+An S3 lifecycle rule on the `identity/` prefix expires current and noncurrent
+versions after 1 day as a backstop.
 
 ## Firmware loading
 

@@ -83,6 +83,17 @@ def _run(argv):
     return proc
 
 
+def _run_bytes(argv, stdin=None):
+    """Like _run, but binary: optional stdin bytes, returns stdout bytes."""
+    proc = subprocess.run(argv, input=stdin, capture_output=True)  # nosemgrep: dangerous-subprocess-use-audit — argv list, no shell, inputs sanitized
+    if proc.returncode != 0:
+        raise RuntimeError(
+            f"command failed ({proc.returncode}): {' '.join(argv)}\n"
+            f"{proc.stderr.decode(errors='replace')}"
+        )
+    return proc.stdout
+
+
 def generate_key_and_csr(common_name, key_mode, subject_org, subject_ou, country, workdir):
     """Generate the private key + CSR for the given key mode. Returns (key_path,
     csr_path). ML-DSA uses OpenSSL 3.5; EC uses the stock openssl."""

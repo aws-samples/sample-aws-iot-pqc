@@ -246,13 +246,12 @@ def resolve_build_env(device):
         or device.get("brokerEndpoint")
         or os.environ.get("DEFAULT_BROKER_ENDPOINT", "")
     )
-    # WiFi resolution: SSM (live source of truth) -> registry value (what the
-    # device was flashed with) -> env fallback.
+    # WiFi resolution: SSM (live source of truth) -> env fallback. The registry
+    # no longer stores the password (it was a plaintext copy); the SSID is still
+    # recorded there and used as a middle fallback.
     ssm_ssid, ssm_password = wifi_from_ssm()
     wifi_ssid = ssm_ssid or device.get("wifiSsid") or os.environ.get("DEFAULT_WIFI_SSID", "")
-    wifi_password = (
-        ssm_password or device.get("wifiPassword") or os.environ.get("DEFAULT_WIFI_PASSWORD", "")
-    )
+    wifi_password = ssm_password or os.environ.get("DEFAULT_WIFI_PASSWORD", "")
     return {
         "wifiSsid": wifi_ssid,
         "wifiPassword": wifi_password,

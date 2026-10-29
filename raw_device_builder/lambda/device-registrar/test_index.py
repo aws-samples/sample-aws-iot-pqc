@@ -41,6 +41,7 @@ def _env():
         "DEVICE_TABLE": DEVICE_TABLE,
         "FIRMWARE_BUCKET": FIRMWARE_BUCKET,
         "BUILD_PROJECT": "pqc-workshop-build-firmware",
+        "IDENTITY_PROJECT": "pqc-workshop-device-identity",
         "IOT_ENDPOINT": "example-ats.iot.us-east-1.amazonaws.com",
         "DEFAULT_WIFI_SSID": "reinvent-pqc-iot-wifi",
         "DEFAULT_WIFI_PASSWORD": "changeme",
@@ -69,17 +70,18 @@ def _setup_aws():
         thingTypeName="esp32-pqc-device"
     )
     cb = boto3.client("codebuild", region_name="us-east-1")
-    cb.create_project(
-        name="pqc-workshop-build-firmware",
-        source={"type": "S3", "location": f"{FIRMWARE_BUCKET}/source/"},
-        artifacts={"type": "NO_ARTIFACTS"},
-        environment={
-            "type": "LINUX_CONTAINER",
-            "image": "aws/codebuild/standard:7.0",
-            "computeType": "BUILD_GENERAL1_SMALL",
-        },
-        serviceRole="arn:aws:iam::123456789012:role/service-role/cb",
-    )
+    for name in ("pqc-workshop-build-firmware", "pqc-workshop-device-identity"):
+        cb.create_project(
+            name=name,
+            source={"type": "S3", "location": f"{FIRMWARE_BUCKET}/source/"},
+            artifacts={"type": "NO_ARTIFACTS"},
+            environment={
+                "type": "LINUX_CONTAINER",
+                "image": "aws/codebuild/standard:7.0",
+                "computeType": "BUILD_GENERAL1_SMALL",
+            },
+            serviceRole="arn:aws:iam::123456789012:role/service-role/cb",
+        )
 
 
 @mock_aws
@@ -146,3 +148,52 @@ def test_missing_serial_returns_400():
     result = mod.handler({}, None)
     assert result["statusCode"] == 400
     assert "error" in json.loads(result["body"])
+
+
+@mock_aws
+def test_registration_starts_identity_build_and_returns_its_key():
+    """Registration starts the device-identity job (certs NVS image) as well as
+    the firmware build, and tells the Pi where the identity image will land."""
+    _setup_aws()
+    _env()
+    mod = load_handler_module(os.path.join(HERE, "index.py"), "device_registrar_index4")
+
+    body = json.loads(mod.handler({"serialNumber": "C69DE0"}, _Ctx())["body"])
+
+    assert body["identityKey"] == "identity/C69DE0/certs.bin"
+    assert body["identityBuildId"].startswith("pqc-workshop-device-identity:")
+    assert body["buildId"].startswith("pqc-workshop-build-firmware:")
+    cb = boto3.client("codebuild", region_name="us-east-1")
+    assert len(cb.list_builds_for_project(projectName="pqc-workshop-device-identity")["ids"]) == 1
+    assert len(cb.list_builds_for_project(projectName="pqc-workshop-build-firmware")["ids"]) == 1
+
+
+@mock_aws
+def test_registry_does_not_store_wifi_password():
+    """SSM is the single source of truth for the WiFi password; the registry
+    must not keep a plaintext copy (threat model T013)."""
+    _setup_aws()
+    _env()
+    mod = load_handler_module(os.path.join(HERE, "index.py"), "device_registrar_index5")
+
+    mod.handler({"serialNumber": "C69DE0", "wifiPassword": "secret-pass-123"}, _Ctx())
+
+    reg = boto3.resource("dynamodb", region_name="us-east-1").Table(REGISTRY_TABLE).get_item(
+        Key={"serialNumber": "C69DE0"})["Item"]
+    assert "wifiPassword" not in reg
+    assert "secret-pass-123" not in json.dumps(reg, default=str)
+    assert reg["identityKey"] == "identity/C69DE0/certs.bin"
+
+
+@mock_aws
+def test_invalid_serial_returns_400_without_starting_builds():
+    _setup_aws()
+    _env()
+    mod = load_handler_module(os.path.join(HERE, "index.py"), "device_registrar_index6")
+
+    for bad in ("c69de0", "C69DE0/../x", "AB", "esp32-C69DE0"):
+        result = mod.handler({"serialNumber": bad}, _Ctx())
+        assert result["statusCode"] == 400, bad
+
+    cb = boto3.client("codebuild", region_name="us-east-1")
+    assert cb.list_builds_for_project(projectName="pqc-workshop-device-identity")["ids"] == []
