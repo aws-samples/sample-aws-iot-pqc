@@ -1,0 +1,126 @@
+# Tasks — Device identity in a dedicated NVS partition
+
+Branch: `feature/nvs-device-identity`. Workstream 0 spikes gate the rest: don't
+change the production flow until 0.1–0.3 pass on a real board.
+
+## Workstream 0 — Feasibility spikes (gating)
+
+- [ ] 0.1 **Partition table.** Add `certs, data, nvs, 0x721000, 0x10000,` to
+      `esp32-flash/partitions_pqc_workshop.csv`. Generate the `.bin` with
+      `gen_esp32part.py` and check `certs` is at `0x721000` and nothing else
+      moved. Rebuild the firmware-builder image, compile the current classical
+      sketch unchanged, flash a pqc-a device, and confirm it boots and connects
+      as before. _Requirements: R1.1, R1.2_
+      **Progress:** CSV and tracked `.bin` updated; compiled in the production
+      firmware-builder image (core 3.3.10, wolfSSL 5.8.4) and the build's table
+      has `certs` at 0x721000/64 KB with the first 6 entries byte-identical.
+      Found: `firmware.merged.bin` is padded to 8 MB and overlaps `certs`, so
+      flashing must use the pieces (see 2.1). Remaining: device boot test.
+- [ ] 0.2 **ML-DSA-44 seed round trip.** In the cert-issuer image:
+      - generate a 32-byte seed;
+      - derive the key with OpenSSL 3.5 (`genpkey -algorithm ML-DSA-44
+        -pkeyopt hexseed:...`; confirm the option exists);
+      - issue a cert from the pqc-a ML-DSA CA.
+
+      On a device, run a test sketch that:
+      - calls `wc_dilithium_make_key_from_seed()`, exports the public key, and
+        checks it equals the cert's public key;
+      - completes a TLS handshake to the broker on 8884 with the derived key.
+
+      Record the derivation time and peak heap. If it fails, try option B
+      (seed-only PKCS#8), then fall back to a full key DER blob.
+      _Requirements: R2.2_
+      **Progress:** issuer side PASSED in the cert-issuer image (OpenSSL
+      3.5.8): `genpkey -pkeyopt hexseed:` accepts a supplied seed, regenerates
+      an identical key, and writes a 54-byte seed-only PKCS#8. The spike sketch
+      (`esp32-flash/spikes/nvs_identity_spike/`) compiles against the device
+      wolfSSL build, so `wc_dilithium_make_key_from_seed`, `KeyToDer` and
+      `PrivateKeyDecode` are all present. Remaining: run on a board. The TLS
+      handshake to 8884 is deferred to 3.3 (the spike checks the key/cert pair
+      in a TLS 1.3 context, without a network).
+- [ ] 0.3 **NVS image round trip.** Build a `certs.bin` with
+      `nvs_partition_gen.py` from real DER blobs and the strings in the design
+      layout. Flash it at `0x721000` alongside the app. A test sketch opens
+      `certs`/`devid` read-only and prints each entry's length and SHA-256; check
+      they match the source files. Confirm the ML-DSA cert (4.1 KB) reads back
+      as a blob. _Requirements: R1.3, R2.1, R2.3_
+      **Progress:** `esp32-flash/spikes/make_spike_identity.sh` builds a
+      throwaway identity in the cert-issuer image; `esp-idf-nvs-partition-gen`
+      0.3.0 produced a 64 KB `certs.bin` (V2, multipage blobs). Remaining: run
+      on a board.
+- [x] 0.4 **Pin wolfSSL.** Change `arduino-cli lib install "wolfssl"` to a pinned
+      version (`wolfssl@5.8.4`, or the version 0.2 proves) in
+      `raw_device_builder/codebuild/Dockerfile`. _Requirements: R5.3_
+      **Done:** pinned to `wolfssl@5.8.4`, the version in the current pqc-a
+      image. Takes effect on the next firmware-builder image build.
+
+## Workstream 1 — Identity issuance at registration
+
+- [ ] 1.1 Add `esp-idf-nvs-partition-gen` (pinned) to the cert-issuer image.
+- [ ] 1.2 Add an identity mode to the issuer: write DER blobs, take a
+      caller-supplied ML-DSA seed, and build `certs.bin` per the design layout.
+      Add unit tests in `shared/cert-issuer/` (moto/mocked PCA).
+- [ ] 1.3 Add `raw_device_builder/codebuild/buildspec-identity.yml`: issue both
+      certs, fetch both CA roots, build `certs.bin`, upload to
+      `<serial>/identity/certs.bin`, scrub the working directory.
+- [ ] 1.4 CloudFormation: a `pqc-workshop-device-identity` CodeBuild project
+      (cert-issuer image) with a least-privilege role (both CAs, SSM WiFi params
+      with KMS decrypt via SSM, S3 put on `*/identity/*`, scoped logs). Pass the
+      WiFi values as `PARAMETER_STORE`, not `PLAINTEXT`. _Requirements: R3.4_
+- [ ] 1.5 Firmware bucket: lifecycle rule to expire `*/identity/` after 1 day.
+      Builder-Pi role: `s3:DeleteObject` on `*/identity/*`. _Requirements: R3.5_
+- [ ] 1.6 Registrar: start the identity project instead of the firmware build,
+      and return its build id. Remove `wifiPassword` from the registry write.
+      Update `device-registrar/test_index.py`. _Requirements: R3.1–R3.4_
+
+## Workstream 2 — Builder-Pi flashing
+
+- [ ] 2.1 `device_manager.py`: download the app pieces (bootloader,
+      partitions, boot_app0, app) and `<serial>/identity/certs.bin`; flash them
+      in one `esptool write_flash` call at 0x0 / 0x8000 / 0xe000 / 0x10000 /
+      0x721000. Do not use `firmware.merged.bin` (8 MB, overlaps `certs`). The
+      firmware build must upload the pieces (it already uploads bootloader,
+      partitions and boot_app0).
+- [ ] 2.2 After a successful flash, delete `<serial>/identity/`. On failure,
+      keep it for a retry.
+- [ ] 2.3 Reflash without re-registering: re-run identity issuance, then flash.
+      _Requirements: R4.2_
+- [ ] 2.4 Update `builder-pi/tests/` (operations and CLI) for the two-image
+      flash and the cleanup.
+
+## Workstream 3 — Firmware loads identity from NVS
+
+- [ ] 3.1 Classical sketch: identity loader (version check, WiFi strings,
+      classical CA root, cert and key as DER via `WOLFSSL_FILETYPE_ASN1`). Fail
+      closed with a clear `[Setup]` log if anything is missing.
+      _Requirements: R5.1, R5.2_
+- [ ] 3.2 PQC sketch: same loader (classical cert, ML-KEM key exchange).
+- [ ] 3.3 ML-DSA sketch: loader plus the seed-derived ML-DSA key from 0.2.
+- [ ] 3.4 Load both CA roots into the OTA signer verifier from NVS, replacing
+      the baked `OTA_SIGNER_CA_ROOT`. _Requirements: R2.4_
+- [ ] 3.5 Remove identity and WiFi from `secrets.h` generation in
+      `buildspec.yml`. Keep only non-secret build settings.
+
+## Workstream 4 — Shared images and migration
+
+- [ ] 4.1 Build each variant once per deployment with no per-device inputs, sign
+      it, and upload to `shared/<version>/`. Wire it into `deploy-workshop.sh`
+      after the firmware-builder image build. _Requirements: R6.1_
+- [ ] 4.2 `prepare-build` / state machine: no per-device build for migrations;
+      `publish-ota` presigns the shared image and signature. Update the ASL test.
+      _Requirements: R6.2_
+- [ ] 4.3 Registrar first flash uses the shared classical image (pairs with 2.1).
+
+## Workstream 5 — Validation and docs
+
+- [ ] 5.1 pqc-a end to end: plug in and register two devices; both online on the
+      dashboard; each migrates classical → PQC → ML-DSA; identity intact after
+      every OTA; `<serial>/identity/` removed after flashing. _Requirements: R7.1_
+- [ ] 5.2 Teardown: deregister removes the Thing and registry entry; lifecycle
+      clears any stale identity objects; update `teardown-workshop.sh` if needed.
+- [ ] 5.3 Update `cloudformation/DEPLOYMENT.md`, the README code walkthrough,
+      and the workshop docs (flash layout and registration flow).
+- [ ] 5.4 Update the threat model (T003, T011, T013, and the T005 note), re-run
+      `add_tc_metadata.py`.
+- [ ] 5.5 Definition of done: destroy and rebuild pqc-b, then pqc-a, from
+      scratch, both fully working. _Requirements: R7.2_

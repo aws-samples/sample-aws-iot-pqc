@@ -71,7 +71,10 @@ RUN arduino-cli config init \
     && arduino-cli core install esp32:esp32@3.3.10
 
 # Install required libraries
-RUN arduino-cli lib install "wolfssl" \
+# wolfSSL is pinned: the firmware relies on the 5.8.x ML-DSA API names
+# (wc_dilithium_*, incl. wc_dilithium_make_key_from_seed for the NVS identity
+# seed), which 5.9.x renamed to wc_MlDsaKey_*. Bump deliberately and re-test.
+RUN arduino-cli lib install "wolfssl@5.8.4" \
     && arduino-cli lib install "MQTT" \
     && arduino-cli lib install "PubSubClient"
 

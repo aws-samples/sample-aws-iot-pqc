@@ -3,6 +3,10 @@
 # Dual OTA layout: partition 0 = classical TLS, partition 1 = PQC TLS
 # Both partitions are 3.5MB — enough for wolfSSL with ML-KEM (~2.5MB)
 #
+# certs (0x721000, 64 KB) holds the per-device identity as NVS blobs: device
+# keys/certs, CA roots and WiFi credentials. It is written once over USB by
+# the Builder-Pi and is never touched by OTA, so app images carry no secrets.
+#
 # Flash this partition table with:
 #   esptool.py write_flash 0x8000 partitions_pqc_workshop.bin
 #
@@ -16,3 +20,4 @@ ota_0,        app,  ota_0,    0x10000,   0x380000,
 ota_1,        app,  ota_1,    0x390000,  0x380000,
 nvs_key,      data, nvs_keys, 0x710000,  0x1000,
 coredump,     data, coredump, 0x711000,  0x10000,
+certs,        data, nvs,      0x721000,  0x10000,
