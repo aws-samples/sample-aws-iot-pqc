@@ -9,14 +9,14 @@ thingName (and optional variant) it:
   - looks up the device in the registry (keyed by serialNumber),
   - resolves the firmware variant → version (classical / pqc / pqc-mldsa),
   - checks whether that variant's firmware already exists in S3,
-  - resolves the per-device build env (WiFi/broker/IoT) for WaitForBuild,
+  - resolves the build env (broker endpoint) for WaitForBuild,
   - returns routing info for the state machine: buildNeeded, buildEnv, s3Key,
     thingName, serialNumber, variant, version.
   It does NOT start a build itself (the state machine's WaitForBuild does), so
   there is no CodeBuild to mock — this Lambda is pure orchestration.
 
-Certificate issuance moved INTO the firmware CodeBuild (shared cert-issuer), so
-this Lambda touches no crypto. Runs against moto to stay fast/offline.
+Device identity (certs, keys, WiFi) lives in the device's "certs" NVS partition,
+so this Lambda touches no crypto and no secrets. Runs against moto to stay fast/offline.
 """
 import os
 import sys
@@ -47,8 +47,6 @@ def _env():
             "FIRMWARE_BUCKET": FIRMWARE_BUCKET,
             "BUILD_PROJECT": BUILD_PROJECT,
             "IOT_ENDPOINT": "example-ats.iot.us-east-1.amazonaws.com",
-            "DEFAULT_WIFI_SSID": "test-ssid",
-            "DEFAULT_WIFI_PASSWORD": "test-pass",
             "DEFAULT_BROKER_ENDPOINT": "broker.example.com",
         }
     )
@@ -205,3 +203,18 @@ def test_missing_thingname_raises(monkeypatch):
     mod = _load()
     with pytest.raises(Exception):
         mod.handler({}, None)
+
+
+@mock_aws
+def test_build_env_carries_no_wifi_or_identity(monkeypatch):
+    """WiFi and certs are in the device's certs NVS partition; the firmware
+    build (and so the Step Functions state) must receive only the broker."""
+    _seed_registry()
+    os.environ["DEFAULT_WIFI_PASSWORD"] = "must-not-leak"
+    try:
+        mod = _load()
+        result = mod.handler({"thingName": "esp32-FC22E0", "variant": "pqc"}, None)
+    finally:
+        os.environ.pop("DEFAULT_WIFI_PASSWORD", None)
+    assert result["buildEnv"] == {"brokerEndpoint": "broker.example.com"}
+    assert "must-not-leak" not in str(result)

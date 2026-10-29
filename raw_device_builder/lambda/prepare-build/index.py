@@ -7,7 +7,7 @@ Prepare Build Lambda — first work step of the PQC migration state machine.
 Given a thingName (and optional variant), this:
   1. Looks up the device in the DynamoDB registry (keyed by serialNumber).
   2. Checks whether the target firmware for that variant already exists in S3.
-  3. If it does not, resolves the per-device build env (WiFi/broker/IoT) so the
+  3. If it does not, resolves the build env (the broker endpoint) so the
      state machine's WaitForBuild step can start the single CodeBuild.
   4. Returns routing data for the state machine:
        { thingName, serialNumber, variant, version, s3Key, buildNeeded, buildEnv }
@@ -16,12 +16,10 @@ This Lambda does NOT start a build itself — the state machine's WaitForBuild
 (codebuild:startBuild.sync) is the single authoritative build. Starting one here
 too previously caused a redundant second build for the same S3 key.
 
-Certificate issuance moved INTO the CodeBuild firmware build (see
-raw_device_builder/codebuild/buildspec.yml): the build generates the device
-keypair + CSR and issues the cert from the correct AWS Private CA
-(classical ECDSA CA for classical/pqc, ML-DSA-44 CA for pqc-mldsa) — so this
-Lambda no longer needs OpenSSL and the private key never flows through Lambda
-env or Step Function state. This Lambda is now pure orchestration.
+The firmware image carries no device identity: keys, certs, CA roots and WiFi
+are in the device's "certs" NVS partition (written over USB at registration,
+never touched by OTA). So no secret flows through this Lambda, the Step
+Function state, or the firmware build. This Lambda is pure orchestration.
 
 The state machine (not this Lambda) waits for the build to finish, via the
 CodeBuild .sync integration — so this Lambda returns quickly and never blocks on
@@ -31,9 +29,6 @@ Environment variables:
   REGISTRY_TABLE          — DynamoDB device registry table
   FIRMWARE_BUCKET         — S3 bucket for firmware
   BUILD_PROJECT           — CodeBuild project name
-  IOT_ENDPOINT            — IoT Core data endpoint (passed to the build)
-  DEFAULT_WIFI_SSID       — fallback WiFi SSID for the build
-  DEFAULT_WIFI_PASSWORD   — fallback WiFi password for the build
   DEFAULT_BROKER_ENDPOINT — fallback broker endpoint for the build
 """
 import json
@@ -102,11 +97,7 @@ VARIANT_CONFIG = {
 }
 DEFAULT_VARIANT = "pqc"  # backward-compatible with the original migrate-to-PQC flow
 
-# SSM is the authoritative live source of truth for the workshop WiFi. The
-# deploy publishes /pqc-workshop/wifi/ssid (String) + /password (SecureString);
-# reading them at migration time means a WiFi change is picked up by the next
-# build with a single put-parameter, no redeploy.
-WIFI_SSM_PREFIX = os.environ.get("WIFI_SSM_PREFIX", "/pqc-workshop/wifi")
+# SSM is the authoritative live source of truth for the broker endpoint.
 BROKER_SSM_PARAM = os.environ.get("BROKER_SSM_PARAM", "/pqc-workshop/broker/endpoint")
 
 
@@ -115,21 +106,13 @@ def _table():
 
 
 def _get_ssm(name):
-    """Read one SSM param (decrypted); return None if missing/unreadable so the
-    caller can fall back. Never raises — a WiFi lookup must not fail a build."""
+    """Read one SSM param; return None if missing/unreadable so the caller can
+    fall back. Never raises."""
     try:
-        return ssm.get_parameter(Name=name, WithDecryption=True)["Parameter"]["Value"]
+        return ssm.get_parameter(Name=name)["Parameter"]["Value"]
     except Exception as e:  # ParameterNotFound, AccessDenied, throttling, etc.
         print(f"SSM read {name} failed ({e}); falling back")
         return None
-
-
-def wifi_from_ssm():
-    """Return (ssid, password) from SSM, each None if unavailable."""
-    return (
-        _get_ssm(f"{WIFI_SSM_PREFIX}/ssid"),
-        _get_ssm(f"{WIFI_SSM_PREFIX}/password"),
-    )
 
 
 def broker_from_ssm():
@@ -198,14 +181,14 @@ def handler(event, context):
             "buildNeeded": False,
             # buildEnv is unused when buildNeeded is False, but always present so
             # the state machine's ResultSelector never references a missing path.
-            "buildEnv": {"wifiSsid": "", "wifiPassword": "", "brokerEndpoint": "", "iotEndpoint": ""},
+            "buildEnv": {"brokerEndpoint": ""},
         }
 
     # 3. Build needed. The state machine's WaitForBuild step starts + waits for
     #    the single CodeBuild (codebuild:startBuild.sync); this Lambda does NOT
     #    start a build itself (that previously caused a redundant second build).
-    #    We resolve the per-device build env (WiFi/broker/IoT) here and return it
-    #    so WaitForBuild builds with the CORRECT per-device WiFi.
+    #    We resolve the build env (broker endpoint) here and return it for
+    #    WaitForBuild.
     build_env = resolve_build_env(device)
     return {
         "thingName": thing_name,
@@ -231,14 +214,10 @@ def _firmware_exists(s3_key):
 
 
 def resolve_build_env(device):
-    """Resolve the per-device build environment for the requested firmware variant.
+    """Resolve the firmware build environment for WaitForBuild.
 
-    Returns the fully-resolved build environment (WiFi, broker endpoint) so the
-    state machine's WaitForBuild step can start the single authoritative build
-    with the CORRECT per-device WiFi. Resolving here (SSM -> registry -> env) and
-    passing it through the state machine avoids both (a) a redundant second build
-    and (b) the build silently using the deploy-default WiFi, which would strand
-    a device whose WiFi differs from the default.
+    Only the broker endpoint: the image is otherwise device-independent. WiFi
+    and the device certs live in the device's "certs" NVS partition.
     """
     # Broker resolution: SSM (live source of truth) -> registry value -> env.
     broker_endpoint = (
@@ -246,15 +225,4 @@ def resolve_build_env(device):
         or device.get("brokerEndpoint")
         or os.environ.get("DEFAULT_BROKER_ENDPOINT", "")
     )
-    # WiFi resolution: SSM (live source of truth) -> env fallback. The registry
-    # no longer stores the password (it was a plaintext copy); the SSID is still
-    # recorded there and used as a middle fallback.
-    ssm_ssid, ssm_password = wifi_from_ssm()
-    wifi_ssid = ssm_ssid or device.get("wifiSsid") or os.environ.get("DEFAULT_WIFI_SSID", "")
-    wifi_password = ssm_password or os.environ.get("DEFAULT_WIFI_PASSWORD", "")
-    return {
-        "wifiSsid": wifi_ssid,
-        "wifiPassword": wifi_password,
-        "brokerEndpoint": broker_endpoint,
-        "iotEndpoint": os.environ.get("IOT_ENDPOINT", ""),
-    }
+    return {"brokerEndpoint": broker_endpoint}

@@ -8,36 +8,31 @@ phases:
   pre_build:
     commands:
       - echo "Preparing firmware source for device esp32-$DEVICE_SERIAL (variant ${FIRMWARE_VARIANT})..."
-      # ─── Variant → {sketch, CA, key mode, default port} ──
+      # ─── Variant → {sketch, default port} ──
       # Single source of truth for what each firmware variant means. Adding a
-      # future variant is a data change here, not new code paths. The device
-      # certificate is issued HERE in the build (not in the Lambda) via the
-      # shared cert-issuer script, so the ML-DSA key never leaves this container
-      # and both cert types share one code path. The signing algorithm is derived
-      # from the key mode by the issuer (ec-p256→SHA256WITHECDSA, mldsa44→ML_DSA_44).
-      #   classical / pqc  → classical ACM PCA (ECDSA P-256), port 8883
-      #   pqc-mldsa        → ML-DSA-44 ACM PCA (ML-DSA-44 key + signature), port 8884
+      # future variant is a data change here, not new code paths.
+      #
+      # The image carries NO device identity: keys, certs, CA roots and WiFi
+      # are issued by the separate device-identity job and flashed by the
+      # Builder-Pi into the "certs" NVS partition, which the sketch reads at
+      # boot. Each sketch picks its own cert from there:
+      #   classical / pqc  → classical device cert (ECDSA P-256), port 8883
+      #   pqc-mldsa        → ML-DSA-44 device cert, port 8884
       - |
         case "${FIRMWARE_VARIANT}" in
           pqc-mldsa)
             SKETCH_NAME="aws_iot_pqc_esp32_v3_mldsa"
-            CERT_CA_ARN="${MLDSA_CA_ARN}"
-            CERT_KEY_MODE="mldsa44"
             DEFAULT_BROKER_PORT="8884"
             DEFAULT_SIGNER_ERA="classical"
             ;;
           pqc)
             SKETCH_NAME="aws_iot_pqc_esp32"
-            CERT_CA_ARN="${CA_ARN}"
-            CERT_KEY_MODE="ec-p256"
             DEFAULT_BROKER_PORT="8883"
             DEFAULT_SIGNER_ERA="classical"
             ;;
           *)
             FIRMWARE_VARIANT="classical"
             SKETCH_NAME="aws_iot_pqc_esp32_v1_classical"
-            CERT_CA_ARN="${CA_ARN}"
-            CERT_KEY_MODE="ec-p256"
             DEFAULT_BROKER_PORT="8883"
             DEFAULT_SIGNER_ERA=""
             ;;
@@ -64,8 +59,8 @@ phases:
           *)         OTA_SIG_ALG_DISPLAY="unsigned" ;;
         esac
       - echo "ota_sig_alg_display=${OTA_SIG_ALG_DISPLAY}"
-      - echo "variant=${FIRMWARE_VARIANT} sketch=${SKETCH_NAME} ca=${CERT_CA_ARN} key=${CERT_KEY_MODE} defaultPort=${DEFAULT_BROKER_PORT}"
-      - '[ -n "${CERT_CA_ARN}" ] || { echo "ERROR: no CA ARN for variant ${FIRMWARE_VARIANT} (CA_ARN/MLDSA_CA_ARN unset)"; exit 1; }'
+      - echo "variant=${FIRMWARE_VARIANT} sketch=${SKETCH_NAME} defaultPort=${DEFAULT_BROKER_PORT}"
+      - '[ -n "${BROKER_ENDPOINT}" ] || { echo "ERROR: BROKER_ENDPOINT is unset"; exit 1; }'
       - SKETCH_DIR="/tmp/firmware_build/$SKETCH_NAME"
       - mkdir -p "$SKETCH_DIR"
       - echo "Downloading firmware source from S3..." && aws s3 cp "s3://$FIRMWARE_BUCKET/source/$SKETCH_NAME.ino" "$SKETCH_DIR/$SKETCH_NAME.ino"
@@ -93,42 +88,16 @@ phases:
       # failed. The variant default is the single source of truth for the port.
       - BROKER_PORT="${DEFAULT_BROKER_PORT}"
       - echo "Broker endpoint (host)= $BROKER_ENDPOINT  port= $BROKER_PORT (from variant ${FIRMWARE_VARIANT})"
-      # ─── Issue the device certificate from AWS Private CA (in-build) ─────────
-      # All device-cert issuance happens HERE (not in the Lambda), so classical
-      # and ML-DSA-44 share one path and the private key never leaves this build.
-      #   ec-p256  → stock `openssl` (system 3.0.2 is fine for EC)
-      #   mldsa44  → `/opt/openssl-3.5/bin/openssl` (ML-DSA is native in 3.5)
-      - CERT_WORK="$(mktemp -d)"
-      - THING_NAME="esp32-$DEVICE_SERIAL"
-      # Mint the device cert via the SHARED cert-issuer script (baked into the
-      # firmware-builder image at /opt/cert-issuer). Same code path as the broker
-      # cert-issuer container: it generates the key + CSR (ML-DSA via OpenSSL 3.5
-      # for mldsa44, EC via stock openssl for ec-p256), calls ACM PCA on the
-      # variant's CA, and writes ca.crt / cert.crt / key.pem into CERT_WORK.
+      # ─── secrets.h: non-secret build settings only ──────────────────────────
+      # Despite the name, nothing secret goes in here any more. Device keys,
+      # certs, CA roots (incl. the OTA signer trust roots) and WiFi live in the
+      # "certs" NVS partition (see the sketch's loadDeviceIdentity), so this
+      # image is the same for every device apart from these settings.
       - |
-        if [ "$CERT_KEY_MODE" = "mldsa44" ]; then CERT_OU="IoT Device PQC ML-DSA"; else CERT_OU="IoT Device"; fi
-      - echo "Issuing ${CERT_KEY_MODE} device cert from CA ${CERT_CA_ARN} via shared issuer..."
-      - |
-        python3 /opt/cert-issuer/issue_cert.py \
-          --common-name "$THING_NAME" \
-          --key-mode "$CERT_KEY_MODE" \
-          --ca-arn "$CERT_CA_ARN" \
-          --ou "$CERT_OU" \
-          --idempotency-token "dev-$DEVICE_SERIAL" \
-          --out-dir "$CERT_WORK"
-      - DEVICE_CERT="$(cat "$CERT_WORK/cert.crt")"
-      - DEVICE_KEY="$(cat "$CERT_WORK/key.pem")"
-      - CA_CERT="$(cat "$CERT_WORK/ca.crt")"
-      - '[ -n "$DEVICE_CERT" ] && [ -n "$DEVICE_KEY" ] && [ -n "$CA_CERT" ] || { echo "ERROR: empty cert material"; exit 1; }'
-      - |
-        cat > "$SKETCH_DIR/secrets.h" << 'SECRETS_HEADER'
+        cat > "$SKETCH_DIR/secrets.h" << SECRETS_CONFIG
         #ifndef SECRETS_H
         #define SECRETS_H
-        SECRETS_HEADER
-      - |
-        cat >> "$SKETCH_DIR/secrets.h" << SECRETS_CONFIG
-        // Generated by CodeBuild for device esp32-$DEVICE_SERIAL
-        // Firmware version: $FIRMWARE_VERSION
+        // Generated by CodeBuild (variant ${FIRMWARE_VARIANT}). Contains no secrets.
 
         // Canonical firmware version, injected from the build's FIRMWARE_VERSION
         // env (sourced from prepare-build VARIANT_CONFIG). This is the SINGLE
@@ -145,67 +114,14 @@ phases:
         // from the TLS cert signature (CERT_SIGNATURE_ALG in the sketch).
         #define FIRMWARE_OTA_SIG_ALG "$OTA_SIG_ALG_DISPLAY"
 
-        #define WIFI_SSID     "$WIFI_SSID"
-        #define WIFI_PASSWORD "$WIFI_PASSWORD"
         #define LOG_LEVEL  3
 
         #define MQTT_BROKER_ENDPOINT "$BROKER_ENDPOINT"
         #define MQTT_BROKER_PORT     $BROKER_PORT
 
-        #define AWS_IOT_ENDPOINT "$IOT_ENDPOINT"
-        #define AWS_IOT_PORT     8883
-        #define AWS_IOT_PUBLISH_TOPIC   "esp32/pqc/pub"
-        #define AWS_IOT_SUBSCRIBE_TOPIC "esp32/pqc/sub"
+        #endif
         SECRETS_CONFIG
-      - |
-        echo "" >> "$SKETCH_DIR/secrets.h"
-        echo "static const char AWS_CERT_CA[] PROGMEM = R\"EOF(" >> "$SKETCH_DIR/secrets.h"
-        echo "$CA_CERT" >> "$SKETCH_DIR/secrets.h"
-        echo ")EOF\";" >> "$SKETCH_DIR/secrets.h"
-        echo "" >> "$SKETCH_DIR/secrets.h"
-        echo "static const char AWS_CERT_CRT[] PROGMEM = R\"KEY(" >> "$SKETCH_DIR/secrets.h"
-        echo "$DEVICE_CERT" >> "$SKETCH_DIR/secrets.h"
-        echo ")KEY\";" >> "$SKETCH_DIR/secrets.h"
-        echo "" >> "$SKETCH_DIR/secrets.h"
-        echo "static const char AWS_CERT_PRIVATE[] PROGMEM = R\"KEY(" >> "$SKETCH_DIR/secrets.h"
-        echo "$DEVICE_KEY" >> "$SKETCH_DIR/secrets.h"
-        echo ")KEY\";" >> "$SKETCH_DIR/secrets.h"
-      # ─── OTA signer trust anchor (Workstream 3) ─────────────────────────────
-      # Bake the firmware-signer CA ROOT(s) into the image as OTA_SIGNER_CA_ROOT
-      # so the on-device OTA verifier can validate that a signed OTA's signer
-      # leaf chains to a trusted root. We bake BOTH era roots (classical +
-      # ML-DSA-44) concatenated into one PEM bundle: wolfSSL's cert manager loads
-      # multiple CA certs, so a classical-signed OR an ML-DSA-signed OTA both
-      # verify. Baking both from the signed variants onward solves the cutover
-      # chicken-and-egg: a device on 3.0.0-mldsa already trusts the ML-DSA root
-      # before the first 4.0.0 ML-DSA-signed update arrives. The roots come from
-      # the stable-per-era signer secrets provisioned in the broker stack
-      # (pqc-broker/signer-*-ca); the build reads them like it reads the device CA.
-      - |
-        SIGNER_ROOT_BUNDLE=""
-        if [ -n "${SIGNER_CLASSICAL_CA_SECRET}" ]; then
-          SIGNER_ROOT_BUNDLE="$(aws secretsmanager get-secret-value --secret-id "${SIGNER_CLASSICAL_CA_SECRET}" --query SecretString --output text 2>/dev/null || true)"
-        fi
-        if [ -n "${SIGNER_MLDSA_CA_SECRET}" ]; then
-          MLDSA_ROOT="$(aws secretsmanager get-secret-value --secret-id "${SIGNER_MLDSA_CA_SECRET}" --query SecretString --output text 2>/dev/null || true)"
-          SIGNER_ROOT_BUNDLE="$(printf '%s\n%s' "$SIGNER_ROOT_BUNDLE" "$MLDSA_ROOT")"
-        fi
-      - |
-        if [ -n "${SIGNER_ROOT_BUNDLE}" ]; then
-          echo "" >> "$SKETCH_DIR/secrets.h"
-          echo "#define OTA_SIGNER_CA_ROOT_DEFINED 1" >> "$SKETCH_DIR/secrets.h"
-          echo "static const char OTA_SIGNER_CA_ROOT[] = R\"EOF(" >> "$SKETCH_DIR/secrets.h"
-          echo "$SIGNER_ROOT_BUNDLE" >> "$SKETCH_DIR/secrets.h"
-          echo ")EOF\";" >> "$SKETCH_DIR/secrets.h"
-          echo "OTA signer CA root(s) baked into secrets.h"
-        else
-          echo "WARNING: no signer CA root secrets available; OTA signature chain check will fail closed"
-        fi
-      - echo "" >> "$SKETCH_DIR/secrets.h"
-      - echo "#endif" >> "$SKETCH_DIR/secrets.h"
-      - echo "secrets.h generated for esp32-$DEVICE_SERIAL"
-      # Scrub the on-disk private key + CSR now that it is baked into secrets.h.
-      - rm -rf "$CERT_WORK"
+      - cat "$SKETCH_DIR/secrets.h"
       - ls -la "$SKETCH_DIR/"
 
   build:
@@ -240,8 +156,9 @@ phases:
       # ─── OTA firmware SIGNING (Workstream 1) ────────────────────────────────
       # Sign firmware.bin with the STABLE per-era signer key from Secrets Manager
       # and upload firmware.bin.sig + the signer leaf cert. The device verifies
-      # the signature against the signer leaf (shipped here), which chains to the
-      # baked-in CA root. Encodings proven in the G2 spike:
+      # the signature against the signer leaf (shipped here), which chains to a
+      # CA root in the device's "certs" NVS partition. Encodings proven in the
+      # G2 spike:
       #   classical: ECDSA-P256 over the SHA-256 digest → DER SEQUENCE{r,s} ~71 B
       #              (`openssl dgst -sha256 -sign`; wolfSSL wc_ecc_verify_hash
       #              takes the DER directly, no raw r||s conversion).

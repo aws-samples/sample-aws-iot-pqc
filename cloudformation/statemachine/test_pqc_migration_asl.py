@@ -118,9 +118,12 @@ def test_variant_threaded_through(asl):
     # prepared signer era, so 4.0.0-signer/5.0.0-verified are ML-DSA-signed even
     # though they build the pqc-mldsa sketch.
     assert by_name["SIGNER_ERA"].get("Value.$") == "$.prepare.signerEra"
-    # The per-device WiFi/broker env resolved by prepare-build flows to the build.
-    assert by_name["WIFI_SSID"].get("Value.$") == "$.prepare.buildEnv.wifiSsid"
+    # The broker endpoint resolved by prepare-build flows to the build.
     assert by_name["BROKER_ENDPOINT"].get("Value.$") == "$.prepare.buildEnv.brokerEndpoint"
+    # No WiFi (or any other identity material) reaches the firmware build: it
+    # lives in the device's "certs" NVS partition, which OTA never touches.
+    for name in ("WIFI_SSID", "WIFI_PASSWORD"):
+        assert name not in by_name, f"{name} must not be passed to the firmware build"
 
 
 def test_substitution_placeholders_present(asl):

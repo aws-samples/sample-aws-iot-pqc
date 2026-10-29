@@ -20,14 +20,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential perl wget \
     && rm -rf /var/lib/apt/lists/*
 
-# ─── OpenSSL 3.5 (for post-quantum ML-DSA-44 key/CSR generation) ─────────────
+# ─── OpenSSL 3.5 (for post-quantum ML-DSA-44 OTA signing) ────────────────────
 # Ubuntu 22.04 ships OpenSSL 3.0.2, which has NO ML-DSA support. The firmware
-# build issues device certificates from AWS Private CA (see buildspec.yml); the
-# ML-DSA-44 variant needs OpenSSL >= 3.5 to generate the ML-DSA key + CSR.
-# ML-DSA is NATIVE in OpenSSL 3.5 (no oqs-provider needed). We install it into
-# /opt/openssl-3.5 so the system OpenSSL 3.0.2 (used by the OS, AWS CLI, etc.)
-# is left untouched; the buildspec calls /opt/openssl-3.5/bin/openssl explicitly
-# for ML-DSA and the stock `openssl` for classical EC keys.
+# build signs ML-DSA-era OTA images with `openssl pkeyutl -sign -rawin`, which
+# needs OpenSSL >= 3.5 (ML-DSA is native there, no oqs-provider). It is
+# installed into /opt/openssl-3.5 so the system OpenSSL 3.0.2 (used by the OS,
+# AWS CLI, etc.) is left untouched. The build no longer issues device certs:
+# that moved to the device-identity job (shared cert-issuer image).
 ARG OPENSSL_VERSION=3.5.8
 RUN wget -q "https://github.com/openssl/openssl/releases/download/openssl-${OPENSSL_VERSION}/openssl-${OPENSSL_VERSION}.tar.gz" -O /tmp/openssl.tar.gz \
     && mkdir -p /tmp/openssl-src \
@@ -57,9 +56,8 @@ RUN curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tm
     && /tmp/aws/install \
     && rm -rf /tmp/aws /tmp/awscliv2.zip
 
-# Install esptool (for partition table generation and flashing reference) and
-# boto3 (used by the shared cert-issuer script issue_cert.py to call ACM PCA).
-RUN pip3 install --no-cache-dir esptool boto3
+# Install esptool (for partition table generation and flashing reference).
+RUN pip3 install --no-cache-dir esptool
 
 # Install arduino-cli
 RUN curl -fsSL https://raw.githubusercontent.com/arduino/arduino-cli/master/install.sh | BINDIR=/usr/local/bin sh
@@ -98,14 +96,7 @@ RUN PARTITIONS_DIR=$(find / -path "*/tools/partitions" -type d 2>/dev/null | gre
     && cp /tmp/partitions_pqc_workshop.csv "$PARTITIONS_DIR/pqc_workshop.csv" \
     && echo "Partition table installed at $PARTITIONS_DIR/pqc_workshop.csv"
 
-# Shared cert-issuer script — the per-device firmware build calls this to mint
-# the device certificate, the SAME code path the broker cert-issuer container
-# uses. It calls /opt/openssl-3.5/bin/openssl for ML-DSA and stock openssl for EC.
-COPY issue_cert.py /opt/cert-issuer/issue_cert.py
-ENV OPENSSL35_BIN=/opt/openssl-3.5/bin/openssl
-
 # Verify installation
-RUN arduino-cli core list && arduino-cli lib list && esptool.py version \
-    && python3 /opt/cert-issuer/issue_cert.py --help >/dev/null && echo "cert-issuer present"
+RUN arduino-cli core list && arduino-cli lib list && esptool.py version
 
 WORKDIR /build

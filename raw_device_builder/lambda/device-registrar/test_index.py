@@ -231,3 +231,28 @@ def test_identity_only_rejects_unregistered_device():
     assert result["statusCode"] == 404
     cb = boto3.client("codebuild", region_name="us-east-1")
     assert cb.list_builds_for_project(projectName="pqc-workshop-device-identity")["ids"] == []
+
+
+@mock_aws
+def test_firmware_build_gets_no_wifi_or_identity():
+    """The firmware image carries no identity: WiFi and certs go only into the
+    device's certs NVS image (identity job). The firmware build must get only
+    serial/version/variant/broker, even if a caller sends WiFi in the body."""
+    _setup_aws()
+    _env()
+    mod = load_handler_module(os.path.join(HERE, "index.py"), "device_registrar_index9")
+    calls = []
+    real_start = mod.codebuild.start_build
+
+    def spy(**kwargs):
+        calls.append(kwargs)
+        return real_start(**kwargs)
+
+    mod.codebuild.start_build = spy
+    mod.handler({"serialNumber": "C69DE0", "wifiSsid": "x", "wifiPassword": "secret-pass-123"}, _Ctx())
+
+    fw = [c for c in calls if c["projectName"] == "pqc-workshop-build-firmware"]
+    assert len(fw) == 1
+    names = {e["name"] for e in fw[0]["environmentVariablesOverride"]}
+    assert names == {"DEVICE_SERIAL", "FIRMWARE_VERSION", "FIRMWARE_VARIANT", "BROKER_ENDPOINT"}
+    assert "secret-pass-123" not in json.dumps(calls)

@@ -11,25 +11,6 @@ Parameters:
     Description: S3 bucket name prefix for compiled firmware artifacts
     Default: pqc-workshop-firmware
 
-  DefaultWifiSsid:
-    Type: String
-    Description: >-
-      Workshop WiFi SSID for devices. In the master deploy this is passed down
-      from the master DefaultWifiSsid (operator-supplied via WORKSHOP_WIFI_SSID).
-      Do not commit a real value.
-    Default: changeme
-
-  DefaultWifiPassword:
-    Type: String
-    Description: >-
-      Workshop WiFi password for devices. Persisted in the registry by the
-      registrar and used by the PQC migration (prepare-build) as a fallback when
-      the registry entry lacks wifiPassword. In the master deploy this is passed
-      down from the master DefaultWifiPassword (operator-supplied via
-      WORKSHOP_WIFI_PASSWORD). Do not commit a real value.
-    NoEcho: true
-    Default: changeme
-
   DefaultBrokerEndpoint:
     Type: String
     Description: >-
@@ -63,8 +44,8 @@ Parameters:
   # ─── OTA firmware signer secret ARNs (from broker-container stack) ──────────
   # The firmware build reads the era-appropriate signer KEY to sign firmware.bin
   # and the signer CERT to ship alongside the OTA. Scoped to these four secrets
-  # (classical key+cert, ML-DSA key+cert); the CA-cert secrets are not read by
-  # the build (the CA root is baked into firmware, Workstream 3).
+  # (classical key+cert, ML-DSA key+cert). The device's OTA trust roots are the
+  # two Private CA roots in its "certs" NVS partition, so no CA secret is read.
   SignerClassicalKeySecretArn:
     Type: String
     Default: ''
@@ -81,19 +62,6 @@ Parameters:
     Type: String
     Default: ''
     Description: ARN of the ML-DSA-44 firmware-signer leaf cert secret
-  SignerClassicalCACertSecretArn:
-    Type: String
-    Default: ''
-    Description: >-
-      ARN of the classical firmware-signer CA root secret. Baked into the
-      firmware image as the OTA verifier's trust anchor (device-side chain check).
-  SignerMlDsaCACertSecretArn:
-    Type: String
-    Default: ''
-    Description: >-
-      ARN of the ML-DSA-44 firmware-signer CA root secret. Baked into the
-      firmware image (from the signed variants onward) so a device trusts the
-      ML-DSA root before the 4.0.0 ML-DSA-signed OTA cutover.
 
   BuilderPiInstanceId:
     Type: String
@@ -311,15 +279,15 @@ Resources:
       cfn_nag:
         rules_to_suppress:
           - id: W11
-            reason: "registrar provisions per-device IoT things/certs/policies with dynamic names; iot:CreateKeysAndCertificate does not support resource-level scoping, and kms:Decrypt is constrained by a kms:ViaService condition to SSM"
+            reason: "registrar provisions per-device IoT things/certs/policies with dynamic names; iot:CreateKeysAndCertificate does not support resource-level scoping"
           - id: W28
             reason: "workshop depends on fixed resource names referenced across stacks/scripts"
       checkov:
         skip:
           - id: CKV_AWS_111
-            comment: "registrar provisions per-device IoT things/certs/policies with dynamic names; iot:CreateKeysAndCertificate does not support resource-level scoping, and kms:Decrypt is constrained by a kms:ViaService condition to SSM"
+            comment: "registrar provisions per-device IoT things/certs/policies with dynamic names; iot:CreateKeysAndCertificate does not support resource-level scoping"
           - id: CKV_AWS_109
-            comment: "registrar provisions per-device IoT things/certs/policies with dynamic names; iot:CreateKeysAndCertificate does not support resource-level scoping, and kms:Decrypt is constrained by a kms:ViaService condition to SSM"
+            comment: "registrar provisions per-device IoT things/certs/policies with dynamic names; iot:CreateKeysAndCertificate does not support resource-level scoping"
     Properties:
       RoleName: pqc-workshop-device-registrar
       AssumeRolePolicyDocument:
@@ -344,9 +312,8 @@ Resources:
                   - iot:AttachPolicy
                   - iot:CreatePolicy
                 Resource: '*'
-              # NOTE: acm-pca permissions moved to the CodeBuild role
-              # (pqc-workshop-codebuild-firmware) — the firmware build now issues
-              # the device cert itself (buildspec.yml), not these Lambdas.
+              # No acm-pca here: device certs are issued only by the
+              # device-identity job (DeviceIdentityRole).
               - Effect: Allow
                 Action:
                   - dynamodb:PutItem
@@ -389,22 +356,13 @@ Resources:
                 Action:
                   - iot:Publish
                 Resource: !Sub 'arn:aws:iot:${AWS::Region}:${AWS::AccountId}:topic/cmd/*'
-              # Read workshop config from SSM as the authoritative live source:
-              # the WiFi (registrar bakes into initial flash; prepare-build into
-              # the PQC migration) and the broker NLB endpoint. The WiFi password
-              # is a SecureString, so allow kms:Decrypt scoped to the SSM service.
+              # Read the broker NLB endpoint from SSM (the live source of truth).
+              # WiFi is no longer read here: only the device-identity job needs
+              # it, so this role has no kms:Decrypt for the SecureString.
               - Effect: Allow
                 Action:
                   - ssm:GetParameter
-                  - ssm:GetParameters
-                Resource: !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/pqc-workshop/*'
-              - Effect: Allow
-                Action:
-                  - kms:Decrypt
-                Resource: !Sub 'arn:aws:kms:${AWS::Region}:${AWS::AccountId}:key/*'
-                Condition:
-                  StringEquals:
-                    kms:ViaService: !Sub 'ssm.${AWS::Region}.amazonaws.com'
+                Resource: !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/pqc-workshop/broker/endpoint'
 
   # ═══════════════════════════════════════════════════════════════════════════
   # Lambda — Device Registrar
@@ -443,11 +401,7 @@ Resources:
           FIRMWARE_BUCKET: !Sub '${FirmwareBucketName}-${AWS::AccountId}'
           BUILD_PROJECT: !Ref FirmwareBuildProject
           IDENTITY_PROJECT: !Ref DeviceIdentityProject
-          IOT_ENDPOINT: !Ref IoTEndpoint
-          DEFAULT_WIFI_SSID: !Ref DefaultWifiSsid
-          DEFAULT_WIFI_PASSWORD: !Ref DefaultWifiPassword
-          # SSM is the authoritative live source; the DEFAULT_* envs are fallbacks.
-          WIFI_SSM_PREFIX: /pqc-workshop/wifi
+          # SSM is the authoritative live source; DEFAULT_BROKER_ENDPOINT is a fallback.
           BROKER_SSM_PARAM: /pqc-workshop/broker/endpoint
           DEFAULT_BROKER_ENDPOINT: !Ref DefaultBrokerEndpoint
       Code: ../lambda/device-registrar
@@ -464,8 +418,8 @@ Resources:
   # Lambda code is packaged from lambda/* by `aws cloudformation package`.
   # ═══════════════════════════════════════════════════════════════════════════
 
-  # Work step 1: registry lookup, issue cert, start CodeBuild. Shares the
-  # device-registrar role (acm-pca, codebuild, dynamodb, s3).
+  # Work step 1: registry lookup + build routing (no build is started here).
+  # Shares the device-registrar role (codebuild, dynamodb, s3, ssm).
   PrepareBuildFunction:
     Type: AWS::Lambda::Function
     Metadata:
@@ -493,11 +447,7 @@ Resources:
           REGISTRY_TABLE: !Ref DeviceRegistryTable
           FIRMWARE_BUCKET: !Sub '${FirmwareBucketName}-${AWS::AccountId}'
           BUILD_PROJECT: !Ref FirmwareBuildProject
-          IOT_ENDPOINT: !Ref IoTEndpoint
-          DEFAULT_WIFI_SSID: !Ref DefaultWifiSsid
-          DEFAULT_WIFI_PASSWORD: !Ref DefaultWifiPassword
-          # SSM is the authoritative live source; the DEFAULT_* envs are fallbacks.
-          WIFI_SSM_PREFIX: /pqc-workshop/wifi
+          # SSM is the authoritative live source; DEFAULT_BROKER_ENDPOINT is a fallback.
           BROKER_SSM_PARAM: /pqc-workshop/broker/endpoint
           DEFAULT_BROKER_ENDPOINT: !Ref DefaultBrokerEndpoint
       Code: ../lambda/prepare-build
@@ -724,10 +674,7 @@ Resources:
                   { "Name": "FIRMWARE_VERSION", "Value.$": "$.prepare.version", "Type": "PLAINTEXT" },
                   { "Name": "FIRMWARE_VARIANT", "Value.$": "$.prepare.buildVariant", "Type": "PLAINTEXT" },
                   { "Name": "SIGNER_ERA", "Value.$": "$.prepare.signerEra", "Type": "PLAINTEXT" },
-                  { "Name": "WIFI_SSID", "Value.$": "$.prepare.buildEnv.wifiSsid", "Type": "PLAINTEXT" },
-                  { "Name": "WIFI_PASSWORD", "Value.$": "$.prepare.buildEnv.wifiPassword", "Type": "PLAINTEXT" },
-                  { "Name": "BROKER_ENDPOINT", "Value.$": "$.prepare.buildEnv.brokerEndpoint", "Type": "PLAINTEXT" },
-                  { "Name": "IOT_ENDPOINT", "Value.$": "$.prepare.buildEnv.iotEndpoint", "Type": "PLAINTEXT" }
+                  { "Name": "BROKER_ENDPOINT", "Value.$": "$.prepare.buildEnv.brokerEndpoint", "Type": "PLAINTEXT" }
                 ]
               },
               "ResultPath": null,
@@ -1338,18 +1285,10 @@ Resources:
                   - ecr:GetDownloadUrlForLayer
                   - ecr:BatchGetImage
                 Resource: !GetAtt BuildImageRepository.Arn
-              # The firmware build now issues the device certificate itself
-              # (buildspec.yml), from the classical CA (classical/pqc variants)
-              # or the ML-DSA-44 CA (pqc-mldsa variant). Scoped to both CA ARNs.
-              - Effect: Allow
-                Action:
-                  - acm-pca:IssueCertificate
-                  - acm-pca:GetCertificate
-                  - acm-pca:GetCertificateAuthorityCertificate
-                Resource:
-                  - !Ref PrivateCAArn
-                  - !Ref MlDsaPrivateCAArn
-              # Read the stable per-era OTA firmware SIGNER secrets to sign
+              # No acm-pca: the firmware image carries no device identity. Certs
+              # are issued by the device-identity job and flashed into the
+              # "certs" NVS partition by the Builder-Pi.
+              # Read the stable per-era OTA firmware SIGNER key + leaf cert to sign
               # firmware.bin in post_build (buildspec.yml). Scoped to the signer
               # secret name pattern (provisioned in broker-container-stack.yaml as
               # pqc-broker/signer-*). Name-pattern scoping (rather than the ARN
@@ -1371,7 +1310,7 @@ Resources:
             reason: "default AWS-managed CodeBuild encryption key"
     Properties:
       Name: pqc-workshop-firmware-build
-      Description: Compiles classical ESP32 firmware with device-specific credentials
+      Description: Compiles and signs ESP32 firmware (no device identity; that is in the certs NVS partition)
       ServiceRole: !GetAtt CodeBuildRole.Arn
       Source:
         Type: S3
@@ -1394,24 +1333,10 @@ Resources:
             Value: '1.0.0-classical'
           - Name: FIRMWARE_BUCKET
             Value: !Sub '${FirmwareBucketName}-${AWS::AccountId}'
-          - Name: WIFI_SSID
-            Value: !Ref DefaultWifiSsid
-          - Name: WIFI_PASSWORD
-            Value: !Ref DefaultWifiPassword
           - Name: BROKER_ENDPOINT
             Value: !Ref DefaultBrokerEndpoint
           - Name: BROKER_PORT
             Value: !Ref DefaultBrokerPort
-          - Name: IOT_ENDPOINT
-            Value: !Ref IoTEndpoint
-          # The build issues the device cert itself (see buildspec.yml), so it
-          # needs both CA ARNs rather than pre-minted cert/key material. The
-          # classical CA signs classical/pqc device certs; the ML-DSA-44 CA
-          # signs pqc-mldsa device certs. Selected per FIRMWARE_VARIANT.
-          - Name: CA_ARN
-            Value: !Ref PrivateCAArn
-          - Name: MLDSA_CA_ARN
-            Value: !Ref MlDsaPrivateCAArn
           # OTA firmware signer secret ids (ARNs). The build reads the
           # era-appropriate signer key to sign firmware.bin and the signer cert
           # to ship with the OTA (buildspec.yml post_build). Secrets Manager
@@ -1424,12 +1349,6 @@ Resources:
             Value: !Ref SignerMlDsaKeySecretArn
           - Name: SIGNER_MLDSA_CERT_SECRET
             Value: !Ref SignerMlDsaCertSecretArn
-          # Signer CA ROOT secrets — baked into the firmware image as the OTA
-          # verifier's trust anchor (OTA_SIGNER_CA_ROOT in secrets.h).
-          - Name: SIGNER_CLASSICAL_CA_SECRET
-            Value: !Ref SignerClassicalCACertSecretArn
-          - Name: SIGNER_MLDSA_CA_SECRET
-            Value: !Ref SignerMlDsaCACertSecretArn
       TimeoutInMinutes: 15
 
   # ═══════════════════════════════════════════════════════════════════════════

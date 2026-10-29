@@ -62,10 +62,7 @@
           { "Name": "FIRMWARE_VERSION", "Value.$": "$.prepare.version", "Type": "PLAINTEXT" },
           { "Name": "FIRMWARE_VARIANT", "Value.$": "$.prepare.buildVariant", "Type": "PLAINTEXT" },
           { "Name": "SIGNER_ERA", "Value.$": "$.prepare.signerEra", "Type": "PLAINTEXT" },
-          { "Name": "WIFI_SSID", "Value.$": "$.prepare.buildEnv.wifiSsid", "Type": "PLAINTEXT" },
-          { "Name": "WIFI_PASSWORD", "Value.$": "$.prepare.buildEnv.wifiPassword", "Type": "PLAINTEXT" },
-          { "Name": "BROKER_ENDPOINT", "Value.$": "$.prepare.buildEnv.brokerEndpoint", "Type": "PLAINTEXT" },
-          { "Name": "IOT_ENDPOINT", "Value.$": "$.prepare.buildEnv.iotEndpoint", "Type": "PLAINTEXT" }
+          { "Name": "BROKER_ENDPOINT", "Value.$": "$.prepare.buildEnv.brokerEndpoint", "Type": "PLAINTEXT" }
         ]
       },
       "ResultPath": null,

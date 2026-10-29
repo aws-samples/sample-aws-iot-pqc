@@ -29,7 +29,9 @@
  *   1. Create a Thing in the AWS IoT Console
  *   2. Create and download certificates (device cert, private key, root CA)
  *   3. Attach an IoT policy allowing Connect, Publish, Subscribe, Receive
- *   4. Copy your endpoint, certs, and WiFi credentials into secrets.h
+ *   4. Put the broker endpoint in secrets.h. Device keys, certs, CA roots and
+ *      WiFi come from the "certs" NVS partition at runtime (see
+ *      loadDeviceIdentity), written by the Builder-Pi at registration.
  *
  * Copyright 2024-2026 Amazon.com, Inc. or its affiliates. All Rights Reserved.
  * SPDX-License-Identifier: MIT-0
@@ -58,9 +60,14 @@
 
 #include "secrets.h"
 
+#ifndef LOG_LEVEL
+#define LOG_LEVEL 3
+#endif
+
 #include <esp_ota_ops.h>
 #include <esp_partition.h>
 #include <esp_heap_caps.h>
+#include <Preferences.h>   // device identity from the "certs" NVS partition
 
 // ─── Log Tags ───────────────────────────────────────────────────────────────
 // Each component gets its own tag for per-module log level control.
@@ -184,7 +191,7 @@ static TaskHandle_t g_blinkTaskHandle = NULL;
 static TaskHandle_t g_otaTaskHandle = NULL;
 
 // Amazon Root CA 1 — used to verify the S3 TLS connection during OTA download.
-// The device's own AWS_CERT_CA is the workshop Private CA (for the Mosquitto
+// The device's own CA roots (NVS ca_cls / ca_mldsa) are the workshop Private CAs (for the Mosquitto
 // broker); S3 presents a public Amazon-signed cert, so a different root is
 // required to verify it. This is Amazon's public root and is safe to embed.
 static const char S3_ROOT_CA[] PROGMEM = R"EOF(
@@ -255,6 +262,113 @@ static void initDeviceIdentity() {
     snprintf(g_thingName, sizeof(g_thingName), "esp32-%02X%02X%02X",
              macBytes[3], macBytes[4], macBytes[5]);
     ESP_LOGI(TAG_MAIN, "Device identity: %s (MAC-derived)", g_thingName);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  Device identity from the "certs" NVS partition
+// ═══════════════════════════════════════════════════════════════════════════
+// Per-device keys, certificates, CA roots and WiFi credentials are NOT compiled
+// into this image. The Builder-Pi writes them over USB into a dedicated NVS
+// partition labelled "certs" (0x721000, 64 KB, see partitions_pqc_workshop.csv)
+// that OTA never touches. So the same app image runs on every device, and an
+// OTA image carries no secrets. Namespace "devid" (format 1):
+//   fmt (u8)                      layout version, must be ID_FORMAT
+//   serial, wifi_ssid, wifi_psk   strings
+//   ca_cls, ca_mldsa              CA roots (DER): broker trust + OTA signer trust
+//   crt_cls, key_cls              classical device cert + key (DER)
+//   crt_mldsa, key_mldsa          ML-DSA-44 device cert + seed-only PKCS#8 key
+// This variant presents the classical (ECDSA P-256) device cert, verified by the classical CA
+// (broker listener 8883); only the key exchange is post-quantum.
+#define ID_PARTITION   "certs"
+#define ID_NAMESPACE   "devid"
+#define ID_FORMAT      1
+#define ID_TLS_CA      "ca_cls"
+#define ID_TLS_CERT    "crt_cls"
+#define ID_TLS_KEY     "key_cls"
+
+struct IdBlob { uint8_t* data; size_t len; };
+// Kept for the life of the device: the TLS context and every OTA verify use them.
+static IdBlob g_idCaCls     = {nullptr, 0};
+static IdBlob g_idCaMldsa   = {nullptr, 0};
+static IdBlob g_idTlsCert   = {nullptr, 0};
+static IdBlob g_idTlsKey    = {nullptr, 0};
+static const IdBlob* g_idTlsCa = nullptr;   // points at this variant's CA root
+static char g_wifiSsid[33]  = {0};          // 802.11 max 32 + NUL
+static char g_wifiPsk[65]   = {0};          // WPA2 max 64 + NUL
+
+// Plain pointers rather than IdBlob&: the Arduino build hoists function
+// prototypes above the struct definition.
+static bool idReadBlob(Preferences& p, const char* key, uint8_t** data, size_t* len) {
+    size_t n = p.getBytesLength(key);
+    if (n == 0) {
+        ESP_LOGE(TAG_MAIN, "[Setup] Identity entry '%s' is missing", key);
+        return false;
+    }
+    *data = (uint8_t*)malloc(n);
+    if (!*data) {
+        ESP_LOGE(TAG_MAIN, "[Setup] Out of memory reading '%s' (%u B)", key, (unsigned)n);
+        return false;
+    }
+    *len = p.getBytes(key, *data, n);
+    if (*len != n) {
+        ESP_LOGE(TAG_MAIN, "[Setup] Short read of '%s' (%u of %u B)", key,
+                 (unsigned)*len, (unsigned)n);
+        return false;
+    }
+    return true;
+}
+
+// Reads a NUL-terminated string. getString returns 0 if the entry is missing
+// or does not fit in buf.
+static bool idReadString(Preferences& p, const char* key, char* buf, size_t cap) {
+    if (p.getString(key, buf, cap) == 0) {
+        ESP_LOGE(TAG_MAIN, "[Setup] Identity entry '%s' is missing or too long", key);
+        return false;
+    }
+    return true;
+}
+
+// Loads the identity into the globals above. Returns false (after logging the
+// reason) if anything is missing or does not belong to this chip; the caller
+// must then not start WiFi/MQTT. Requires g_thingName (initDeviceIdentity).
+static bool loadDeviceIdentity() {
+    Preferences p;
+    if (!p.begin(ID_NAMESPACE, true /* read-only */, ID_PARTITION)) {
+        ESP_LOGE(TAG_MAIN, "[Setup] Cannot open NVS partition '%s' namespace '%s'",
+                 ID_PARTITION, ID_NAMESPACE);
+        return false;
+    }
+    bool ok = true;
+    uint8_t fmt = p.getUChar("fmt", 0);
+    if (fmt != ID_FORMAT) {
+        ESP_LOGE(TAG_MAIN, "[Setup] Identity format %u, expected %u", fmt, ID_FORMAT);
+        ok = false;
+    }
+    char serial[17] = {0};
+    ok = ok && idReadString(p, "serial", serial, sizeof(serial));
+    // The identity was issued for one serial. Refuse it on any other chip, so a
+    // certs image flashed onto the wrong board can never impersonate a device.
+    if (ok && strcmp(serial, g_thingName + strlen("esp32-")) != 0) {
+        ESP_LOGE(TAG_MAIN, "[Setup] Identity is for serial %s but this chip is %s",
+                 serial, g_thingName);
+        ok = false;
+    }
+    ok = ok && idReadString(p, "wifi_ssid", g_wifiSsid, sizeof(g_wifiSsid));
+    ok = ok && idReadString(p, "wifi_psk", g_wifiPsk, sizeof(g_wifiPsk));
+    ok = ok && idReadBlob(p, "ca_cls", &g_idCaCls.data, &g_idCaCls.len);
+    ok = ok && idReadBlob(p, "ca_mldsa", &g_idCaMldsa.data, &g_idCaMldsa.len);
+    ok = ok && idReadBlob(p, ID_TLS_CERT, &g_idTlsCert.data, &g_idTlsCert.len);
+    ok = ok && idReadBlob(p, ID_TLS_KEY, &g_idTlsKey.data, &g_idTlsKey.len);
+    p.end();
+    if (!ok) return false;
+
+    g_idTlsCa = (strcmp(ID_TLS_CA, "ca_mldsa") == 0) ? &g_idCaMldsa : &g_idCaCls;
+    ESP_LOGI(TAG_MAIN, "[Setup] Device identity loaded from NVS '%s' (serial %s, WiFi '%s')",
+             ID_PARTITION, serial, g_wifiSsid);
+    ESP_LOGI(TAG_MAIN, "[Setup]   %s %u B, %s %u B; broker trust %s; OTA trust ca_cls %u B + ca_mldsa %u B",
+             ID_TLS_CERT, (unsigned)g_idTlsCert.len, ID_TLS_KEY, (unsigned)g_idTlsKey.len,
+             ID_TLS_CA, (unsigned)g_idCaCls.len, (unsigned)g_idCaMldsa.len);
+    return true;
 }
 
 // ─── Running-image SHA-256 (dashboard integrity badge) ──────────────────────
@@ -691,12 +805,13 @@ bool setupWolfSSLContext() {
     }
     ESP_LOGD(TAG_WOLFSSL, "TLS 1.3 client context created");
 
-    // Load Amazon Root CA 1 (server verification)
-    ESP_LOGD(TAG_WOLFSSL, "Loading CA certificate (%d bytes)", strlen(AWS_CERT_CA));
+    // All identity material comes from the "certs" NVS partition as DER
+    // (loadDeviceIdentity, called in setup before this task starts).
+    // Broker trust anchor: this variant's CA root.
+    ESP_LOGD(TAG_WOLFSSL, "Loading CA certificate %s (%u bytes, DER)", ID_TLS_CA, (unsigned)g_idTlsCa->len);
     ret = wolfSSL_CTX_load_verify_buffer(g_wolfCtx,
-            (const unsigned char*)AWS_CERT_CA,
-            strlen(AWS_CERT_CA),
-            WOLFSSL_FILETYPE_PEM);
+            g_idTlsCa->data, (long)g_idTlsCa->len,
+            WOLFSSL_FILETYPE_ASN1);
     if (ret != WOLFSSL_SUCCESS) {
         ESP_LOGE(TAG_WOLFSSL, "Failed to load CA cert (rc=%d)", ret);
         return false;
@@ -704,11 +819,10 @@ bool setupWolfSSLContext() {
     ESP_LOGI(TAG_WOLFSSL, "CA certificate loaded");
 
     // Load device certificate (client authentication)
-    ESP_LOGD(TAG_WOLFSSL, "Loading device certificate (%d bytes)", strlen(AWS_CERT_CRT));
+    ESP_LOGD(TAG_WOLFSSL, "Loading device certificate %s (%u bytes, DER)", ID_TLS_CERT, (unsigned)g_idTlsCert.len);
     ret = wolfSSL_CTX_use_certificate_buffer(g_wolfCtx,
-            (const unsigned char*)AWS_CERT_CRT,
-            strlen(AWS_CERT_CRT),
-            WOLFSSL_FILETYPE_PEM);
+            g_idTlsCert.data, (long)g_idTlsCert.len,
+            WOLFSSL_FILETYPE_ASN1);
     if (ret != WOLFSSL_SUCCESS) {
         ESP_LOGE(TAG_WOLFSSL, "Failed to load device cert (rc=%d)", ret);
         return false;
@@ -716,13 +830,18 @@ bool setupWolfSSLContext() {
     ESP_LOGI(TAG_WOLFSSL, "Device certificate loaded");
 
     // Load device private key
-    ESP_LOGD(TAG_WOLFSSL, "Loading device private key");
+    ESP_LOGD(TAG_WOLFSSL, "Loading device private key %s (%u bytes, DER)", ID_TLS_KEY, (unsigned)g_idTlsKey.len);
     ret = wolfSSL_CTX_use_PrivateKey_buffer(g_wolfCtx,
-            (const unsigned char*)AWS_CERT_PRIVATE,
-            strlen(AWS_CERT_PRIVATE),
-            WOLFSSL_FILETYPE_PEM);
+            g_idTlsKey.data, (long)g_idTlsKey.len,
+            WOLFSSL_FILETYPE_ASN1);
     if (ret != WOLFSSL_SUCCESS) {
         ESP_LOGE(TAG_WOLFSSL, "Failed to load private key (rc=%d)", ret);
+        return false;
+    }
+    // Catch a cert/key mismatch here, not as an opaque handshake failure.
+    ret = wolfSSL_CTX_check_private_key(g_wolfCtx);
+    if (ret != WOLFSSL_SUCCESS) {
+        ESP_LOGE(TAG_WOLFSSL, "Private key does not match the device certificate (rc=%d)", ret);
         return false;
     }
     ESP_LOGI(TAG_WOLFSSL, "Private key loaded");
@@ -761,11 +880,11 @@ void wifiTask(void* pvParameters) {
                 xSemaphoreGive(g_wifiMutex);
             }
 
-            ESP_LOGI(TAG_WIFI, "Connecting to SSID '%s' (attempt %d)...", WIFI_SSID, wifiAttempts + 1);
+            ESP_LOGI(TAG_WIFI, "Connecting to SSID '%s' (attempt %d)...", g_wifiSsid, wifiAttempts + 1);
             WiFi.disconnect(true);
             ESP_LOGD(TAG_WIFI, "Previous connection disconnected, waiting 500ms for radio reset");
             vTaskDelay(pdMS_TO_TICKS(500));
-            WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+            WiFi.begin(g_wifiSsid, g_wifiPsk);
 
             // Wait for connection with timeout
             unsigned long startAttempt = millis();
@@ -1051,9 +1170,9 @@ void mqttMessageHandler(String &topic, String &payload) {
 //   - The device holds NO signing key — it only VERIFIES, so wolfSSL crypto
 //     primitives (not a TPM) are sufficient.
 //   - The signer LEAF cert travels WITH each OTA (signerCertUrl); the device
-//     validates that leaf chains to the baked-in CA ROOT (OTA_SIGNER_CA_ROOT,
-//     injected into secrets.h by the build) and then verifies the image
-//     signature with the leaf's public key.
+//     validates that leaf chains to one of the device's CA roots (ca_cls /
+//     ca_mldsa, read from the "certs" NVS partition) and then verifies the
+//     image signature with the leaf's public key.
 //   - classical era (ecdsa-p256): ECDSA-P256 over the image's SHA-256 digest,
 //     DER-encoded signature (~71 B). ML-DSA era (mldsa44): ML-DSA-44 over the
 //     RAW image (pure scheme, hashes internally), fixed 2420 B signature.
@@ -1061,16 +1180,6 @@ void mqttMessageHandler(String &topic, String &payload) {
 // The firmware image is never fully in RAM (streamed to flash). For ECDSA we
 // hash incrementally during the download; for ML-DSA we memory-map the written
 // partition read-only to get a contiguous pointer for the one-shot verify.
-
-#ifndef OTA_SIGNER_CA_ROOT_DEFINED
-// Fallback for a local/desktop build where secrets.h did not inject the signer
-// CA root. An empty anchor makes the chain check fail closed (reject), which is
-// the safe default — a real CodeBuild artifact always defines OTA_SIGNER_CA_ROOT
-// (and OTA_SIGNER_CA_ROOT_DEFINED) in secrets.h. We key the guard off the
-// _DEFINED marker macro, not off OTA_SIGNER_CA_ROOT itself, because the real
-// one is a `static const char[]` (not a macro) so #ifndef would not see it.
-static const char OTA_SIGNER_CA_ROOT[] = "";
-#endif
 
 // Max sizes for the small artifacts fetched into RAM. ML-DSA-44 signature is a
 // fixed 2420 B; a signer leaf PEM is ~5.7 KB. Generous caps with headroom.
@@ -1176,29 +1285,38 @@ static bool otaHttpsGetToBuffer(const char* urlCstr, uint8_t* out, size_t cap, s
     return true;
 }
 
-// Validate that the signer leaf PEM chains to the baked-in CA root
-// (OTA_SIGNER_CA_ROOT). Uses a throwaway wolfSSL cert manager so the trust
-// decision is independent of the TLS session. Returns true only if the leaf is
-// signed (transitively) by the embedded root.
+// Validate that the signer leaf PEM chains to one of the device's CA roots
+// (ca_cls / ca_mldsa from the "certs" NVS partition). The firmware signers are
+// issued by the same two Private CAs, so trusting both lets either signer era
+// verify. Uses a throwaway wolfSSL cert manager so the trust decision is
+// independent of the TLS session. Returns true only if the leaf is signed
+// (transitively) by a loaded root.
 static bool otaVerifyChainToRoot(const uint8_t* leafPem, size_t leafLen) {
-    const char* root = OTA_SIGNER_CA_ROOT;
-    if (!root || !root[0]) { ESP_LOGE(TAG_OTA, "No baked-in signer CA root; refusing (fail-closed)"); return false; }
+    const IdBlob* roots[] = { &g_idCaCls, &g_idCaMldsa };
+    const char* names[] = { "ca_cls", "ca_mldsa" };
 
     WOLFSSL_CERT_MANAGER* cm = wolfSSL_CertManagerNew();
     if (!cm) { ESP_LOGE(TAG_OTA, "CertManagerNew failed"); return false; }
-    int ret = wolfSSL_CertManagerLoadCABuffer(cm, (const unsigned char*)root, strlen(root), WOLFSSL_FILETYPE_PEM);
-    if (ret != WOLFSSL_SUCCESS) {
-        ESP_LOGE(TAG_OTA, "Load signer CA root failed (rc=%d)", ret);
+    int loaded = 0;
+    for (int i = 0; i < 2; i++) {
+        if (!roots[i]->len) continue;
+        int rc = wolfSSL_CertManagerLoadCABuffer(cm, roots[i]->data, (long)roots[i]->len,
+                                                 WOLFSSL_FILETYPE_ASN1);
+        if (rc == WOLFSSL_SUCCESS) loaded++;
+        else ESP_LOGW(TAG_OTA, "Load signer CA root %s failed (rc=%d)", names[i], rc);
+    }
+    if (loaded == 0) {
+        ESP_LOGE(TAG_OTA, "No signer CA root loaded; refusing (fail-closed)");
         wolfSSL_CertManagerFree(cm);
         return false;
     }
-    ret = wolfSSL_CertManagerVerifyBuffer(cm, leafPem, (long)leafLen, WOLFSSL_FILETYPE_PEM);
+    int ret = wolfSSL_CertManagerVerifyBuffer(cm, leafPem, (long)leafLen, WOLFSSL_FILETYPE_PEM);
     wolfSSL_CertManagerFree(cm);
     if (ret != WOLFSSL_SUCCESS) {
-        ESP_LOGE(TAG_OTA, "Signer leaf does NOT chain to baked-in root (rc=%d)", ret);
+        ESP_LOGE(TAG_OTA, "Signer leaf does NOT chain to a device CA root (rc=%d)", ret);
         return false;
     }
-    ESP_LOGI(TAG_OTA, "Signer leaf verified against baked-in CA root");
+    ESP_LOGI(TAG_OTA, "Signer leaf verified against device CA root");
     return true;
 }
 
@@ -1335,7 +1453,7 @@ static bool otaVerifyMlDsa44(const uint8_t* sig, size_t sigLen,
 
 // Top-level OTA verify gate. Given the signer material already fetched into RAM
 // and the written image (partition + size + its SHA-256 digest), run the full
-// policy: (1) chain the signer leaf to the baked-in root, (2) verify the image
+// policy: (1) chain the signer leaf to a device CA root, (2) verify the image
 // signature with the correct algorithm. Returns true ONLY if BOTH pass.
 static bool otaVerifyImage(const char* sigAlg,
                            const uint8_t* sig, size_t sigLen,
@@ -1628,7 +1746,7 @@ void otaTask(void* pvParameters) {
         // The image is written but NOT yet bootable. Before switching the boot
         // partition we (1) finalize the streamed SHA-256 and enforce the
         // transmitted sha256 (integrity), and (2) for a SIGNED push, verify the
-        // signature + signer-leaf chain-to-baked-in-root (authenticity). On ANY
+        // signature + signer-leaf chain-to-device-CA-root (authenticity). On ANY
         // failure we DO NOT set the boot partition: the freshly written slot is
         // simply abandoned and the device keeps running its current firmware.
         uint8_t imgDigest[WC_SHA256_DIGEST_SIZE] = {0};
@@ -1990,6 +2108,16 @@ void setup() {
 
     // Derive device identity from MAC address FIRST (needed for banner)
     initDeviceIdentity();
+
+    // Load keys, certs and WiFi from the "certs" NVS partition. Fail closed:
+    // without a valid identity for THIS chip, never start WiFi/MQTT/OTA.
+    if (!loadDeviceIdentity()) {
+        for (;;) {
+            ESP_LOGE(TAG_MAIN, "[Setup] FATAL: no valid device identity for %s. "
+                     "Register and flash this device at the Builder-Pi.", g_thingName);
+            delay(10000);
+        }
+    }
 
     // Hash the running image once at boot for the dashboard integrity badge.
     computeRunningFirmwareSha256();

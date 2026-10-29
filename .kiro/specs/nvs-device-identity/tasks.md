@@ -149,16 +149,47 @@ change the production flow until 0.1–0.3 pass on a real board.
 
 ## Workstream 3 — Firmware loads identity from NVS
 
-- [ ] 3.1 Classical sketch: identity loader (version check, WiFi strings,
+- [x] 3.1 Classical sketch: identity loader (version check, WiFi strings,
       classical CA root, cert and key as DER via `WOLFSSL_FILETYPE_ASN1`). Fail
       closed with a clear `[Setup]` log if anything is missing.
       _Requirements: R5.1, R5.2_
-- [ ] 3.2 PQC sketch: same loader (classical cert, ML-KEM key exchange).
-- [ ] 3.3 ML-DSA sketch: loader plus the seed-derived ML-DSA key from 0.2.
-- [ ] 3.4 Load both CA roots into the OTA signer verifier from NVS, replacing
+      **Done:** `loadDeviceIdentity()` (same code in all three sketches, only
+      `ID_TLS_CA/CERT/KEY` differ) runs in `setup()` before any task starts.
+      It fails closed (repeating `[Setup] FATAL` log, no WiFi/MQTT) on a
+      missing partition, `fmt` != 1, any missing/oversized entry, or an NVS
+      `serial` that differs from the chip MAC. `setupWolfSSLContext` loads DER
+      and now also calls `wolfSSL_CTX_check_private_key`. Logging is ESP_LOG.
+      `idReadBlob` takes plain pointers because the Arduino build hoists
+      prototypes above the `IdBlob` struct.
+- [x] 3.2 PQC sketch: same loader (classical cert, ML-KEM key exchange).
+- [x] 3.3 ML-DSA sketch: loader plus the seed-derived ML-DSA key from 0.2.
+      **Done:** `key_mldsa` is the 54-byte seed-only PKCS#8 and loads directly
+      with `WOLFSSL_FILETYPE_ASN1` (option B from 0.2); trusts `ca_mldsa` on 8884.
+- [x] 3.4 Load both CA roots into the OTA signer verifier from NVS, replacing
       the baked `OTA_SIGNER_CA_ROOT`. _Requirements: R2.4_
-- [ ] 3.5 Remove identity and WiFi from `secrets.h` generation in
+      **Done:** confirmed the signer CA secrets come from the same two Private
+      CAs (`issue_broker_certs.py` issues the signers from `CLASSICAL_CA_ARN` /
+      `MLDSA_CA_ARN`). `otaVerifyChainToRoot` loads `ca_cls` + `ca_mldsa` (DER)
+      into the cert manager; fails closed if neither loads. **Not yet run on
+      hardware** — needs a signed OTA, i.e. the pqc-a migration test.
+- [x] 3.5 Remove identity and WiFi from `secrets.h` generation in
       `buildspec.yml`. Keep only non-secret build settings.
+      **Done:** `secrets.h` = FIRMWARE_VERSION, FIRMWARE_OTA_SIG_ALG, LOG_LEVEL,
+      MQTT_BROKER_ENDPOINT/PORT. Removed from the firmware build: in-build cert
+      issuance (`issue_cert.py` call, image COPY and staging), the signer CA
+      root bake, `WIFI_*`/`IOT_ENDPOINT`/`CA_ARN`/`MLDSA_CA_ARN`/
+      `SIGNER_*_CA_SECRET` env, and the CodeBuild role's acm-pca grant. WiFi is
+      no longer a CloudFormation parameter anywhere (master, device-builder,
+      deploy script) — only SSM, read by the identity job. Registrar and
+      prepare-build no longer resolve WiFi; the registrar role lost kms:Decrypt
+      and its SSM read is scoped to the broker endpoint. Both ASL copies drop
+      the WiFi/IoT overrides. secrets.h templates rewritten (v3 now port 8884).
+      **Hardware (board C69DE0, local builds of all three, real pqc-a identity
+      issued with `--no-upload`):** wrong-serial identity → fail closed;
+      classical → ECDHE-P256 on 8883; PQC → SECP256R1_MLKEM768 on 8883; ML-DSA →
+      SECP256R1_MLKEM768 on 8884 with the ML-DSA cert. All three connected and
+      subscribed from ONE `certs` partition; switching app images left it intact.
+      Tests: 112 passed.
 
 ## Workstream 4 — Shared images and migration
 

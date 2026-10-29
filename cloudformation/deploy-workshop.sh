@@ -60,9 +60,10 @@ SUBNETS=""
 PROFILE=""
 
 # ─── Workshop WiFi (operator-supplied, NEVER committed) ──────────────────────
-# The device firmware (initial flash AND the classical->PQC migration) is built
-# with these WiFi credentials, and the builder-Pi hostapd AP broadcasts the same
-# SSID. Supply the real workshop values at deploy time by ONE of three methods,
+# Published to SSM (/pqc-workshop/wifi/*) in step 4, and nowhere else: the
+# device-identity job writes them into each device's "certs" NVS partition at
+# registration, and the builder-Pi hostapd AP broadcasts the same SSID. They
+# are not passed to CloudFormation and not compiled into firmware. Supply the real workshop values at deploy time by ONE of three methods,
 # resolved in this precedence (first match wins), per value independently:
 #   1. CLI flags:  --wifi-ssid <ssid>  --wifi-password <pw>
 #   2. Env vars:   WORKSHOP_WIFI_SSID=... WORKSHOP_WIFI_PASSWORD=...
@@ -267,8 +268,6 @@ aws cloudformation deploy \
         IoTEndpoint="$IOT_ENDPOINT" \
         BrokerTriggerBuild=false \
         BrokerCreateVpcEndpoints=false \
-        DefaultWifiSsid="$WORKSHOP_WIFI_SSID" \
-        DefaultWifiPassword="$WORKSHOP_WIFI_PASSWORD" \
         $VPC_PARAMS \
     --capabilities CAPABILITY_NAMED_IAM CAPABILITY_AUTO_EXPAND \
     --tags Workshop=pqc-reinvent
@@ -338,10 +337,6 @@ stage_extra() {
 }
 stage_extra wolfssl_user_settings_arduino.h "$PROJECT_ROOT/raw_device_builder/codebuild/wolfssl_user_settings_arduino.h"
 stage_extra partitions_pqc_workshop.csv     "$PROJECT_ROOT/esp32-flash/partitions_pqc_workshop.csv"
-# Shared cert-issuer script — baked into the firmware-builder image (Dockerfile
-# COPYs it) so the per-device firmware build mints its device cert via the SAME
-# issuance code path as the broker cert-issuer container.
-stage_extra issue_cert.py "$PROJECT_ROOT/shared/cert-issuer/issue_cert.py"
 
 # ─── Verify the firmware source/ prefix is complete (fail fast) ──────────────
 # The per-device firmware build (FirmwareBuildProject) and the one-time image
@@ -360,7 +355,6 @@ REQUIRED_FW_SOURCE=(
     aws_iot_pqc_esp32_v3_mldsa.ino         # pqc-mldsa sketch variant (Step 2)
     wolfssl_user_settings_arduino.h        # wolfSSL PQC config
     partitions_pqc_workshop.csv            # partition table
-    issue_cert.py                          # shared cert-issuer (baked into image)
 )
 _missing_fw=0
 for obj in "${REQUIRED_FW_SOURCE[@]}"; do
@@ -529,7 +523,8 @@ put_param /pqc-workshop/iotEndpoint               "$IOT_ENDPOINT"
 put_param /pqc-workshop/broker/endpoint           "$(get_out BrokerEndpoint)"
 
 # Workshop WiFi: the single source of truth consumed by the builder-Pi hostapd
-# AP setup (broadcasts this SSID/PSK) and mirrored into firmware at build time.
+# AP setup (broadcasts this SSID/PSK) and by the device-identity job, which
+# writes it into each device's "certs" NVS partition at registration.
 # SSID is a plain String; the password is a SecureString (put_param hardcodes
 # --type String, so publish the password with a dedicated call).
 put_param /pqc-workshop/wifi/ssid "$WORKSHOP_WIFI_SSID"

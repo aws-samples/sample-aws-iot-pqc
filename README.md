@@ -629,11 +629,11 @@ If you are tight on memory:
 
 | Symptom | Cause | Solution |
 |---------|-------|----------|
-| `[WiFi] Connection failed` | Wrong SSID/password, or network out of range | Check `WIFI_SSID` and `WIFI_PASSWORD` in `secrets.h`. Move closer to the router. |
-| `[wolfSSL] TCP connection failed` | Cannot reach AWS IoT endpoint | Check `AWS_IOT_ENDPOINT` is correct. Verify port 8883 is not blocked by firewall. |
-| `[wolfSSL] Failed to load CA cert` | Malformed Root CA in `secrets.h` | Re-download `AmazonRootCA1.pem` and paste the full contents including BEGIN/END lines. |
-| `[wolfSSL] Failed to load device cert` | Malformed device certificate | Re-download from AWS IoT Console. Ensure no extra whitespace or missing lines. |
-| `[wolfSSL] Failed to load private key` | Wrong or malformed private key | Ensure you are using the private key (not the public key). You can only download it once during Thing creation. |
+| `[Setup] FATAL: no valid device identity` | The `certs` NVS partition (0x721000) is missing, from an older format, or was issued for a different board (the log line above it says which) | Register (or Reflash) the device at the Builder-Pi; it re-issues and flashes the identity. |
+| `[WiFi] Connection failed` | Wrong SSID/password, or network out of range | WiFi comes from the device's `certs` partition, issued from SSM `/pqc-workshop/wifi/*`. Fix SSM, then Reflash at the Builder-Pi. Move closer to the access point. |
+| `[wolfSSL] TCP connection failed` | Cannot reach the broker | Check `MQTT_BROKER_ENDPOINT` (the broker NLB) and that ports 8883/8884 are reachable. |
+| `[wolfSSL] Failed to load CA cert` / `device cert` / `private key` | Corrupt identity in the `certs` partition | Reflash at the Builder-Pi to re-issue the identity. |
+| `[wolfSSL] Private key does not match the device certificate` | Identity entries from two different issuances | Reflash at the Builder-Pi. |
 | `[wolfSSL] Handshake error: -188` | Certificate verification failed | Ensure the Root CA matches your endpoint. Check that the device certificate is activated and has a policy attached. |
 | `[wolfSSL] Handshake timed out` | Network too slow or endpoint unreachable | Check WiFi signal strength. Try a closer access point. Increase `handshakeTimeout` if needed. |
 | `[wolfSSL] Failed to set PQC key share` | wolfSSL compiled without Kyber | Verify all PQC defines are in `user_settings.h`. Do a clean rebuild. |
