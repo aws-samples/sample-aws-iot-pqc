@@ -74,10 +74,9 @@ Blobs are used for anything that may exceed the 4,000-byte NVS string limit
 | `crt_cls` | blob | Classical device cert, DER | ~550 B |
 | `key_cls` | blob | P-256 private key, DER | ~140 B |
 | `crt_mldsa` | blob | ML-DSA-44 device cert, DER | ~4,170 B |
-| `seed_mldsa` | blob | ML-DSA-44 32-byte seed (or `key_mldsa` DER fallback) | 32 B (~2.6 KB) |
+| `key_mldsa` | blob | ML-DSA-44 private key as seed-only PKCS#8 DER | 54 B |
 
-Total is about 9.6 KB with the seed, or about 12 KB with the fallback, in a
-64 KB partition. CA root sizes are measured from pqc-a; device cert sizes are
+Total is about 9.6 KB in a 64 KB partition. CA root sizes are measured from pqc-a; device cert sizes are
 taken from the broker certs issued by the same CAs; key sizes are estimates.
 
 Firmware opens the partition read-only (`Preferences.begin("devid", true,
@@ -85,6 +84,13 @@ Firmware opens the partition read-only (`Preferences.begin("devid", true,
 `WOLFSSL_FILETYPE_ASN1`.
 
 ## ML-DSA-44 seed
+
+**Decision (spike 0.2, passed on hardware):** store the ML-DSA-44 key as the
+54-byte seed-only PKCS#8 DER (`openssl pkey -outform DER -provparam
+ml-dsa.output_formats=seed-only`) under `key_mldsa`, and load it with
+`wolfSSL_CTX_use_PrivateKey_buffer(..., WOLFSSL_FILETYPE_ASN1)`, exactly like the
+classical key. wolfSSL 5.8.4 expands the seed itself. No derivation code is
+needed in the firmware. The notes below are the original analysis.
 
 **wolfSSL support (checked).** The Arduino wolfSSL library is 5.8.4
 (`Arduino-wolfSSL` `library.properties`). Its `dilithium.h` declares
@@ -135,6 +141,7 @@ expires `*/identity/` objects after 1 day as a backstop.
 
 Shared helper in each sketch:
 1. Open `certs`/`devid` read-only; read `fmt` and refuse an unknown version.
+   Log with ESP_LOG/printf, not `Serial` (on this board `Serial` is UART0).
 2. Read the WiFi strings and the blobs for the active variant: the classical CA
    root, cert and key for classical and PQC; the ML-DSA CA root, cert and
    seed-derived key for ML-DSA. Keep both CA roots loaded for OTA signer

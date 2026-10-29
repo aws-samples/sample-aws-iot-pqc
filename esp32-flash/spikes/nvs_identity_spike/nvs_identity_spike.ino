@@ -46,13 +46,14 @@
 #define EXPECT_SIZE    0x10000
 #define MLDSA_SEED_LEN 32
 
+static void step(const char* what);
 static int g_pass = 0, g_fail = 0;
 static String g_report;
 
 static void check(const char* name, bool ok, const String& detail = "") {
     String line = String("[Spike] ") + (ok ? "PASS " : "FAIL ") + name;
     if (detail.length()) line += "  (" + detail + ")";
-    Serial.println(line);
+    printf("%s\n", line.c_str());
     g_report += line + "\n";
     if (ok) g_pass++; else g_fail++;
 }
@@ -84,7 +85,7 @@ static String sha256Hex(const uint8_t* d, size_t n) {
 }
 
 static void printEntry(const char* key, const Blob& b) {
-    Serial.printf("[Spike] entry %-11s len=%5u sha256=%s\n", key, (unsigned)b.len,
+    printf("[Spike] entry %-11s len=%5u sha256=%s\n", key, (unsigned)b.len,
                   b.len ? sha256Hex(b.data, b.len).c_str() : "-");
 }
 
@@ -173,8 +174,7 @@ static bool samePublicKey(dilithium_key* k, const uint8_t* certPub, int certPubL
 static void runSpike() {
     g_pass = g_fail = 0;
     g_report = "";
-    Serial.println();
-    Serial.println("[Spike] ===== NVS identity spike =====");
+    printf("\n[Spike] ===== NVS identity spike =====\n");
 
     // ── 0.1 partition table ──────────────────────────────────────────────
     const esp_partition_t* part = esp_partition_find_first(
@@ -186,9 +186,10 @@ static void runSpike() {
               String("addr=0x") + String(part->address, HEX) + " size=0x" + String(part->size, HEX));
     }
     const esp_partition_t* run = esp_ota_get_running_partition();
-    Serial.printf("[Spike] running from %s @0x%06x\n", run ? run->label : "?", run ? (unsigned)run->address : 0);
+    printf("[Spike] running from %s @0x%06x\n", run ? run->label : "?", run ? (unsigned)run->address : 0);
 
     // ── 0.3 NVS read-back ────────────────────────────────────────────────
+    step("open certs NVS");
     bool opened = prefs.begin(ID_NAMESPACE, true, ID_PARTITION);
     check("0.3 open certs/devid read-only", opened);
     if (!opened) return;
@@ -201,6 +202,7 @@ static void runSpike() {
     check("0.3 strings present", serial.length() && ssid.length() && psk.length(),
           "serial=" + serial + " ssid=" + ssid + " psk_len=" + String(psk.length()));
 
+    step("read blobs");
     Blob caCls = readBlob("ca_cls");
     Blob caMl = readBlob("ca_mldsa");
     Blob crtCls = readBlob("crt_cls");
@@ -220,15 +222,18 @@ static void runSpike() {
     check("0.3 ML-DSA cert > 4000 B read back as blob", crtMl.len > 4000, String(crtMl.len) + " B");
     prefs.end();
 
+    step("init RNG");
     WC_RNG rng;
     bool rngOk = wc_InitRng(&rng) == 0;
     check("wolfCrypt RNG", rngOk);
 
     // ── chains ───────────────────────────────────────────────────────────
+    step("verify chains");
     if (caCls.len && crtCls.len) check("chain classical CA -> device cert", chainVerifies(caCls, crtCls));
     if (caMl.len && crtMl.len) check("chain ML-DSA-44 CA -> device cert", chainVerifies(caMl, crtMl));
 
     // ── classical identity ───────────────────────────────────────────────
+    step("classical TLS ctx");
     if (crtCls.len && keyCls.len) {
         String why;
         check("classical key+cert load into TLS 1.3 ctx (DER)",
@@ -236,6 +241,7 @@ static void runSpike() {
     }
 
     // ── 0.2 ML-DSA-44 from 32-byte seed (option A) ──────────────────────
+    step("ML-DSA cert public key");
     uint8_t certPub[ML_DSA_LEVEL2_PUB_KEY_SIZE + 64];
     int certPubLen = crtMl.len ? certPublicKey(crtMl, certPub, sizeof(certPub)) : -1;
     check("ML-DSA cert public key extracted", certPubLen == ML_DSA_LEVEL2_PUB_KEY_SIZE,
@@ -245,6 +251,7 @@ static void runSpike() {
         dilithium_key* k = newMlDsaKey();
         uint32_t heapBefore = ESP.getFreeHeap();
         uint32_t t0 = micros();
+        step("make_key_from_seed");
         int ret = k ? wc_dilithium_make_key_from_seed(k, seedMl.data) : -1;
         uint32_t dt = micros() - t0;
         uint32_t heapLow = ESP.getMinFreeHeap();
@@ -253,6 +260,7 @@ static void runSpike() {
               heapBefore + " -> min " + heapLow);
         if (ret == 0) {
             check("0.2A seed-derived public key == cert public key", samePublicKey(k, certPub, certPubLen));
+            step("ML-DSA sign/verify");
             check("0.2A sign with derived key, verify with cert key", mldsaSignVerify(k, certPub, certPubLen, &rng));
 
             word32 cap = ML_DSA_LEVEL2_BOTH_KEY_DER_SIZE + 64;
@@ -271,6 +279,7 @@ static void runSpike() {
         check("0.2A inputs", false, "seed or cert missing");
     }
 
+    step("seed-only PKCS#8");
     // ── 0.2 option B: seed-only PKCS#8 decode ───────────────────────────
     if (p8Ml.len && certPubLen > 0) {
         dilithium_key* k = newMlDsaKey();
@@ -290,19 +299,33 @@ static void runSpike() {
     freeBlob(caCls); freeBlob(caMl); freeBlob(crtCls); freeBlob(keyCls);
     freeBlob(crtMl); freeBlob(seedMl); freeBlob(p8Ml);
 
-    Serial.printf("[Spike] ===== RESULT: %d passed, %d failed =====\n", g_pass, g_fail);
+    printf("[Spike] ===== RESULT: %d passed, %d failed =====\n", g_pass, g_fail);
+}
+
+// Progress marker, flushed immediately, so a hang shows the last step reached.
+static void step(const char* what) {
+    printf("[Spike] step: %s (heap %u)\n", what, (unsigned)ESP.getFreeHeap());
+    fflush(stdout);
 }
 
 void setup() {
     Serial.begin(115200);
-    delay(3000);  // give USB-CDC time to enumerate
+    // Output uses printf (the ESP-IDF console), like the production firmware's
+    // ESP_LOG calls: with this board's FQBN (CDCOnBoot=cdc, which on the XIAO
+    // means CDC *disabled*) Serial goes to UART0, while the console is mirrored
+    // to the USB-Serial/JTAG port. The heartbeat makes a hung board obvious.
+    for (int i = 3; i > 0; i--) {
+        printf("[Spike] boot alive, starting in %d\n", i);
+        fflush(stdout);
+        delay(1000);
+    }
+    step("wolfSSL_Init");
     wolfSSL_Init();
     runSpike();
 }
 
 void loop() {
     delay(15000);
-    Serial.println();
-    Serial.print(g_report);
-    Serial.printf("[Spike] ===== RESULT: %d passed, %d failed =====\n", g_pass, g_fail);
+    printf("\n%s", g_report.c_str());
+    printf("[Spike] ===== RESULT: %d passed, %d failed =====\n", g_pass, g_fail);
 }

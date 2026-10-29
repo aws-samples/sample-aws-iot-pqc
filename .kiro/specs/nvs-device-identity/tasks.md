@@ -5,7 +5,7 @@ change the production flow until 0.1–0.3 pass on a real board.
 
 ## Workstream 0 — Feasibility spikes (gating)
 
-- [ ] 0.1 **Partition table.** Add `certs, data, nvs, 0x721000, 0x10000,` to
+- [x] 0.1 **Partition table.** Add `certs, data, nvs, 0x721000, 0x10000,` to
       `esp32-flash/partitions_pqc_workshop.csv`. Generate the `.bin` with
       `gen_esp32part.py` and check `certs` is at `0x721000` and nothing else
       moved. Rebuild the firmware-builder image, compile the current classical
@@ -15,8 +15,11 @@ change the production flow until 0.1–0.3 pass on a real board.
       firmware-builder image (core 3.3.10, wolfSSL 5.8.4) and the build's table
       has `certs` at 0x721000/64 KB with the first 6 entries byte-identical.
       Found: `firmware.merged.bin` is padded to 8 MB and overlaps `certs`, so
-      flashing must use the pieces (see 2.1). Remaining: device boot test.
-- [ ] 0.2 **ML-DSA-44 seed round trip.** In the cert-issuer image:
+      flashing must use the pieces (see 2.1). **Done on hardware** (XIAO
+      ESP32-S3, MAC ..:C6:9D:E0): flashed as pieces, `certs` reported at
+      0x721000/0x10000 and the app ran from `ota_0`. The real firmware boot +
+      broker connection is re-checked in workstream 3.
+- [x] 0.2 **ML-DSA-44 seed round trip.** In the cert-issuer image:
       - generate a 32-byte seed;
       - derive the key with OpenSSL 3.5 (`genpkey -algorithm ML-DSA-44
         -pkeyopt hexseed:...`; confirm the option exists);
@@ -35,10 +38,15 @@ change the production flow until 0.1–0.3 pass on a real board.
       an identical key, and writes a 54-byte seed-only PKCS#8. The spike sketch
       (`esp32-flash/spikes/nvs_identity_spike/`) compiles against the device
       wolfSSL build, so `wc_dilithium_make_key_from_seed`, `KeyToDer` and
-      `PrivateKeyDecode` are all present. Remaining: run on a board. The TLS
-      handshake to 8884 is deferred to 3.3 (the spike checks the key/cert pair
-      in a TLS 1.3 context, without a network).
-- [ ] 0.3 **NVS image round trip.** Build a `certs.bin` with
+      `PrivateKeyDecode` are all present. **PASSED on hardware:**
+      `wc_dilithium_make_key_from_seed` rebuilt the key in 13.7 ms (peak heap
+      use ~40 KB of 336 KB free); its public key equals the cert's; it signs and
+      the cert key verifies; it pairs with the cert in a TLS 1.3 context.
+      **Option B also passed and is the chosen design:** wolfSSL loads the
+      54-byte seed-only PKCS#8 directly with `wolfSSL_CTX_use_PrivateKey_buffer`
+      (ASN1) and pairs it with the cert, so the firmware needs no derivation
+      code. The TLS handshake to 8884 is checked in 3.3.
+- [x] 0.3 **NVS image round trip.** Build a `certs.bin` with
       `nvs_partition_gen.py` from real DER blobs and the strings in the design
       layout. Flash it at `0x721000` alongside the app. A test sketch opens
       `certs`/`devid` read-only and prints each entry's length and SHA-256; check
@@ -46,8 +54,15 @@ change the production flow until 0.1–0.3 pass on a real board.
       as a blob. _Requirements: R1.3, R2.1, R2.3_
       **Progress:** `esp32-flash/spikes/make_spike_identity.sh` builds a
       throwaway identity in the cert-issuer image; `esp-idf-nvs-partition-gen`
-      0.3.0 produced a 64 KB `certs.bin` (V2, multipage blobs). Remaining: run
-      on a board.
+      0.3.0 produced a 64 KB `certs.bin` (V2, multipage blobs). **PASSED on
+      hardware:** read-only open of `certs`/`devid`; all 7 blobs and 3 strings
+      read back with lengths and SHA-256 identical to the host values,
+      including the 4,013-byte ML-DSA cert as a multipage blob; both chains
+      verify on the device.
+      **Finding:** on the XIAO board, `CDCOnBoot=cdc` means CDC *disabled*, so
+      `Serial` goes to UART0. Firmware output reaches USB only via ESP_LOG /
+      printf (the IDF console, mirrored to USB-Serial/JTAG). New firmware code
+      must log with ESP_LOG/printf, not `Serial.print`.
 - [x] 0.4 **Pin wolfSSL.** Change `arduino-cli lib install "wolfssl"` to a pinned
       version (`wolfssl@5.8.4`, or the version 0.2 proves) in
       `raw_device_builder/codebuild/Dockerfile`. _Requirements: R5.3_
