@@ -69,6 +69,16 @@ Rules:
 - **Rebuild the source zip** (`cloudformation/package-workshop-src.sh`) for the
   workshop assets bucket whenever the shipped source changes, since 99.2 loads
   the IDE from that zip.
+- **Iterating on a running environment: use `deploy-workshop.sh --stage-only`**
+  (about 2–3 min) when only shipped source changed — firmware sketches/buildspecs,
+  the Builder-Pi app, or the dashboard. It re-stages sources and rebuilds the
+  dashboard, but skips the stack update, image builds, broker certs, SSM and
+  WiFi; follow the "what to run next" summary it prints (e.g. `--only deploy-app`
+  for the Pi, Deregister + Register for a firmware rebuild). Do NOT re-run the
+  full deploy just to ship source. Use the full deploy for CloudFormation,
+  Lambda, broker/cert-issuer image, SSM or WiFi changes. `--stage-only` never
+  counts as the acceptance test — that remains the from-scratch rebuild above.
+  Details: cloudformation/DEPLOYMENT.md, "Updating a running environment".
 
 ## VPC Block Public Access (BPA) — CRITICAL for device connectivity
 

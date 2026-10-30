@@ -19,6 +19,18 @@
 #
 # Usage:
 #   ./deploy-workshop.sh <aws-region> [--vpc-id <vpc-xxxx> --subnets <a,b>] [--profile NAME] [--device-count N] [--wifi-ssid SSID] [--wifi-password PW]
+#   ./deploy-workshop.sh <aws-region> --stage-only [--profile NAME]
+#
+# --stage-only: fast update of an EXISTING deployment. Re-stages the source the
+# deploy uploads to S3 (broker + cert-issuer build contexts, firmware source/
+# incl. buildspecs + sketches, builder-Pi app.tgz) and rebuilds + publishes the
+# dashboard (its CodeBuild is quick and self-contained). It skips template
+# packaging, the stack update, the broker/cert-issuer image builds, broker cert
+# provisioning, the broker scale-up, and the SSM config + WiFi publish. Use it to
+# ship a firmware/buildspec, Builder-Pi app or dashboard change in minutes; the
+# summary it prints says what to run next for each kind of change.
+# It is NOT a substitute for the from-scratch deploy that acceptance requires
+# (see cloudformation/DEPLOYMENT.md, "Updating a running environment").
 #
 # Workshop WiFi: supply via --wifi-ssid/--wifi-password flags, the
 # WORKSHOP_WIFI_SSID/WORKSHOP_WIFI_PASSWORD env vars, or the interactive prompt
@@ -83,8 +95,10 @@ PROFILE=""
 WORKSHOP_WIFI_SSID_DEFAULT="reinvent-pqc-iot-wifi"
 WIFI_SSID_CLI=""       # from --wifi-ssid (highest precedence)
 WIFI_PASSWORD_CLI=""   # from --wifi-password
+STAGE_ONLY="false"     # --stage-only: re-stage sources into an existing stack, nothing else
 while [[ $# -gt 0 ]]; do
     case "$1" in
+        --stage-only) STAGE_ONLY="true"; shift ;;
         --vpc-id) VPC_ID="$2"; shift 2 ;;
         --subnets) SUBNETS="$2"; shift 2 ;;
         --profile) PROFILE="$2"; shift 2 ;;
@@ -95,9 +109,19 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+if [[ "$STAGE_ONLY" == "true" ]]; then
+    if [[ -n "$VPC_ID$SUBNETS$WIFI_SSID_CLI$WIFI_PASSWORD_CLI" ]]; then
+        echo "[ERROR] --stage-only changes no stack parameters, VPC or WiFi; drop --vpc-id/--subnets/--wifi-*."
+        exit 1
+    fi
+fi
+
 # Resolve WiFi SSID: CLI flag -> env var -> interactive prompt (default the
 # workshop SSID) -> non-interactive default (SSID is not a secret).
-if [[ -n "$WIFI_SSID_CLI" ]]; then
+# (Skipped with --stage-only: it publishes nothing to SSM.)
+if [[ "$STAGE_ONLY" == "true" ]]; then
+    :
+elif [[ -n "$WIFI_SSID_CLI" ]]; then
     WORKSHOP_WIFI_SSID="$WIFI_SSID_CLI"
 elif [[ -n "${WORKSHOP_WIFI_SSID:-}" ]]; then
     WORKSHOP_WIFI_SSID="$WORKSHOP_WIFI_SSID"
@@ -110,7 +134,9 @@ fi
 
 # Resolve WiFi password: CLI flag -> env var -> interactive hidden prompt
 # (required, no default) -> non-interactive 'changeme' placeholder + later WARN.
-if [[ -n "$WIFI_PASSWORD_CLI" ]]; then
+if [[ "$STAGE_ONLY" == "true" ]]; then
+    :
+elif [[ -n "$WIFI_PASSWORD_CLI" ]]; then
     WORKSHOP_WIFI_PASSWORD="$WIFI_PASSWORD_CLI"
 elif [[ -n "${WORKSHOP_WIFI_PASSWORD:-}" ]]; then
     WORKSHOP_WIFI_PASSWORD="$WORKSHOP_WIFI_PASSWORD"
@@ -127,7 +153,7 @@ fi
 # VPC mode: if neither --vpc-id nor --subnets is given, the stack creates its
 # own VPC (CreateVpc=true). If both are given, we use that existing VPC. Giving
 # only one is an error.
-if [[ -z "$VPC_ID" && -z "$SUBNETS" ]]; then
+if [[ "$STAGE_ONLY" == "true" || ( -z "$VPC_ID" && -z "$SUBNETS" ) ]]; then
     CREATE_VPC="true"
 elif [[ -n "$VPC_ID" && -n "$SUBNETS" ]]; then
     CREATE_VPC="false"
@@ -156,13 +182,19 @@ ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
 ARTIFACTS_BUCKET="pqc-workshop-cfn-${ACCOUNT_ID}-${AWS_REGION}"
 
 echo "═══════════════════════════════════════════════════════════════"
+if [[ "$STAGE_ONLY" == "true" ]]; then
+echo "  PQC Workshop — STAGE-ONLY update (existing stack, no rebuilds)"
+else
 echo "  PQC Workshop — Full Stack Deployment (single master)"
+fi
 echo "═══════════════════════════════════════════════════════════════"
 echo "  Profile:          ${PROFILE:-<ambient/default credentials>}"
 echo "  Target account:   $ACCOUNT_ID"
 echo "  Caller identity:  $CALLER_ARN"
 echo "  Region:           $AWS_REGION"
-if [[ "$CREATE_VPC" == "true" ]]; then
+if [[ "$STAGE_ONLY" == "true" ]]; then
+    echo "  Mode:             --stage-only (stack, images, SSM, WiFi untouched)"
+elif [[ "$CREATE_VPC" == "true" ]]; then
     echo "  VPC:              <the stack will create its own VPC>"
 else
     echo "  VPC / subnets:    $VPC_ID / $SUBNETS"
@@ -173,11 +205,28 @@ echo ""
 # Safety guard: confirm the target account before any writes. Skip with
 # CONFIRM_DEPLOY=yes for non-interactive/CI use.
 if [[ "${CONFIRM_DEPLOY:-}" != "yes" && -t 0 ]]; then
-    read -r -p "  Deploy to account $ACCOUNT_ID? [y/N] " reply
+    _verb="Deploy"; [[ "$STAGE_ONLY" == "true" ]] && _verb="Stage-only update"
+    read -r -p "  $_verb to account $ACCOUNT_ID? [y/N] " reply
     [[ "$reply" == "y" || "$reply" == "Y" ]] || { echo "Aborted."; exit 1; }
     echo ""
 fi
 
+get_out() { aws cloudformation describe-stacks --stack-name pqc-workshop \
+    --query "Stacks[0].Outputs[?OutputKey=='$1'].OutputValue | [0]" --output text; }
+
+if [[ "$STAGE_ONLY" == "true" ]]; then
+    # Stage-only needs a healthy existing stack: its buckets are the targets.
+    STACK_STATUS=$(aws cloudformation describe-stacks --stack-name pqc-workshop \
+        --query 'Stacks[0].StackStatus' --output text 2>/dev/null || echo "MISSING")
+    case "$STACK_STATUS" in
+        CREATE_COMPLETE|UPDATE_COMPLETE|UPDATE_ROLLBACK_COMPLETE)
+            echo "  Stack pqc-workshop: $STACK_STATUS"; echo "" ;;
+        *)
+            echo "[ERROR] --stage-only needs an existing, stable pqc-workshop stack (found: $STACK_STATUS)."
+            echo "        Run a full deploy first: $0 $AWS_REGION${PROFILE:+ --profile $PROFILE}"
+            exit 1 ;;
+    esac
+else
 # ─── Ensure the artifacts bucket exists ──────────────────────────────────────
 if ! aws s3 ls "s3://$ARTIFACTS_BUCKET" >/dev/null 2>&1; then
     if [[ "$AWS_REGION" == "us-east-1" ]]; then
@@ -271,14 +320,16 @@ aws cloudformation deploy \
         $VPC_PARAMS \
     --capabilities CAPABILITY_NAMED_IAM CAPABILITY_AUTO_EXPAND \
     --tags Workshop=pqc-reinvent
-
-get_out() { aws cloudformation describe-stacks --stack-name pqc-workshop \
-    --query "Stacks[0].Outputs[?OutputKey=='$1'].OutputValue | [0]" --output text; }
+fi  # end of full-deploy-only steps 1-2 (skipped by --stage-only)
 
 # ─── Step 3: stage container build contexts + build the broker image ─────────
 # CloudFormation cannot upload a Docker build context, so we do it here now that
 # the source buckets exist.
-echo "[3/5] Staging build contexts + building the broker container image..."
+if [[ "$STAGE_ONLY" == "true" ]]; then
+    echo "[stage-only] Staging build contexts + builder-Pi app (no builds)..."
+else
+    echo "[3/5] Staging build contexts + building the broker container image..."
+fi
 BROKER_SOURCE_BUCKET="pqc-workshop-broker-source-${ACCOUNT_ID}"
 FIRMWARE_BUCKET="pqc-workshop-firmware-${ACCOUNT_ID}"
 
@@ -422,6 +473,9 @@ if ! aws s3api head-object --bucket "$FIRMWARE_BUCKET" --key "builder-pi/app.tgz
 fi
 echo "          builder-Pi app + assets staged"
 
+if [[ "$STAGE_ONLY" != "true" ]]; then
+# ─── Full deploy only: images, broker certs, broker scale-up, SSM + WiFi ─────
+# (--stage-only skips this whole block and goes straight to the dashboard.)
 # Trigger the broker image build now that its source is in place, and wait.
 BROKER_BUILD_PROJECT=$(get_out CodeBuildProjectName 2>/dev/null || true)
 [[ -z "$BROKER_BUILD_PROJECT" || "$BROKER_BUILD_PROJECT" == "None" ]] && BROKER_BUILD_PROJECT="pqc-workshop-broker-image-build"
@@ -537,6 +591,9 @@ if [[ "$WORKSHOP_WIFI_SSID" == "changeme" || "$WORKSHOP_WIFI_PASSWORD" == "chang
     echo "          WORKSHOP_WIFI_PASSWORD set to the real workshop credentials."
 fi
 
+fi  # end of full-deploy-only block (skipped by --stage-only)
+
+[[ "$STAGE_ONLY" == "true" ]] && echo "[stage-only] Staging + building the v2 dashboard (CodeBuild; reads config from SSM)..."
 # ─── Build + deploy the dashboard via CodeBuild (not on this host) ───────────
 # The Vite/React build used to run here (npm ci && npm run build) and sync from
 # the operator's laptop, making the deploy laptop-dependent and slow. It now
@@ -573,6 +630,34 @@ while true; do
         *) sleep 15 ;;
     esac
 done
+
+if [[ "$STAGE_ONLY" == "true" ]]; then
+    PROFILE_ARG=""
+    [[ -n "$PROFILE" ]] && PROFILE_ARG=" --profile $PROFILE"
+    echo ""
+    echo "═══════════════════════════════════════════════════════════════"
+    echo "  Stage-only update complete (account $ACCOUNT_ID)."
+    echo "═══════════════════════════════════════════════════════════════"
+    echo "  Applied now:"
+    echo "    Dashboard   rebuilt + synced + CloudFront invalidated: $(get_out DashboardURL)"
+    echo "                (hard-refresh the browser to pick it up)"
+    echo "  Staged, takes effect when you run the step below:"
+    echo "    Firmware sketches / buildspec.yml / wolfSSL config / partition table:"
+    echo "      the NEXT firmware build. Register & Flash always builds. A dashboard"
+    echo "      migration REUSES s3://${FIRMWARE_BUCKET}/<serial>/<version>/ when"
+    echo "      firmware.bin exists: Deregister + Register the device (or delete that"
+    echo "      prefix) to force a rebuild."
+    echo "    Firmware-builder image (Dockerfile / buildspec-image.yml):"
+    echo "      aws codebuild start-build --project-name pqc-workshop-build-image${PROFILE_ARG}"
+    echo "    Builder-Pi app (raw_device_builder/builder-pi/):"
+    echo "      ./raw_device_builder/setup-builder-pi-remote.sh --region $AWS_REGION${PROFILE_ARG} --only deploy-app"
+    echo "  NOT applied by --stage-only (run the full deploy instead):"
+    echo "    CloudFormation templates, Lambda code, broker / cert-issuer images,"
+    echo "    broker certs, SSM config, workshop WiFi:"
+    echo "      ./cloudformation/deploy-workshop.sh $AWS_REGION${PROFILE_ARG}"
+    echo ""
+    exit 0
+fi
 
 echo ""
 echo "═══════════════════════════════════════════════════════════════"

@@ -243,12 +243,14 @@ function DeviceCard({ device, onCommand, onShowLog, onFlash }) {
         </div>
         <div className="metric">
           {/* nosemgrep: jsx-not-internationalized */}
-          <label>PSRAM free / total</label>
+          <label>PSRAM free / used / total</label>
           <span>
             {device.psramSize != null
               ? (device.psramSize === 0
                   ? 'disabled'
-                  : `${formatKB(device.psramFree)} / ${formatKB(device.psramSize)}`)
+                  : device.psramFree != null
+                    ? `${formatKB(device.psramFree)} / ${formatKB(device.psramSize - device.psramFree)} / ${formatKB(device.psramSize)}`
+                    : `${formatKB(device.psramSize)} total`)
               : '—'}
           </span>
         </div>

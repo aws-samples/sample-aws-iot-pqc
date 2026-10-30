@@ -440,6 +440,50 @@ The broker server certificate on 8884 should show an ML-DSA-44 signature
 
 ---
 
+## Updating a running environment (`--stage-only`)
+
+A full `deploy-workshop.sh` run rebuilds the broker and cert-issuer images,
+re-provisions the broker certs and rebuilds the dashboard every time, about
+20 minutes even when only one sketch changed. When the stack already exists and
+you changed only shipped **source**, use the fast path instead:
+
+```bash
+cd cloudformation
+./deploy-workshop.sh us-east-1 --stage-only [--profile <name>]
+```
+
+It needs an existing `pqc-workshop` stack in a stable state, takes about
+2–3 minutes, and asks for no WiFi (set `CONFIRM_DEPLOY=yes` to skip the account
+prompt in automation). It rejects `--vpc-id`, `--subnets` and `--wifi-*`.
+
+**What it does**
+
+1. Re-stages everything the full deploy uploads to S3: the broker and
+   cert-issuer build contexts, the firmware `source/` prefix (both buildspecs,
+   the three sketches, the wolfSSL config, the partition table, with the same
+   completeness check), and the Builder-Pi `app.tgz` and assets.
+2. Rebuilds the dashboard in CodeBuild, syncs it and invalidates CloudFront.
+3. Prints, for each kind of change, what to run next.
+
+**What it skips:** template packaging, the stack update, the broker and
+cert-issuer image builds, broker cert provisioning, the broker scale-up, and
+the SSM config and WiFi publish.
+
+**Which change needs which follow-up**
+
+| You changed | After `--stage-only` |
+|---|---|
+| Dashboard (`raw_device_builder/dashboard-v2/frontend/`) | Nothing — it is live. Hard-refresh the browser. |
+| Firmware sketches, `buildspec.yml`, wolfSSL config, partition table | Takes effect on the **next firmware build**. *Register & Flash* always builds. A dashboard migration **reuses** an existing `<serial>/<version>/firmware.bin`, so Deregister + Register the device (or delete that S3 prefix) to force a rebuild. |
+| Firmware-builder image (`Dockerfile`, `buildspec-image.yml`) | `aws codebuild start-build --project-name pqc-workshop-build-image` |
+| Builder-Pi app (`raw_device_builder/builder-pi/`) | `./raw_device_builder/setup-builder-pi-remote.sh --region us-east-1 --only deploy-app` |
+| CloudFormation, Lambda code, broker or cert-issuer image, SSM config, WiFi | Not covered — run the full `./deploy-workshop.sh us-east-1`. |
+
+> **`--stage-only` is for iterating, not for acceptance.** It updates a running
+> environment in place. A change is only done when it survives a destroy + a
+> from-scratch deploy that follows the workshop instructions (see the project
+> steering).
+
 ## VPC: create one, or bring your own
 
 The master takes a `CreateVpc` parameter (default `true`):
