@@ -169,6 +169,29 @@ the teardown/rebuild. Handle these to keep a from-scratch deploy clean:
   is reused across rebuilds (fine, just don't expect the stack to own it).
 
 Backlog candidates surfaced during rebuilds (not yet fixed):
+- **[Firmware maintainability — modular sketches, own branch AFTER
+  nvs-device-identity is done] Split the three ~2,100-line sketches into shared
+  modules.** Today the classical / PQC / ML-DSA sketches are near-identical copies,
+  so every fix is made three times (WS3 had to patch all three by script). Move
+  the shared code into a library all three include — `DeviceIdentity` (NVS
+  loader), `WifiManager`, `PqcTlsClient` (existing `WolfSSLClient` + wolfSSL ctx),
+  `MqttManager`, `Telemetry`, `OtaUpdater` (download + SHA-256 + chain + ECDSA /
+  ML-DSA verify), small `Backoff`/`Log`/`Led` utils — leaving a per-variant
+  `variant_config.h` (version, labels, key share, `ID_TLS_*`, port) and `setup()`.
+  Option to decide: one sketch with the variant chosen by the build's
+  `FIRMWARE_VARIANT` flag (aligns with WS4 shared images; workshop §3.3.1 shows
+  the classical-vs-PQC diff, so keep it readable). Real `.h/.cpp` files also
+  avoid the `.ino` prototype-hoisting quirk (the WS3 `IdBlob` compile error).
+  Memory wins it enables (splitting alone changes nothing): create the 32 KB OTA
+  task only while an OTA runs (frees ~32 KB internal SRAM almost always — task
+  stacks cannot live in PSRAM); right-size stacks from the logged high-water
+  marks; allocate the ~6–7 KB of OTA URL/sig buffers on demand in PSRAM. Measure
+  first (stack HWM + the build `.map`) before claiming savings. Also enables
+  host unit tests for backoff/topics/payloads. Costs: the steering's "single
+  `.ino`" convention must change (Arduino Cloud IDE supports tabs + uploaded
+  libraries); buildspec + deploy staging fetch a single `source/<sketch>.ino` and
+  must stage a folder/library; full hardware retest of classical → ML-KEM →
+  ML-DSA → ML-DSA-signed OTA, including OTA from the current firmware.
 - **[MEMORY — explore only IF we hit severe RAM/heap constraints] Keep the
   growing cert/signature material in memory-mapped FLASH, not SRAM.** As the
   firmware now carries more X.509 material (device cert + CA + the baked-in
