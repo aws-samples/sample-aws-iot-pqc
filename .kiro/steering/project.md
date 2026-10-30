@@ -32,6 +32,44 @@ Practical implications for any change:
 - Validate changes by reasoning about (and ultimately performing) a clean
   destroy + redeploy, not just an in-place update.
 
+## THE WORKSHOP INSTRUCTIONS ARE THE TEST (applies to every deploy and feature branch)
+
+The Workshop Studio content repo is the **golden source** for how the workshop is
+installed and torn down:
+`/Volumes/workplace/studio.us-east-1.prod.workshops.aws/pqc-migration-for-iot`
+— install = `content/99-deployment/*` (99.1 IDE … 99.8 first device), deletion =
+`content/cleanup/index.en.md`.
+
+A deploy only counts as passing if it was done **by following those workshop
+instructions step by step, AND they worked as written**. Improvising, running the
+repo's own runbook instead, or quietly working around a step that failed is NOT a
+pass — a step that does not work as written is a defect in the code or the
+instructions, and must be fixed in the deployable source and/or the workshop
+content, then re-run.
+
+Rules:
+- **Every environment deploy/rebuild** (pqc-a, pqc-b, Workshop Studio): read and
+  follow the workshop pages in order (deploy → firmware image → verify →
+  Builder-Pi → WiFi AP → first device), and the cleanup page for teardown. Note
+  any deviation explicitly and treat it as something to fix.
+- **A full rebuild includes rebuilding the Builder-Pi** (the user reimages it).
+  Do not provision the old Pi install in place after a rebuild: confirm with the
+  user, then follow 99.6 (fresh bundle → `sudo ./setup-ssm.sh` on the Pi → new
+  `mi-` id → `setup-builder-pi-remote.sh` against it), and deregister the old
+  ConnectionLost instance.
+- **Every feature branch** that changes install, teardown, or operator/attendee
+  behaviour must update the workshop content to match, in the same piece of
+  work, and its definition of done is a from-scratch deploy that follows the
+  (updated) workshop instructions and works.
+- **Repo docs follow the workshop.** `cloudformation/DEPLOYMENT.md` and the
+  README install/cleanup sections must match the workshop steps (same order,
+  same commands); the repo may add reference detail but must never contradict
+  it. When the code changes what an install/teardown step does, update the
+  workshop page first, then mirror it into the repo docs.
+- **Rebuild the source zip** (`cloudformation/package-workshop-src.sh`) for the
+  workshop assets bucket whenever the shipped source changes, since 99.2 loads
+  the IDE from that zip.
+
 ## VPC Block Public Access (BPA) — CRITICAL for device connectivity
 
 `pqc-b` has account-level VPC Block Public Access = `block-ingress` (set by
