@@ -9,7 +9,7 @@ These validate the state graph contract without running a live engine:
   - the happy path writes migrationStatus building -> pushing-ota -> rebooting,
   - the failure path writes migrationStatus=failed + migrationError,
   - every fallible Task has a Catch routing to SetStatusFailed,
-  - the long build wait uses the CodeBuild .sync integration (not a Lambda),
+  - no firmware build: migrations push the shared prebuilt image,
   - CloudFormation DefinitionSubstitution placeholders are present.
 
 This is the fast, deterministic complement to a full Step Functions Local run
@@ -64,11 +64,7 @@ def test_happy_path_status_sequence(asl):
             vals = state["Parameters"]["ExpressionAttributeValues"]
             if ":s" in vals and "S" in vals[":s"]:
                 seq.append(vals[":s"]["S"])
-        # Advance along the success path: Choice takes buildNeeded->true branch.
-        if state["Type"] == "Choice":
-            name = state["Choices"][0]["Next"]
-        else:
-            name = state.get("Next")
+        name = state.get("Next")
     assert seq == ["building", "pushing-ota", "rebooting"], seq
 
 
@@ -93,43 +89,35 @@ def test_every_fallible_task_catches_to_failed(asl):
             assert any(c["Next"] == "SetStatusFailed" for c in catches), f"{name} lacks Catch->SetStatusFailed"
 
 
-def test_build_wait_uses_codebuild_sync(asl):
-    wait = asl["States"]["WaitForBuild"]
-    assert wait["Resource"] == "arn:aws:states:::codebuild:startBuild.sync"
+def test_no_firmware_build_in_the_migration(asl):
+    """Every variant is built once per deployment into shared/<version>/, so a
+    migration must never start (or wait on) a CodeBuild."""
+    for name, state in asl["States"].items():
+        assert "codebuild" not in str(state.get("Resource", "")), f"{name} builds firmware"
+    assert "WaitForBuild" not in asl["States"]
+    assert "BuildNeeded?" not in asl["States"]
 
 
-def test_variant_threaded_through(asl):
-    """The firmware variant is data-driven, not hardcoded: PrepareBuild receives
-    $.variant (the picker key), and WaitForBuild's FIRMWARE_VARIANT comes from
-    the prepared BUILD variant. These can differ (Workstream 4): the signer-era
-    variants 'signer'/'verified' build the same 'pqc-mldsa' sketch, so the build
-    is driven by buildVariant, while the OTA signer is driven by signerEra."""
+def test_variant_and_shared_key_threaded_through(asl):
+    """PrepareBuild gets the picker variant; PublishOta pushes the shared s3Key
+    (shared/<version>/firmware.bin) and signature algorithm prepare-build
+    resolved — nothing is hardcoded."""
     prepare = asl["States"]["PrepareBuild"]
     assert prepare["Parameters"]["Payload"]["variant.$"] == "$.variant"
-
-    wait_env = asl["States"]["WaitForBuild"]["Parameters"]["EnvironmentVariablesOverride"]
-    by_name = {e["Name"]: e for e in wait_env}
-    # FIRMWARE_VARIANT (which sketch/CA/port) must come from the prepared BUILD
-    # variant, never a literal. buildVariant falls back to the picker key for the
-    # base variants, so classical/pqc/pqc-mldsa still build correctly.
-    assert by_name["FIRMWARE_VARIANT"].get("Value.$") == "$.prepare.buildVariant"
-    assert "Value" not in by_name["FIRMWARE_VARIANT"], "FIRMWARE_VARIANT must not be hardcoded"
-    # SIGNER_ERA (which signer key signs the OTA) must be threaded from the
-    # prepared signer era, so 4.0.0-signer/5.0.0-verified are ML-DSA-signed even
-    # though they build the pqc-mldsa sketch.
-    assert by_name["SIGNER_ERA"].get("Value.$") == "$.prepare.signerEra"
-    # The broker endpoint resolved by prepare-build flows to the build.
-    assert by_name["BROKER_ENDPOINT"].get("Value.$") == "$.prepare.buildEnv.brokerEndpoint"
-    # No WiFi (or any other identity material) reaches the firmware build: it
-    # lives in the device's "certs" NVS partition, which OTA never touches.
-    for name in ("WIFI_SSID", "WIFI_PASSWORD"):
-        assert name not in by_name, f"{name} must not be passed to the firmware build"
+    assert prepare["Next"] == "SetStatusPushing"
+    rs = prepare["ResultSelector"]
+    assert rs["s3Key.$"] == "$.Payload.s3Key"
+    assert "buildNeeded.$" not in rs and "buildEnv.$" not in rs
+    payload = asl["States"]["PublishOta"]["Parameters"]["Payload"]
+    assert payload["s3Key.$"] == "$.prepare.s3Key"
+    assert payload["sigAlg.$"] == "$.prepare.sigAlg"
+    assert payload["version.$"] == "$.prepare.version"
 
 
 def test_substitution_placeholders_present(asl):
     raw = json.dumps(asl)
     for placeholder in ("${DeviceTableName}", "${PrepareBuildFunctionArn}",
-                        "${PublishOtaFunctionArn}", "${BuildProjectName}"):
+                        "${PublishOtaFunctionArn}"):
         assert placeholder in raw, f"missing substitution {placeholder}"
 
 
@@ -174,7 +162,7 @@ def inline_asl():
     return _load_inline_definition()
 
 
-@pytest.mark.parametrize("state_name", ["PrepareBuild", "WaitForBuild", "PublishOta"])
+@pytest.mark.parametrize("state_name", ["PrepareBuild", "PublishOta", "SetStatusPushing"])
 def test_inline_definition_matches_asl_file(asl, inline_asl, state_name):
     """The deployed (inline) definition must match the tested .asl.json on the
     states that carry the variant + build-env contract. Comment fields are
@@ -188,10 +176,9 @@ def test_inline_definition_matches_asl_file(asl, inline_asl, state_name):
     )
 
 
-def test_inline_definition_has_no_stale_buildid(inline_asl):
-    """Regression guard for the exact runtime failure seen on pqc-a: the inline
-    PrepareBuild ResultSelector must not reference the removed $.Payload.buildId."""
+def test_inline_definition_has_no_build_path(inline_asl):
+    """The deployed (inline) definition must not keep a build path either."""
     rs = inline_asl["States"]["PrepareBuild"]["ResultSelector"]
-    assert "buildId.$" not in rs, "inline PrepareBuild still references removed buildId"
-    assert rs.get("buildEnv.$") == "$.Payload.buildEnv"
+    assert "buildId.$" not in rs and "buildEnv.$" not in rs and "buildNeeded.$" not in rs
     assert rs.get("variant.$") == "$.Payload.variant"
+    assert "WaitForBuild" not in inline_asl["States"]

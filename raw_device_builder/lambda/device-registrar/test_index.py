@@ -16,6 +16,7 @@ import os
 import sys
 
 import boto3
+import pytest
 from moto import mock_aws
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -40,16 +41,12 @@ def _env():
         "REGISTRY_TABLE": REGISTRY_TABLE,
         "DEVICE_TABLE": DEVICE_TABLE,
         "FIRMWARE_BUCKET": FIRMWARE_BUCKET,
-        "BUILD_PROJECT": "pqc-workshop-build-firmware",
         "IDENTITY_PROJECT": "pqc-workshop-device-identity",
         "IOT_ENDPOINT": "example-ats.iot.us-east-1.amazonaws.com",
-        "DEFAULT_WIFI_SSID": "reinvent-pqc-iot-wifi",
-        "DEFAULT_WIFI_PASSWORD": "changeme",
-        "DEFAULT_BROKER_ENDPOINT": "broker.example.com",
     })
 
 
-def _setup_aws():
+def _setup_aws(shared_classical=True):
     ddb = boto3.resource("dynamodb", region_name="us-east-1")
     ddb.create_table(
         TableName=REGISTRY_TABLE,
@@ -63,7 +60,11 @@ def _setup_aws():
         AttributeDefinitions=[{"AttributeName": "thingName", "AttributeType": "S"}],
         BillingMode="PAY_PER_REQUEST",
     )
-    boto3.client("s3", region_name="us-east-1").create_bucket(Bucket=FIRMWARE_BUCKET)
+    s3 = boto3.client("s3", region_name="us-east-1")
+    s3.create_bucket(Bucket=FIRMWARE_BUCKET)
+    if shared_classical:
+        # Built once per deployment by build-shared-firmware.sh.
+        s3.put_object(Bucket=FIRMWARE_BUCKET, Key="shared/1.0.0-classical/firmware.bin", Body=b"x")
     # The registrar creates the Thing with thingTypeName='esp32-pqc-device',
     # which must exist (the deployment's device-provisioning stack creates it).
     boto3.client("iot", region_name="us-east-1").create_thing_type(
@@ -162,10 +163,12 @@ def test_registration_starts_identity_build_and_returns_its_key():
 
     assert body["identityKey"] == "identity/C69DE0/certs.bin"
     assert body["identityBuildId"].startswith("pqc-workshop-device-identity:")
-    assert body["buildId"].startswith("pqc-workshop-build-firmware:")
+    # No firmware build: the Pi flashes the shared classical image.
+    assert body["buildId"] is None
+    assert body["firmwarePrefix"] == "shared/1.0.0-classical"
     cb = boto3.client("codebuild", region_name="us-east-1")
     assert len(cb.list_builds_for_project(projectName="pqc-workshop-device-identity")["ids"]) == 1
-    assert len(cb.list_builds_for_project(projectName="pqc-workshop-build-firmware")["ids"]) == 1
+    assert cb.list_builds_for_project(projectName="pqc-workshop-build-firmware")["ids"] == []
 
 
 @mock_aws
@@ -215,9 +218,10 @@ def test_identity_only_starts_only_the_identity_build():
     assert body["identityKey"] == "identity/C69DE0/certs.bin"
     assert body["identityBuildId"].startswith("pqc-workshop-device-identity:")
     assert "buildId" not in body
+    assert body["firmwarePrefix"] == "shared/1.0.0-classical"
     cb = boto3.client("codebuild", region_name="us-east-1")
     assert len(cb.list_builds_for_project(projectName="pqc-workshop-device-identity")["ids"]) == 2
-    assert len(cb.list_builds_for_project(projectName="pqc-workshop-build-firmware")["ids"]) == 1
+    assert cb.list_builds_for_project(projectName="pqc-workshop-build-firmware")["ids"] == []
 
 
 @mock_aws
@@ -234,10 +238,9 @@ def test_identity_only_rejects_unregistered_device():
 
 
 @mock_aws
-def test_firmware_build_gets_no_wifi_or_identity():
-    """The firmware image carries no identity: WiFi and certs go only into the
-    device's certs NVS image (identity job). The firmware build must get only
-    serial/version/variant/broker, even if a caller sends WiFi in the body."""
+def test_registration_starts_no_firmware_build_and_passes_no_secrets():
+    """Firmware is shared and identity-free: the registrar starts only the
+    identity job, with only the serial — even if a caller sends WiFi."""
     _setup_aws()
     _env()
     mod = load_handler_module(os.path.join(HERE, "index.py"), "device_registrar_index9")
@@ -251,8 +254,24 @@ def test_firmware_build_gets_no_wifi_or_identity():
     mod.codebuild.start_build = spy
     mod.handler({"serialNumber": "C69DE0", "wifiSsid": "x", "wifiPassword": "secret-pass-123"}, _Ctx())
 
-    fw = [c for c in calls if c["projectName"] == "pqc-workshop-build-firmware"]
-    assert len(fw) == 1
-    names = {e["name"] for e in fw[0]["environmentVariablesOverride"]}
-    assert names == {"DEVICE_SERIAL", "FIRMWARE_VERSION", "FIRMWARE_VARIANT", "BROKER_ENDPOINT"}
+    assert [c["projectName"] for c in calls] == ["pqc-workshop-device-identity"]
+    assert [e["name"] for e in calls[0]["environmentVariablesOverride"]] == ["DEVICE_SERIAL"]
     assert "secret-pass-123" not in json.dumps(calls)
+
+
+@mock_aws
+@pytest.mark.parametrize("body", [{"serialNumber": "C69DE0"},
+                                  {"serialNumber": "C69DE0", "identityOnly": True}])
+def test_503_until_shared_classical_firmware_exists(body):
+    """Both register and reflash flash the shared classical image, so they wait
+    for it instead of leaving the Pi to fail mid-download."""
+    _setup_aws(shared_classical=False)
+    _env()
+    mod = load_handler_module(os.path.join(HERE, "index.py"), "device_registrar_index10")
+
+    result = mod.handler(dict(body), _Ctx())
+
+    assert result["statusCode"] == 503
+    assert "1.0.0-classical" in json.loads(result["body"])["error"]
+    cb = boto3.client("codebuild", region_name="us-east-1")
+    assert cb.list_builds_for_project(projectName="pqc-workshop-device-identity")["ids"] == []

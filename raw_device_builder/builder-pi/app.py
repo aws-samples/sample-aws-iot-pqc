@@ -265,7 +265,7 @@ def _registration_pipeline(port: str):
         slot.is_registered = True  # nosemgrep: is-function-without-parentheses
 
         # Steps 2-5: wait for both builds, download, flash, verify.
-        _build_and_flash(slot, port, reg, 'Waiting for firmware and identity builds...')
+        _build_and_flash(slot, port, reg, 'Waiting for identity build (firmware is the shared image)...')
 
     except Exception as e:
         slot.status = 'error'
@@ -298,7 +298,8 @@ def _build_and_flash(slot, port, reg, waiting_message):
         return False
     slot.log('Builds complete')
 
-    firmware_dir = device_manager.download_firmware(slot, reg['identityKey'])
+    firmware_dir = device_manager.download_firmware(slot, reg['identityKey'],
+                                                   reg.get('firmwarePrefix'))
     if not firmware_dir:
         slot.status = 'error'
         return False

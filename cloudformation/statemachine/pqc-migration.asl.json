@@ -1,5 +1,5 @@
 {
-  "Comment": "PQC migration workflow: build PQC firmware, push OTA, and report live migrationStatus to the device record. Long build wait is handled by the CodeBuild .sync integration, not a Lambda.",
+  "Comment": "PQC migration workflow: resolve the variant to its shared, prebuilt signed image (built once per deployment), push it OTA, and report live migrationStatus to the device record. No per-device build.",
   "StartAt": "SetStatusBuilding",
   "States": {
     "SetStatusBuilding": {
@@ -19,7 +19,7 @@
     "PrepareBuild": {
       "Type": "Task",
       "Resource": "arn:aws:states:::lambda:invoke",
-      "Comment": "Pass the requested firmware variant through. prepare-build defaults it to 'pqc' when absent (backward compatible) and echoes the resolved variant + version back.",
+      "Comment": "Pass the requested firmware variant through. prepare-build defaults it to 'pqc' when absent (backward compatible), checks the shared image exists, and echoes the resolved variant, version and shared s3Key back.",
       "Parameters": {
         "FunctionName": "${PrepareBuildFunctionArn}",
         "Payload": {
@@ -35,37 +35,9 @@
         "version.$": "$.Payload.version",
         "signerEra.$": "$.Payload.signerEra",
         "sigAlg.$": "$.Payload.sigAlg",
-        "s3Key.$": "$.Payload.s3Key",
-        "buildNeeded.$": "$.Payload.buildNeeded",
-        "buildEnv.$": "$.Payload.buildEnv"
+        "s3Key.$": "$.Payload.s3Key"
       },
       "ResultPath": "$.prepare",
-      "Next": "BuildNeeded?",
-      "Catch": [ { "ErrorEquals": ["States.ALL"], "ResultPath": "$.error", "Next": "SetStatusFailed" } ]
-    },
-
-    "BuildNeeded?": {
-      "Type": "Choice",
-      "Choices": [
-        { "Variable": "$.prepare.buildNeeded", "BooleanEquals": true, "Next": "WaitForBuild" }
-      ],
-      "Default": "SetStatusPushing"
-    },
-
-    "WaitForBuild": {
-      "Type": "Task",
-      "Resource": "arn:aws:states:::codebuild:startBuild.sync",
-      "Parameters": {
-        "ProjectName": "${BuildProjectName}",
-        "EnvironmentVariablesOverride": [
-          { "Name": "DEVICE_SERIAL", "Value.$": "$.prepare.serialNumber", "Type": "PLAINTEXT" },
-          { "Name": "FIRMWARE_VERSION", "Value.$": "$.prepare.version", "Type": "PLAINTEXT" },
-          { "Name": "FIRMWARE_VARIANT", "Value.$": "$.prepare.buildVariant", "Type": "PLAINTEXT" },
-          { "Name": "SIGNER_ERA", "Value.$": "$.prepare.signerEra", "Type": "PLAINTEXT" },
-          { "Name": "BROKER_ENDPOINT", "Value.$": "$.prepare.buildEnv.brokerEndpoint", "Type": "PLAINTEXT" }
-        ]
-      },
-      "ResultPath": null,
       "Next": "SetStatusPushing",
       "Catch": [ { "ErrorEquals": ["States.ALL"], "ResultPath": "$.error", "Next": "SetStatusFailed" } ]
     },

@@ -11,7 +11,9 @@ Cleans up all AWS resources for a device:
   4. Deletes IoT policy
   5. Deletes IoT Thing
   6. Removes from DynamoDB registry
-  7. Removes firmware from S3
+  7. Removes the device's S3 objects: any not-yet-flashed identity image
+     (identity/<serial>/, holds its private keys) and any legacy per-device
+     firmware (<serial>/). Shared firmware (shared/<version>/) is not touched.
 
 Environment variables:
   REGISTRY_TABLE — DynamoDB device registry table
@@ -96,17 +98,17 @@ def handler(event, context):
         except Exception as e:
             errors.append(f'dynamodb delete: {e}')
 
-        # Step 5: Remove firmware from S3
-        try:
-            objects = s3.list_objects_v2(
-                Bucket=FIRMWARE_BUCKET,
-                Prefix=f'{serial_number}/'
-            )
-            if 'Contents' in objects:
-                for obj in objects['Contents']:
+        # Step 5: Remove the device's S3 objects. The identity image normally
+        # disappears after flashing (the Pi deletes it); this covers a device
+        # deregistered before it was flashed. Noncurrent versions are expired by
+        # the bucket's 1-day lifecycle rule.
+        for prefix in (f'identity/{serial_number}/', f'{serial_number}/'):
+            try:
+                objects = s3.list_objects_v2(Bucket=FIRMWARE_BUCKET, Prefix=prefix)
+                for obj in objects.get('Contents', []):
                     s3.delete_object(Bucket=FIRMWARE_BUCKET, Key=obj['Key'])
-        except Exception as e:
-            errors.append(f's3 cleanup: {e}')
+            except Exception as e:
+                errors.append(f's3 cleanup ({prefix}): {e}')
 
         if errors:
             return api_response(200, {

@@ -13,7 +13,10 @@ env:
 phases:
   pre_build:
     commands:
-      - echo "Preparing firmware source for device esp32-$DEVICE_SERIAL (variant ${FIRMWARE_VARIANT})..."
+      # One build per VARIANT per deployment (build-shared-firmware.sh starts
+      # them): the image carries no device identity, so there is no serial.
+      - echo "Preparing shared firmware ${FIRMWARE_VERSION} (variant ${FIRMWARE_VARIANT})..."
+      - '[ -n "${FIRMWARE_VERSION}" ] || { echo "ERROR: FIRMWARE_VERSION is unset"; exit 1; }'
       # ─── Variant → {sketch, default port} ──
       # Single source of truth for what each firmware variant means. Adding a
       # future variant is a data change here, not new code paths.
@@ -147,7 +150,9 @@ phases:
   post_build:
     commands:
       - BUILD_DIR="$SKETCH_DIR/build/esp32.esp32.XIAO_ESP32S3"
-      - S3_PREFIX="$DEVICE_SERIAL/$FIRMWARE_VERSION"
+      # Shared per-version output: every device migrating to this version gets
+      # exactly these bytes and this signature.
+      - S3_PREFIX="shared/$FIRMWARE_VERSION"
       - BIN_FILE=$(ls "$BUILD_DIR/"*.ino.bin 2>/dev/null | head -1)
       - MERGED_FILE=$(ls "$BUILD_DIR/"*.ino.merged.bin 2>/dev/null | head -1)
       - echo "Uploading firmware artifacts to s3://$FIRMWARE_BUCKET/$S3_PREFIX/..."
@@ -212,8 +217,8 @@ phases:
       - |
         cat > /tmp/build-metadata.json << EOF
         {
-          "serialNumber": "$DEVICE_SERIAL",
-          "thingName": "esp32-$DEVICE_SERIAL",
+          "brokerEndpoint": "$BROKER_ENDPOINT",
+          "brokerPort": $BROKER_PORT,
           "firmwareVersion": "$FIRMWARE_VERSION",
           "firmwareType": "${FIRMWARE_VARIANT}",
           "signed": $( [ -n "${SIG_ALG}" ] && echo true || echo false ),

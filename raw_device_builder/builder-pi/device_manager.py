@@ -30,8 +30,9 @@ FQBN = "esp32:esp32:XIAO_ESP32S3:USBMode=hwcdc,CDCOnBoot=cdc,PSRAM=opi,DebugLeve
 ARDUINO_CLI = "arduino-cli"
 FIRMWARE_DIR = "/opt/pqc-workshop/firmware"
 
-# What is written over USB, as (offset, local file, S3 name under
-# <serial>/<version>/). Offsets match esp32-flash/partitions_pqc_workshop.csv.
+# What is written over USB, as (offset, local file, S3 name under the shared
+# firmware prefix shared/<version>/). Offsets match
+# esp32-flash/partitions_pqc_workshop.csv.
 # The identity image comes from identity/<serial>/certs.bin (S3 name None).
 IDENTITY_FILE = "certs.bin"
 FLASH_LAYOUT = [
@@ -273,8 +274,14 @@ class DeviceManager:
         session = boto3.session.Session(region_name=self.config.get('region', 'us-east-1'))
         return session.client('s3')
 
-    def download_firmware(self, slot: DeviceSlot, identity_key: Optional[str] = None) -> Optional[str]:
+    def download_firmware(self, slot: DeviceSlot, identity_key: Optional[str] = None,
+                          firmware_prefix: Optional[str] = None) -> Optional[str]:
         """Download the app pieces and the device identity image from S3.
+
+        The app pieces are the SHARED image for the version (one build per
+        variant per deployment, identical for every device); only the identity
+        image is per device. firmware_prefix comes from the registrar's
+        response, defaulting to shared/<firmware_version>.
 
         Writes FLASH_LAYOUT's files into FIRMWARE_DIR/<serial>/<version>/ and
         returns that directory, or None on failure. Every piece is required:
@@ -288,7 +295,7 @@ class DeviceManager:
         slot.log('Downloading firmware and identity from S3...')
 
         firmware_version = self.config.get('firmware_version', '1.0.0-classical')
-        s3_prefix = f'{slot.serial_number}/{firmware_version}'
+        s3_prefix = (firmware_prefix or f'shared/{firmware_version}').rstrip('/')
         local_dir = os.path.join(FIRMWARE_DIR, slot.serial_number, firmware_version)
         os.makedirs(local_dir, exist_ok=True)
         identity_key = identity_key or f'identity/{slot.serial_number}/certs.bin'

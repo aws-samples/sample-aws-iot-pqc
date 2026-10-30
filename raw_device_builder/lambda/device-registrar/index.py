@@ -12,20 +12,21 @@ Performs the device registration workflow:
   4. Starts the device-identity CodeBuild job (IDENTITY_PROJECT): issues the
      classical + ML-DSA-44 device certs and builds the device's "certs" NVS
      partition image at identity/<serial>/certs.bin
-  5. Triggers CodeBuild to compile the classical firmware (BUILD_PROJECT)
 
-Device keys are generated only inside the identity job, never in this Lambda
-or the firmware build: the firmware image carries no device identity or WiFi
-(the sketch reads them from the "certs" NVS partition). Firmware 0 uses
-classical TLS; PQC migration happens via OTA (Firmware 1+). WiFi is not
-handled here at all: the identity job reads it from SSM.
+No firmware is built here. Firmware images carry no device identity or WiFi
+(the sketch reads them from the "certs" partition), so every variant is built
+once per deployment into shared/<version>/ (build-shared-firmware.sh, chained
+off the firmware-builder image build). The Pi flashes the shared classical
+image (shared/1.0.0-classical/) with this device's identity image. If that
+shared image is not built yet, registration returns 503 instead of leaving the
+Pi to fail mid-download. Device keys are generated only inside the identity
+job, never in this Lambda. WiFi is not handled here: the identity job reads it
+from SSM.
 
 Environment variables:
   REGISTRY_TABLE — DynamoDB table for device registry
-  FIRMWARE_BUCKET — S3 bucket for compiled firmware and identity images
-  BUILD_PROJECT — firmware CodeBuild project name
+  FIRMWARE_BUCKET — S3 bucket for shared firmware and identity images
   IDENTITY_PROJECT — device-identity CodeBuild project name
-  DEFAULT_BROKER_ENDPOINT — Default Mosquitto broker IP/NLB endpoint
 """
 
 import boto3
@@ -39,7 +40,7 @@ SERIAL_RE = re.compile(r'^[A-Z0-9]{4,16}$')
 iot = boto3.client('iot')
 dynamodb = boto3.resource('dynamodb')
 codebuild = boto3.client('codebuild')
-ssm = boto3.client('ssm')
+s3 = boto3.client('s3')
 
 TABLE_NAME = os.environ['REGISTRY_TABLE']
 # Dashboard device table (pqc-workshop-devices), keyed by thingName. The
@@ -52,30 +53,23 @@ TABLE_NAME = os.environ['REGISTRY_TABLE']
 # surface (its first telemetry would be rejected by the guard).
 DEVICE_TABLE_NAME = os.environ.get('DEVICE_TABLE', 'pqc-workshop-devices')
 FIRMWARE_BUCKET = os.environ['FIRMWARE_BUCKET']
-BUILD_PROJECT = os.environ['BUILD_PROJECT']
 IDENTITY_PROJECT = os.environ['IDENTITY_PROJECT']
-DEFAULT_BROKER = os.environ.get('DEFAULT_BROKER_ENDPOINT', '192.168.1.90')
-# SSM is the authoritative live source of truth for the broker endpoint
-# (/pqc-workshop/broker/endpoint, published by the deploy).
-BROKER_SSM_PARAM = os.environ.get('BROKER_SSM_PARAM', '/pqc-workshop/broker/endpoint')
+# First-flash firmware: the shared classical image (variants.json "classical").
+CLASSICAL_VERSION = '1.0.0-classical'
+SHARED_PREFIX = 'shared'
 
 table = dynamodb.Table(TABLE_NAME)
 device_table = dynamodb.Table(DEVICE_TABLE_NAME)
 
 
-def _get_ssm(name):
-    """Read one SSM param; return None if missing/unreadable so the caller can
-    fall back. Never raises."""
+def _shared_firmware_ready(version):
+    """True if shared/<version>/firmware.bin exists. Any error (missing key, or
+    403 because the role has no ListBucket) counts as not ready."""
     try:
-        return ssm.get_parameter(Name=name)['Parameter']['Value']
-    except Exception as e:  # ParameterNotFound, AccessDenied, throttling, etc.
-        print(f"SSM read {name} failed ({e}); falling back")
-        return None
-
-
-def broker_from_ssm():
-    """Return the broker endpoint from SSM, or None if unavailable."""
-    return _get_ssm(BROKER_SSM_PARAM)
+        s3.head_object(Bucket=FIRMWARE_BUCKET, Key=f'{SHARED_PREFIX}/{version}/firmware.bin')
+        return True
+    except Exception:
+        return False
 
 
 def _start_identity_build(serial_number):
@@ -95,7 +89,7 @@ def _start_identity_build(serial_number):
 
 
 def handler(event, context):
-    """Register a new device and trigger firmware build.
+    """Register a device and start its identity job.
 
     With {"identityOnly": true} (reflash), only re-issue the device identity.
     """
@@ -115,13 +109,9 @@ def handler(event, context):
     if not SERIAL_RE.match(serial_number):
         return api_response(400, {'error': 'Invalid serialNumber (expected 4-16 of A-Z0-9)'})
 
-    # Broker endpoint resolution: explicit override -> SSM (live source of
-    # truth, published from the broker stack output) -> env fallback.
-    broker_endpoint = body.get('brokerEndpoint') or broker_from_ssm() or DEFAULT_BROKER
-    # Canonical classical version — must match VARIANT_CONFIG["classical"]["version"]
-    # in prepare-build. This is the initial-flash path (variant fixed to
-    # 'classical' below), so it pins the artifact to the classical S3 dir.
-    firmware_version = body.get('firmwareVersion', '1.0.0-classical')
+    # First flash is always the shared classical image.
+    firmware_version = CLASSICAL_VERSION
+    firmware_prefix = f'{SHARED_PREFIX}/{firmware_version}'
 
     thing_name = f'esp32-{serial_number}'
     # Where the identity job uploads the device's certs NVS partition image.
@@ -129,10 +119,20 @@ def handler(event, context):
     account_id = context.invoked_function_arn.split(':')[4]
     region = os.environ.get('AWS_REGION', 'us-east-1')
 
-    # Reflash path: the device is already registered and its firmware is in S3;
-    # it only needs a fresh identity image (the Pi deletes the previous one
-    # after each flash). Start the identity job alone — no Thing/policy/registry
-    # writes and no firmware rebuild.
+    # Both paths flash the shared classical image, so it must exist first.
+    if not _shared_firmware_ready(firmware_version):
+        return api_response(503, {
+            'success': False,
+            'serialNumber': serial_number,
+            'error': (f'Shared firmware {firmware_version} is not built yet. It is built '
+                      f'automatically after the firmware-builder image build '
+                      f'(pqc-workshop-build-image); wait for that build to SUCCEED, '
+                      f'then try again.'),
+        })
+
+    # Reflash path: the device is already registered; it only needs a fresh
+    # identity image (the Pi deletes the previous one after each flash). Start
+    # the identity job alone — no Thing/policy/registry writes.
     if body.get('identityOnly'):
         try:
             if 'Item' not in table.get_item(Key={'serialNumber': serial_number}):
@@ -148,6 +148,7 @@ def handler(event, context):
             'serialNumber': serial_number,
             'identityBuildId': identity_build_id,
             'firmwareBucket': FIRMWARE_BUCKET,
+            'firmwarePrefix': firmware_prefix,
             'identityKey': identity_key,
             'message': f'Identity build for {thing_name}: {identity_build_id}',
         })
@@ -236,7 +237,6 @@ def handler(event, context):
             # No WiFi here (the password used to be stored in plaintext). SSM
             # /pqc-workshop/wifi/* is the single source of truth; the identity
             # job reads it from Parameter Store into the certs NVS image.
-            'brokerEndpoint': broker_endpoint,
             'identityKey': identity_key,
         })
 
@@ -278,34 +278,20 @@ def handler(event, context):
         print(f"Starting device identity build for {thing_name}...")
         identity_build_id = _start_identity_build(serial_number)
 
-        # ─── Step 6: Trigger CodeBuild (classical firmware) ───────────────
-        # The image carries no identity or WiFi, only the broker endpoint.
-        # BROKER_PORT is left unset so the build applies the variant default
-        # (8883 for classical).
-        print(f"Starting classical firmware build for {thing_name}...")
-        build_response = codebuild.start_build(
-            projectName=BUILD_PROJECT,
-            environmentVariablesOverride=[
-                {'name': 'DEVICE_SERIAL', 'value': serial_number, 'type': 'PLAINTEXT'},
-                {'name': 'FIRMWARE_VERSION', 'value': firmware_version, 'type': 'PLAINTEXT'},
-                {'name': 'FIRMWARE_VARIANT', 'value': 'classical', 'type': 'PLAINTEXT'},
-                {'name': 'BROKER_ENDPOINT', 'value': broker_endpoint, 'type': 'PLAINTEXT'},
-            ]
-        )
-        build_id = build_response['build']['id']
-
+        # No firmware build: the Pi flashes the shared classical image.
         return api_response(200, {
             'success': True,
             'thingName': thing_name,
             'serialNumber': serial_number,
             'certType': 'PrivateCA-ECDSA',
-            'buildId': build_id,
+            'buildId': None,
             'identityBuildId': identity_build_id,
             'firmwareBucket': FIRMWARE_BUCKET,
-            'firmwareKey': f'{serial_number}/{firmware_version}/firmware.bin',
+            'firmwarePrefix': firmware_prefix,
+            'firmwareKey': f'{firmware_prefix}/firmware.bin',
             'identityKey': identity_key,
-            'message': (f'Device {thing_name} registered. Classical firmware build: '
-                        f'{build_id}; identity build: {identity_build_id}')
+            'message': (f'Device {thing_name} registered; identity build: '
+                        f'{identity_build_id}; firmware: {firmware_prefix}/')
         })
 
     except Exception as e:

@@ -161,6 +161,17 @@ Resources:
                 Resource:
                   - !GetAtt FirmwareBucket.Arn
                   - !Sub '${FirmwareBucket.Arn}/*'
+              # After pushing the image, the build chains build-shared-firmware.sh:
+              # one firmware build per variant into shared/<version>/.
+              - Effect: Allow
+                Action:
+                  - codebuild:StartBuild
+                  - codebuild:BatchGetBuilds
+                Resource: !GetAtt FirmwareBuildProject.Arn
+              - Effect: Allow
+                Action:
+                  - ssm:GetParameter
+                Resource: !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/pqc-workshop/broker/endpoint'
 
   ImageBuilderProject:
     Type: AWS::CodeBuild::Project
@@ -171,7 +182,7 @@ Resources:
             reason: "default AWS-managed CodeBuild encryption key"
     Properties:
       Name: pqc-workshop-build-image
-      Description: Builds Docker image with ESP32 arduino-cli toolchain (run once)
+      Description: Builds the ESP32 arduino-cli toolchain image, then builds every firmware variant once into shared/<version>/
       ServiceRole: !GetAtt ImageBuilderRole.Arn
       Source:
         Type: S3
@@ -191,7 +202,10 @@ Resources:
             Value: !Sub '${FirmwareBucketName}-${AWS::AccountId}'
           - Name: AWS_DEFAULT_REGION
             Value: !Ref AWS::Region
-      TimeoutInMinutes: 30
+          - Name: FIRMWARE_BUILD_PROJECT
+            Value: !Ref FirmwareBuildProject
+      # Image (~10-15 min) + the chained shared firmware builds (~3 min, parallel).
+      TimeoutInMinutes: 45
 
   # ═══════════════════════════════════════════════════════════════════════════
   # S3 — Firmware Artifact Bucket
@@ -339,9 +353,9 @@ Resources:
                   - codebuild:StartBuild
                   - codebuild:BatchGetBuilds
                 Resource:
-                  - !GetAtt FirmwareBuildProject.Arn
-                  # The registrar also starts the device-identity job (both
-                  # device certs + WiFi -> certs NVS image) at registration.
+                  # The registrar starts only the device-identity job (both
+                  # device certs + WiFi -> certs NVS image). Firmware is built
+                  # once per deployment into shared/<version>/, not here.
                   - !GetAtt DeviceIdentityProject.Arn
               - Effect: Allow
                 Action:
@@ -356,13 +370,6 @@ Resources:
                 Action:
                   - iot:Publish
                 Resource: !Sub 'arn:aws:iot:${AWS::Region}:${AWS::AccountId}:topic/cmd/*'
-              # Read the broker NLB endpoint from SSM (the live source of truth).
-              # WiFi is no longer read here: only the device-identity job needs
-              # it, so this role has no kms:Decrypt for the SecureString.
-              - Effect: Allow
-                Action:
-                  - ssm:GetParameter
-                Resource: !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/pqc-workshop/broker/endpoint'
 
   # ═══════════════════════════════════════════════════════════════════════════
   # Lambda — Device Registrar
@@ -399,27 +406,24 @@ Resources:
           # registered-only guard (attribute_exists(serialNumber)).
           DEVICE_TABLE: pqc-workshop-devices
           FIRMWARE_BUCKET: !Sub '${FirmwareBucketName}-${AWS::AccountId}'
-          BUILD_PROJECT: !Ref FirmwareBuildProject
           IDENTITY_PROJECT: !Ref DeviceIdentityProject
-          # SSM is the authoritative live source; DEFAULT_BROKER_ENDPOINT is a fallback.
-          BROKER_SSM_PARAM: /pqc-workshop/broker/endpoint
-          DEFAULT_BROKER_ENDPOINT: !Ref DefaultBrokerEndpoint
       Code: ../lambda/device-registrar
 
   # ═══════════════════════════════════════════════════════════════════════════
   # PQC Migration — Step Functions workflow (replaces the synchronous
   # pqc-upgrader Lambda). The dashboard "Migrate to PQC" button invokes the
   # StartMigration Lambda (via AppSync), which starts this state machine:
-  #   SetStatusBuilding -> PrepareBuild -> (WaitForBuild) -> SetStatusPushing
-  #   -> PublishOta -> SetStatusRebooting, with a Catch -> SetStatusFailed.
-  # The long build wait uses the CodeBuild .sync integration, so no Lambda
-  # blocks on the build and AppSync never times out. Live progress is written to
+  #   SetStatusBuilding -> PrepareBuild -> SetStatusPushing -> PublishOta
+  #   -> SetStatusRebooting, with a Catch -> SetStatusFailed.
+  # No firmware is built here: every variant is built and signed once per
+  # deployment into shared/<version>/ (build-shared-firmware.sh, chained off the
+  # firmware-builder image build), so a migration only publishes it. Live progress is written to
   # the dashboard device table (migrationStatus), surfaced by the dashboard poll.
   # Lambda code is packaged from lambda/* by `aws cloudformation package`.
   # ═══════════════════════════════════════════════════════════════════════════
 
-  # Work step 1: registry lookup + build routing (no build is started here).
-  # Shares the device-registrar role (codebuild, dynamodb, s3, ssm).
+  # Work step 1: registry lookup + resolve the variant to its shared image.
+  # Shares the device-registrar role (dynamodb, s3).
   PrepareBuildFunction:
     Type: AWS::Lambda::Function
     Metadata:
@@ -446,10 +450,6 @@ Resources:
         Variables:
           REGISTRY_TABLE: !Ref DeviceRegistryTable
           FIRMWARE_BUCKET: !Sub '${FirmwareBucketName}-${AWS::AccountId}'
-          BUILD_PROJECT: !Ref FirmwareBuildProject
-          # SSM is the authoritative live source; DEFAULT_BROKER_ENDPOINT is a fallback.
-          BROKER_SSM_PARAM: /pqc-workshop/broker/endpoint
-          DEFAULT_BROKER_ENDPOINT: !Ref DefaultBrokerEndpoint
       Code: ../lambda/prepare-build
 
   # Work step 2: presign regional S3 URL, publish cmd/<thing>/ota, mark registry.
@@ -573,22 +573,8 @@ Resources:
           PolicyDocument:
             Version: '2012-10-17'
             Statement:
-              - Effect: Allow
-                Action:
-                  - codebuild:StartBuild
-                  - codebuild:BatchGetBuilds
-                  - codebuild:StopBuild
-                Resource: !GetAtt FirmwareBuildProject.Arn
-              # CodeBuild .sync uses an EventBridge managed rule to get build
-              # completion. The rule name AWS creates is (singular) "Event":
-              # StepFunctionsGetEventForCodeBuildStartBuildRule — grant with a
-              # wildcard so it matches regardless of minor AWS naming variants.
-              - Effect: Allow
-                Action:
-                  - events:PutTargets
-                  - events:PutRule
-                  - events:DescribeRule
-                Resource: !Sub 'arn:aws:events:${AWS::Region}:${AWS::AccountId}:rule/StepFunctionsGetEvent*ForCodeBuildStartBuildRule'
+              # No CodeBuild: migrations publish the shared prebuilt image
+              # (built once per deployment by build-shared-firmware.sh).
               - Effect: Allow
                 Action:
                   - dynamodb:UpdateItem
@@ -611,12 +597,11 @@ Resources:
       # because they are not of the ${..} form Fn::Sub interprets.
       DefinitionSubstitutions:
         DeviceTableName: pqc-workshop-devices
-        BuildProjectName: !Ref FirmwareBuildProject
         PrepareBuildFunctionArn: !GetAtt PrepareBuildFunction.Arn
         PublishOtaFunctionArn: !GetAtt PublishOtaFunction.Arn
       DefinitionString: |
         {
-          "Comment": "PQC migration workflow: build PQC firmware, push OTA, report live migrationStatus.",
+          "Comment": "PQC migration workflow: push the shared prebuilt signed image OTA, report live migrationStatus. No per-device build.",
           "StartAt": "SetStatusBuilding",
           "States": {
             "SetStatusBuilding": {
@@ -635,7 +620,7 @@ Resources:
             "PrepareBuild": {
               "Type": "Task",
               "Resource": "arn:aws:states:::lambda:invoke",
-              "Comment": "Pass the requested firmware variant through. prepare-build defaults it to 'pqc' when absent (backward compatible) and echoes the resolved variant + version + per-device build env back. It does NOT start a build (WaitForBuild is the sole builder).",
+              "Comment": "Pass the requested firmware variant through. prepare-build defaults it to 'pqc' when absent (backward compatible), checks the shared image exists, and echoes the resolved variant, version and shared s3Key back.",
               "Parameters": {
                 "FunctionName": "${PrepareBuildFunctionArn}",
                 "Payload": {
@@ -651,33 +636,9 @@ Resources:
                 "version.$": "$.Payload.version",
                 "signerEra.$": "$.Payload.signerEra",
                 "sigAlg.$": "$.Payload.sigAlg",
-                "s3Key.$": "$.Payload.s3Key",
-                "buildNeeded.$": "$.Payload.buildNeeded",
-                "buildEnv.$": "$.Payload.buildEnv"
+                "s3Key.$": "$.Payload.s3Key"
               },
               "ResultPath": "$.prepare",
-              "Next": "BuildNeeded?",
-              "Catch": [ { "ErrorEquals": ["States.ALL"], "ResultPath": "$.error", "Next": "SetStatusFailed" } ]
-            },
-            "BuildNeeded?": {
-              "Type": "Choice",
-              "Choices": [ { "Variable": "$.prepare.buildNeeded", "BooleanEquals": true, "Next": "WaitForBuild" } ],
-              "Default": "SetStatusPushing"
-            },
-            "WaitForBuild": {
-              "Type": "Task",
-              "Resource": "arn:aws:states:::codebuild:startBuild.sync",
-              "Parameters": {
-                "ProjectName": "${BuildProjectName}",
-                "EnvironmentVariablesOverride": [
-                  { "Name": "DEVICE_SERIAL", "Value.$": "$.prepare.serialNumber", "Type": "PLAINTEXT" },
-                  { "Name": "FIRMWARE_VERSION", "Value.$": "$.prepare.version", "Type": "PLAINTEXT" },
-                  { "Name": "FIRMWARE_VARIANT", "Value.$": "$.prepare.buildVariant", "Type": "PLAINTEXT" },
-                  { "Name": "SIGNER_ERA", "Value.$": "$.prepare.signerEra", "Type": "PLAINTEXT" },
-                  { "Name": "BROKER_ENDPOINT", "Value.$": "$.prepare.buildEnv.brokerEndpoint", "Type": "PLAINTEXT" }
-                ]
-              },
-              "ResultPath": null,
               "Next": "SetStatusPushing",
               "Catch": [ { "ErrorEquals": ["States.ALL"], "ResultPath": "$.error", "Next": "SetStatusFailed" } ]
             },
@@ -1324,12 +1285,10 @@ Resources:
         Image: !Sub '${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/pqc-workshop-firmware-builder:latest'
         ImagePullCredentialsType: SERVICE_ROLE
         EnvironmentVariables:
-          - Name: DEVICE_SERIAL
-            Value: placeholder
           - Name: FIRMWARE_VERSION
-            # Canonical classical version — matches VARIANT_CONFIG["classical"]
-            # (prepare-build) and the device-registrar default. Overridden per
-            # build by the migration state machine / registrar.
+            # Canonical classical version (variants.json). Every build is started
+            # by build-shared-firmware.sh with the variant's version, variant and
+            # signer era; the output is shared/<version>/ — no per-device input.
             Value: '1.0.0-classical'
           - Name: FIRMWARE_BUCKET
             Value: !Sub '${FirmwareBucketName}-${AWS::AccountId}'

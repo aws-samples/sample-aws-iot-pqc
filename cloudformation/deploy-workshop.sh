@@ -388,6 +388,11 @@ stage_extra() {
 }
 stage_extra wolfssl_user_settings_arduino.h "$PROJECT_ROOT/raw_device_builder/codebuild/wolfssl_user_settings_arduino.h"
 stage_extra partitions_pqc_workshop.csv     "$PROJECT_ROOT/esp32-flash/partitions_pqc_workshop.csv"
+# Shared-firmware chain: the firmware-builder image build runs this script after
+# pushing the image, building every variant (from variants.json — the same file
+# prepare-build uses) once into shared/<version>/.
+stage_extra build-shared-firmware.sh        "$PROJECT_ROOT/raw_device_builder/codebuild/build-shared-firmware.sh"
+stage_extra variants.json                   "$PROJECT_ROOT/raw_device_builder/lambda/prepare-build/variants.json"
 
 # ─── Verify the firmware source/ prefix is complete (fail fast) ──────────────
 # The per-device firmware build (FirmwareBuildProject) and the one-time image
@@ -406,6 +411,8 @@ REQUIRED_FW_SOURCE=(
     aws_iot_pqc_esp32_v3_mldsa.ino         # pqc-mldsa sketch variant (Step 2)
     wolfssl_user_settings_arduino.h        # wolfSSL PQC config
     partitions_pqc_workshop.csv            # partition table
+    build-shared-firmware.sh               # builds every variant into shared/<version>/
+    variants.json                          # variant -> version/sketch/signer table
 )
 _missing_fw=0
 for obj in "${REQUIRED_FW_SOURCE[@]}"; do
@@ -642,12 +649,13 @@ if [[ "$STAGE_ONLY" == "true" ]]; then
     echo "    Dashboard   rebuilt + synced + CloudFront invalidated: $(get_out DashboardURL)"
     echo "                (hard-refresh the browser to pick it up)"
     echo "  Staged, takes effect when you run the step below:"
-    echo "    Firmware sketches / buildspec.yml / wolfSSL config / partition table:"
-    echo "      the NEXT firmware build. Register & Flash always builds. A dashboard"
-    echo "      migration REUSES s3://${FIRMWARE_BUCKET}/<serial>/<version>/ when"
-    echo "      firmware.bin exists: Deregister + Register the device (or delete that"
-    echo "      prefix) to force a rebuild."
-    echo "    Firmware-builder image (Dockerfile / buildspec-image.yml):"
+    echo "    Firmware sketches / buildspec.yml / variants.json:"
+    echo "      rebuild the shared images (s3://${FIRMWARE_BUCKET}/shared/<version>/):"
+    echo "      ./raw_device_builder/codebuild/build-shared-firmware.sh --region $AWS_REGION${PROFILE_ARG} --wait"
+    echo "      (add --variant <key> for just one). Registration and migrations"
+    echo "      then use them; devices already on a version keep running it."
+    echo "    Firmware-builder image (Dockerfile / buildspec-image.yml / wolfSSL config"
+    echo "      / partition table): rebuild the image; it then rebuilds all shared images:"
     echo "      aws codebuild start-build --project-name pqc-workshop-build-image${PROFILE_ARG}"
     echo "    Builder-Pi app (raw_device_builder/builder-pi/):"
     echo "      ./raw_device_builder/setup-builder-pi-remote.sh --region $AWS_REGION${PROFILE_ARG} --only deploy-app"
@@ -671,9 +679,10 @@ PROFILE_ARG=""
 [[ -n "$PROFILE" ]] && PROFILE_ARG=" --profile $PROFILE"
 echo ""
 echo "REMAINING MANUAL STEPS:"
-echo "  1. Build the firmware image once (source already staged by this script;"
-echo "     needed before any device firmware build):"
-echo "       aws codebuild start-build --project-name $(get_out FirmwareImageBuilderProject)${PROFILE_ARG}"
+echo "  1. Build the firmware builder image once (source already staged). When it"
+echo "     finishes it builds every firmware variant into shared/<version>/; it can"
+echo "     run while you provision the Builder-Pi, but must SUCCEED before step 8:"
+echo "       aws codebuild start-build --project-name pqc-workshop-build-image${PROFILE_ARG}"
 echo "  2. Provision the Builder-Pi (two steps — see DEPLOYMENT.md §6, workshop 99.6):"
 echo "       a. Register the Pi:  raw_device_builder/bundle-for-builder-pi.sh --region $AWS_REGION"
 echo "          then on the Pi:   unzip builder-pi-bundle.zip && cd builder-pi-bundle && sudo ./setup-ssm.sh"

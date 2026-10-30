@@ -21,11 +21,12 @@ def register_device(config, serial_number, identity_only=False, logger=None):
     """
     Register a device via the device-builder API (SigV4).
 
-    Registration starts two CodeBuild jobs: the firmware build (buildId) and
-    the device-identity job (identityBuildId), which uploads the device's
-    certs NVS partition image to identityKey. With identity_only=True (reflash
-    of an already-registered device) only the identity job is started and
-    buildId is None.
+    Registration starts the device-identity job (identityBuildId), which
+    uploads the device's certs NVS partition image to identityKey. The app is
+    the shared prebuilt image at firmwarePrefix (e.g. shared/1.0.0-classical),
+    built once per deployment, so buildId is None. identity_only=True (reflash
+    of an already-registered device) skips the Thing/policy/registry writes.
+    A 503 means the shared firmware is not built yet.
     """
     api_url = f"{config['api_endpoint']}/register"
     # Plug-and-flash: only the auto-detected serial is sent. WiFi, broker
@@ -58,6 +59,8 @@ def register_device(config, serial_number, identity_only=False, logger=None):
         "buildId": build_id,
         "identityBuildId": identity_build_id,
         "identityKey": result.get("identityKey") or identity_key(serial_number),
+        # Shared app image the Pi flashes (e.g. shared/1.0.0-classical).
+        "firmwarePrefix": result.get("firmwarePrefix"),
     }
 
 

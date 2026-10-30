@@ -42,7 +42,8 @@ def env(monkeypatch, tmp_path):
         s3.put_bucket_versioning(Bucket=BUCKET,
                                  VersioningConfiguration={"Status": "Enabled"})
         for name, body in PIECES.items():
-            s3.put_object(Bucket=BUCKET, Key=f"{SERIAL}/{VERSION}/{name}", Body=body)
+            # Shared image: one build per variant per deployment, no serial.
+            s3.put_object(Bucket=BUCKET, Key=f"shared/{VERSION}/{name}", Body=body)
         dm = DeviceManager({"region": "us-east-1", "firmware_bucket": BUCKET,
                             "firmware_version": VERSION})
         slot = DeviceSlot(port="/dev/ttyACM0", serial_number=SERIAL)
@@ -170,3 +171,16 @@ def test_flash_refuses_when_a_piece_is_missing(env, monkeypatch):
 ])
 def test_classify_boot_line(line, expected):
     assert device_manager.classify_boot_line(line) == expected
+
+
+def test_download_uses_registrar_firmware_prefix(env):
+    """The registrar's firmwarePrefix wins over the configured version."""
+    dm, slot, s3 = env
+    _put_identity(s3)
+    for name, body in PIECES.items():
+        s3.put_object(Bucket=BUCKET, Key=f"shared/9.9.9-test/{name}", Body=body + b"!")
+
+    fw_dir = dm.download_firmware(slot, IDENTITY_KEY, "shared/9.9.9-test")
+
+    with open(os.path.join(fw_dir, "app.bin"), "rb") as f:
+        assert f.read() == PIECES["firmware.bin"] + b"!"

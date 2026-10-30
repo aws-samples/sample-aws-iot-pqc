@@ -360,6 +360,33 @@ else
 fi
 echo ""
 
+# ─── 10c. Firmware builder image + shared firmware images ────────────────────
+# The firmware-builder image build (workshop 99.4) chains
+# build-shared-firmware.sh, which builds every variant once into
+# shared/<version>/. Register & Flash and every migration use these images, so
+# they must exist before the first device (99.8). Missing = warn, because they
+# legitimately do not exist yet when this runs right after the deploy (99.5).
+echo "─── 10c. Firmware images (builder image + shared/<version>/) ─"
+if [[ "$(aws ecr describe-images --repository-name pqc-workshop-firmware-builder \
+        --query 'length(imageDetails)' --output text 2>/dev/null || echo 0)" =~ ^[1-9] ]]; then
+    pass "Firmware-builder image present in ECR"
+else
+    warn "Firmware-builder image not built yet (aws codebuild start-build --project-name pqc-workshop-build-image)"
+fi
+FW_BUCKET="pqc-workshop-firmware-${ACCOUNT_ID}"
+# Same variant table the builds and migrations use.
+VARIANTS_JSON="$(cd "$(dirname "$0")" && pwd)/raw_device_builder/lambda/prepare-build/variants.json"
+SHARED_VERSIONS=$(python3 -c "import json,sys;print(' '.join(v['version'] for v in json.load(open(sys.argv[1]))['variants'].values()))" "$VARIANTS_JSON" 2>/dev/null) \
+    || SHARED_VERSIONS="1.0.0-classical"
+for ver in $SHARED_VERSIONS; do
+    if aws s3api head-object --bucket "$FW_BUCKET" --key "shared/$ver/firmware.bin" >/dev/null 2>&1; then
+        pass "Shared firmware $ver built"
+    else
+        warn "Shared firmware $ver missing (built after the firmware-builder image; or run raw_device_builder/codebuild/build-shared-firmware.sh --wait)"
+    fi
+done
+echo ""
+
 # ─── 11. SSM Hybrid Managed Instance (Builder-Pi) ────────────────────────────
 echo "─── 11. Builder-Pi (SSM Hybrid) ─────────────────────────────"
 PI_COUNT=$(aws ssm describe-instance-information \

@@ -22,3 +22,18 @@ phases:
       - docker push $ECR_REPO_URI:latest
       - docker push $ECR_REPO_URI:$BUILD_TAG
       - echo "Image pushed successfully"
+      # ─── Chain: build every firmware variant once for this deployment ──────
+      # The image carries no device identity, so one signed image per variant
+      # (shared/<version>/) serves every device. Building them here means they
+      # are ready when this build reports SUCCEEDED, and they build in parallel
+      # with Builder-Pi provisioning (workshop 99.4 / 99.6). Skipped if the image
+      # build itself failed (post_build runs either way).
+      - |
+        if [ "${CODEBUILD_BUILD_SUCCEEDING}" = "1" ]; then
+          aws s3 cp "s3://$FIRMWARE_BUCKET/source/build-shared-firmware.sh" /tmp/build-shared-firmware.sh
+          aws s3 cp "s3://$FIRMWARE_BUCKET/source/variants.json" /tmp/variants.json
+          bash /tmp/build-shared-firmware.sh --region "$AWS_DEFAULT_REGION" \
+            --variants-file /tmp/variants.json --wait
+        else
+          echo "Image build failed; not building shared firmware."
+        fi

@@ -113,3 +113,22 @@ def test_handler_never_returns_placeholder(monkeypatch):
     result = mod.handler({"serialNumber": "FC22E0"}, None)
     assert result["body"] != "placeholder"
     json.loads(result["body"])  # must be valid JSON, not the stub string
+
+
+@mock_aws
+def test_deregister_removes_identity_image_but_not_shared_firmware(monkeypatch):
+    """A device deregistered before it was flashed must not leave its private
+    keys in S3; the shared images other devices use must be untouched."""
+    _seed_registry_and_bucket()
+    s3 = boto3.client("s3", region_name="us-east-1")
+    s3.put_object(Bucket=FIRMWARE_BUCKET, Key="identity/FC22E0/certs.bin", Body=b"keys")
+    s3.put_object(Bucket=FIRMWARE_BUCKET, Key="identity/C69DE0/certs.bin", Body=b"other")
+    s3.put_object(Bucket=FIRMWARE_BUCKET, Key="shared/2.0.0-pqc/firmware.bin", Body=b"fw")
+    _env()
+    mod = load_handler_module(os.path.join(HERE, "index.py"), "device_deregistrar_index5")
+
+    mod.handler({"serialNumber": "FC22E0"}, None)
+
+    keys = {o["Key"] for o in s3.list_objects_v2(Bucket=FIRMWARE_BUCKET).get("Contents", [])}
+    assert "identity/FC22E0/certs.bin" not in keys
+    assert {"identity/C69DE0/certs.bin", "shared/2.0.0-pqc/firmware.bin"} <= keys

@@ -252,13 +252,40 @@ change the production flow until 0.1–0.3 pass on a real board.
 
 ## Workstream 4 — Shared images and migration
 
-- [ ] 4.1 Build each variant once per deployment with no per-device inputs, sign
-      it, and upload to `shared/<version>/`. Wire it into `deploy-workshop.sh`
-      after the firmware-builder image build. _Requirements: R6.1_
-- [ ] 4.2 `prepare-build` / state machine: no per-device build for migrations;
+- [x] 4.1 Build each variant once per deployment with no per-device inputs, sign
+      it, and upload to `shared/<version>/`. _Requirements: R6.1_
+      **Done:** `raw_device_builder/codebuild/build-shared-firmware.sh` starts one
+      firmware build per variant from `variants.json` (the same file prepare-build
+      reads), each writing `shared/<version>/`. The buildspec writes
+      `S3_PREFIX=shared/$FIRMWARE_VERSION` and drops all per-device/serial inputs.
+      **Chained off the builder-image build** (option 1, per the user): buildspec-image.yml
+      post_build runs the script with `--wait` when the image push succeeds, so
+      the shared images build in parallel with Builder-Pi provisioning (99.4/99.6).
+      The ImageBuilder role gained codebuild start/get on the firmware project and
+      SSM read of the broker endpoint; timeout 30→45 min. Script is bash-3.2 safe
+      (runs on macOS) and retries the CodeBuild concurrency limit.
+- [x] 4.2 `prepare-build` / state machine: no per-device build for migrations;
       `publish-ota` presigns the shared image and signature. Update the ASL test.
       _Requirements: R6.2_
-- [ ] 4.3 Registrar first flash uses the shared classical image (pairs with 2.1).
+      **Done:** prepare-build resolves the variant to `shared/<version>/firmware.bin`,
+      requires it to exist (raises `SharedFirmwareMissing` otherwise — no fallback
+      build, which could pair a firmware.bin with another concurrent build's
+      signature), and no longer returns buildNeeded/buildEnv. The state machine
+      dropped `BuildNeeded?` and `WaitForBuild` (both ASL copies); the migration
+      role lost CodeBuild + EventBridge. publish-ota already derives the signature
+      and signer-cert keys from `s3Key`, so it needed no change. ASL + prepare-build
+      tests rewritten.
+- [x] 4.3 Registrar first flash uses the shared classical image (pairs with 2.1).
+      **Done:** the registrar starts only the identity job and returns
+      `firmwarePrefix: shared/1.0.0-classical` (buildId null); it 503s if that
+      shared image is not built yet (both register and reflash), so the Pi never
+      fails mid-download. Its role lost the firmware-build and SSM grants, and its
+      env dropped BUILD_PROJECT/broker/WiFi. The Pi's `download_firmware` takes the
+      prefix (default `shared/<version>`). Also fixed WS5.2's gap early: the
+      deregistrar now deletes `identity/<serial>/` (device keys) as well as any
+      legacy `<serial>/` firmware, and leaves `shared/` alone. `check_setup_status.sh`
+      gained section 10c (builder image + each shared image, warn-if-missing).
+      All 124 tests pass. Not yet deployed to pqc-a.
 
 ## Workstream 5 — Validation and docs
 
@@ -273,3 +300,16 @@ change the production flow until 0.1–0.3 pass on a real board.
       `add_tc_metadata.py`.
 - [ ] 5.5 Definition of done: destroy and rebuild pqc-b, then pqc-a, from
       scratch, both fully working. _Requirements: R7.2_
+- [ ] 5.6 (after 5.5) **Re-assess the high-risk findings against the new
+      design.** Go through the threat model's High/Critical threats
+      (`.threatmodel/`, Threat Composer export) and the latest security scans,
+      and record for each whether the NVS identity + shared images close,
+      reduce, or leave it unchanged. Expected to move: T003/T011 (per-device keys
+      and WiFi PSK in every firmware image in S3 — images are now identity-free
+      and shared), T013 (plaintext WiFi in the registry/build env — now SSM-only),
+      T005/T006 notes (OTA trust now from NVS CA roots). New to add: signer certs
+      share a CA and EKU with device certs (3b.7). Not expected to move: the
+      Holmes HIGHs in `holmes-report.json` (Oct 29) are all suppressed Checkov
+      IAM-wildcard rules (CKV_AWS_109/111, plus 193/366), unrelated to identity
+      storage; confirm with a fresh Holmes + Slingshot scan of the merged branch
+      and update SECURITY_FINDINGS.md.

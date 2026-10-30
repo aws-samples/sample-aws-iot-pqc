@@ -98,7 +98,7 @@ def _wait_and_flash(args, config, log, reg, flashing=True):
     slot = dm.devices.get(args.port)
     if not slot:
         return {"success": False, "message": f"No device detected on {args.port} for flashing"}
-    firmware_dir = dm.download_firmware(slot, reg["identityKey"])
+    firmware_dir = dm.download_firmware(slot, reg["identityKey"], reg.get("firmwarePrefix"))
     if not firmware_dir:
         return {"success": False, "message": "Firmware download failed"}
     if not dm.flash_device(args.port, firmware_dir):
