@@ -154,3 +154,19 @@ def test_flash_refuses_when_a_piece_is_missing(env, monkeypatch):
     assert dm.flash_firmware(slot.port, fw_dir) is False
     assert run.argv is None
     assert "certs.bin" in slot.error
+
+
+# Real serial lines captured from FC22E0 on pqc-a (ESP_LOG, lowercase tags).
+@pytest.mark.parametrize("line,expected", [
+    ("[  3981][I][aws_iot_pqc_esp32_v1_classical.ino:883] wifiTask(): [wifi] Connected! IP: 10.42.0.63, RSSI: -29 dBm, Channel: 6", "wifi"),
+    ("[  7929][I][aws_iot_pqc_esp32_v1_classical.ino:1892] mqttTask(): [mqtt] Connected to PQC Mosquitto broker!", "mqtt"),
+    ("[  6911][I][aws_iot_pqc_esp32_v3_mldsa.ino:1920] mqttTask(): [mqtt] Connected to PQC Mosquitto broker!", "mqtt"),
+    # Attempts are not successes.
+    ("[  4803][I][aws_iot_pqc_esp32_v1_classical.ino:1882] mqttTask(): [mqtt] Connecting to PQC Mosquitto broker (thing='esp32-FC22E0', attempt=1)...", None),
+    ("[  1203][I][aws_iot_pqc_esp32.ino:869] wifiTask(): [wifi] Connecting to SSID 'reinvent-pqc-iot-wifi' (attempt 1)...", None),
+    ("[    62][E][aws_iot_pqc_esp32_v1_classical.ino:2090] setup(): [main] [Setup] FATAL: no valid device identity for esp32-C69DE0. Register and flash this device at the Builder-Pi.", "identity"),
+    ("Guru Meditation Error: Core  1 panic'ed (LoadProhibited).", "panic"),
+    ("[  5060][I][aws_iot_pqc_esp32_v1_classical.ino:540] connect(): [tls] TCP connected to pqc-broker-nlb.elb.us-east-1.amazonaws.com:8883", None),
+])
+def test_classify_boot_line(line, expected):
+    assert device_manager.classify_boot_line(line) == expected

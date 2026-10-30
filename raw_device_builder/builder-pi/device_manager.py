@@ -24,7 +24,9 @@ from typing import Optional, Dict, List
 
 
 # ─── Constants ───────────────────────────────────────────────────────────────
-FQBN = "esp32:esp32:XIAO_ESP32S3:USBMode=hwcdc,CDCOnBoot=cdc,DebugLevel=info,PartitionScheme=default_8MB"
+# Reference only (the Pi flashes prebuilt images and never compiles); keep in
+# sync with FQBN in raw_device_builder/codebuild/buildspec.yml.
+FQBN = "esp32:esp32:XIAO_ESP32S3:USBMode=hwcdc,CDCOnBoot=cdc,PSRAM=opi,DebugLevel=info,PartitionScheme=default_8MB"
 ARDUINO_CLI = "arduino-cli"
 FIRMWARE_DIR = "/opt/pqc-workshop/firmware"
 
@@ -83,6 +85,27 @@ def _append_log_file(name: str, line: str):
             f.write(line + "\n")
     except OSError:
         pass
+
+
+def classify_boot_line(line: str) -> Optional[str]:
+    """Classify one line of firmware serial output during boot verification.
+
+    Matches the exact success/failure lines the three sketches log (ESP_LOG,
+    lowercase tags such as "[wifi]" / "[mqtt]"). Returns 'wifi', 'mqtt',
+    'identity' (fail-closed: no valid NVS identity), 'panic', or None. Retry
+    lines such as "Connecting to SSID" / "Connecting to PQC Mosquitto broker"
+    deliberately do NOT count as connected.
+    """
+    low = line.lower()
+    if 'panic' in low or 'guru meditation' in low:
+        return 'panic'
+    if '[setup] fatal' in low:
+        return 'identity'
+    if 'connected to pqc mosquitto broker' in low:
+        return 'mqtt'
+    if '[wifi] connected!' in low:
+        return 'wifi'
+    return None
 
 
 @dataclass
@@ -453,24 +476,26 @@ class DeviceManager:
                     line = ser.readline().decode('utf-8', errors='ignore').strip()
                     if line:
                         slot.log(f'[serial] {line}')
+                        event = classify_boot_line(line)
 
-                        # Detect WiFi connection
-                        if 'WiFi' in line and 'connect' in line.lower():
+                        if event == 'wifi' and not wifi_connected:
                             wifi_connected = True
                             slot.log('WiFi connected!')
 
-                        # Detect MQTT connection
-                        if 'MQTT' in line and 'connect' in line.lower():
+                        if event == 'mqtt':
                             mqtt_connected = True
                             slot.log('MQTT connected to broker!')
                             break
 
-                        # Detect fatal errors
-                        if 'panic' in line.lower() or 'guru meditation' in line.lower():
-                            slot.log('FATAL: Device crashed during boot')
+                        if event in ('panic', 'identity'):
                             ser.close()
                             slot.status = 'error'
-                            slot.error = 'Device panic during boot'
+                            if event == 'panic':
+                                slot.error = 'Device panic during boot'
+                                slot.log('FATAL: Device crashed during boot')
+                            else:
+                                slot.error = 'Device has no valid identity (certs partition); Reflash to re-issue it'
+                                slot.log(f'FATAL: {slot.error}')
                             return False
 
                 time.sleep(0.05)  # nosemgrep: arbitrary-sleep
