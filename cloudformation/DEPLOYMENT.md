@@ -165,31 +165,37 @@ served from CloudFront.
 > Function when an operator picks it in the dashboard (see the ML-DSA reference
 > section). Verify both CAs and the 8884 listener with `check_setup_status.sh` (§5).
 
-### 4. Build the firmware builder image (workshop 99.4 — ONE-TIME, MANDATORY BEFORE ANY FLASH)
+### 4. Build the firmware builder image and the shared firmware (workshop 99.4 — MANDATORY BEFORE ANY FLASH)
 
-> ⚠️ **You MUST run this before registering/flashing the first device.** The
-> per-device firmware compile (`pqc-workshop-firmware-build`) runs *inside* a
-> custom CodeBuild container image that lives in the `pqc-workshop-firmware-builder`
-> ECR repo. A fresh deploy leaves that repo EMPTY, so if you flash before running
-> this step the device build fails at PROVISIONING with:
->
-> ```
-> CannotPullImageManifestError: Requested image not found
-> ```
->
-> The device Thing/cert still get created, but no firmware is produced. After this
-> image build succeeds, just re-run register/flash — no need to re-register.
+The firmware is compiled inside a custom CodeBuild container image (arduino-cli,
+the ESP32 core, wolfSSL with PQC) in the `pqc-workshop-firmware-builder` ECR
+repo, which a fresh deploy leaves **empty**. One build of the
+`pqc-workshop-build-image` project (the `ImageBuilderProjectName` output) does
+two things:
 
-`deploy-workshop.sh` has already staged the build source, so start the build (the
-project name is the `ImageBuilderProjectName` stack output —
-`pqc-workshop-build-image`):
+1. builds and pushes that image;
+2. then runs `raw_device_builder/codebuild/build-shared-firmware.sh --wait`,
+   which compiles and signs **every firmware variant once** into
+   `s3://pqc-workshop-firmware-<acct>/shared/<version>/` (`firmware.bin`, the
+   flash pieces, `firmware.bin.sig` + `signer.crt` for signed versions,
+   `metadata.json`). The variants come from
+   `raw_device_builder/lambda/prepare-build/variants.json`, the same table the
+   migration uses.
+
+The images contain no device identity, so one per variant serves every device:
+**Register & Flash** uses `shared/1.0.0-classical/`, and every dashboard
+migration publishes `shared/<version>/` without compiling anything. Until the
+build has succeeded, Register & Flash returns "shared firmware is not built
+yet" (HTTP 503) and does nothing, and a migration fails with the same message.
+
+`deploy-workshop.sh` has already staged the build source, so start the build:
 
 ```bash
 aws codebuild start-build --project-name pqc-workshop-build-image [--profile <name>]
 ```
 
-Wait for it to reach `SUCCEEDED` before flashing any device (~10–15 min). To
-watch it to completion:
+It takes about 15 minutes (image ~10–15 min, then the variants ~3 min in
+parallel) and can run while you provision the Builder-Pi (step 6). Watch it:
 
 ```bash
 aws codebuild batch-get-builds [--profile <name>] \
@@ -198,15 +204,29 @@ aws codebuild batch-get-builds [--profile <name>] \
   --query 'builds[0].buildStatus' --output text
 ```
 
-Confirm the image landed: `aws ecr describe-images --repository-name pqc-workshop-firmware-builder`
-should list at least one image.
-
-You should see at least one image tagged `latest`:
+`SUCCEEDED` means both the image and every shared variant are ready (the build
+fails if any variant fails). Confirm:
 
 ```bash
 aws ecr describe-images --repository-name pqc-workshop-firmware-builder \
   --query 'imageDetails[].imageTags' --output table
+aws s3 ls "s3://pqc-workshop-firmware-$(aws sts get-caller-identity --query Account --output text)/shared/"
 ```
+
+You should see an image tagged `latest`, and `1.0.0-classical/`, `2.0.0-pqc/`,
+`3.0.0-mldsa/`, `4.0.0-signer/` and `5.0.0-verified/`.
+
+**Rebuilding just the firmware** (after changing a sketch, `buildspec.yml` or
+`variants.json` and running `deploy-workshop.sh --stage-only`) does not need a
+new image:
+
+```bash
+./raw_device_builder/codebuild/build-shared-firmware.sh --region us-east-1 [--profile <name>] --wait
+# or one variant:  ... --variant pqc-mldsa --wait
+```
+
+Rebuilding a version replaces `shared/<version>/` in place; devices already
+running that version keep running it until they are migrated or reflashed.
 
 ### 5. Verify the environment (workshop 99.5)
 
@@ -310,12 +330,12 @@ re-stage `builder-pi/app.tgz`), then `setup-builder-pi-remote.sh --only deploy-a
 > **Plug-and-flash — no GUI configuration.** The Builder-Pi GUI takes no WiFi,
 > broker, or firmware-version input. Every device value comes from the workshop
 > **single source of truth in SSM**: the device-identity job reads the WiFi from
-> `/pqc-workshop/wifi/{ssid,password}`, and the registrar passes the broker
-> endpoint from `/pqc-workshop/broker/endpoint` to the firmware build. The
-> operator just plugs in an ESP32 and clicks **Register & Flash** — the only
-> per-device input is the auto-detected serial number. To change the WiFi or
-> broker later, update the SSM parameter; the next registration (or **Reflash**,
-> for WiFi) picks it up, no redeploy.
+> `/pqc-workshop/wifi/{ssid,password}`, and the shared firmware builds take the
+> broker endpoint from `/pqc-workshop/broker/endpoint`. The operator just plugs in
+> an ESP32 and clicks **Register & Flash** — the only per-device input is the
+> auto-detected serial number. To change the WiFi later, update the SSM parameter
+> and **Reflash**; to change the broker, update it and rebuild the shared
+> firmware (`build-shared-firmware.sh --wait`).
 
 ### 7. The Builder-Pi as the workshop WiFi AP (workshop 99.7)
 
@@ -454,8 +474,8 @@ ip -s link show wlan1
 
 ### 8. Register and flash the first device (workshop 99.8)
 
-The smoke test that proves the whole environment works end to end. The firmware
-builder image (step 4) must have reached `SUCCEEDED` first.
+The smoke test that proves the whole environment works end to end. The step 4
+build must have reached `SUCCEEDED` first (the shared firmware must exist).
 
 1. Open the Builder-Pi GUI at `http://<pi-ip>:8080` (the IP from step 6.1).
 2. Plug an ESP32 into a USB port on the Pi. The GUI auto-detects it and shows
@@ -471,16 +491,17 @@ On the cloud side that one click:
   certificate from the two Private CAs, and packs them, both CA roots and the
   WiFi into a 64 KB image for the device's `certs` partition
   (`identity/<serial>/certs.bin`, expired by an S3 lifecycle rule after a day);
-- **builds** the classical firmware (`pqc-workshop-firmware-build`). The image
-  holds no keys or WiFi, only the broker endpoint, so OTA updates carry no
+- **uses the shared classical firmware** from step 4 (`shared/1.0.0-classical/`)
+  — nothing is compiled per device. The image holds no keys or WiFi, only the
+  broker endpoint, so it is the same for every device and OTA updates carry no
   secrets.
 
 The Pi then downloads the firmware pieces and the identity image, flashes them
 in one `esptool` call (`0x0` bootloader, `0x8000` partitions, `0xe000`
 boot_app0, `0x10000` app, `0x721000` certs — never the 8 MB
 `firmware.merged.bin`, which would overwrite `certs`), deletes the identity
-image from S3, and verifies the boot. The first build pulls the ~3.5 GB builder
-image, so the first flash takes a few minutes.
+image from S3, and verifies the boot. A registration takes well under a minute
+(identity job ~15 s, flash ~10 s).
 
 Confirm the device connected: on the dashboard it appears **online** with its
 firmware version and the classical TLS algorithm, and in the broker log:
@@ -499,9 +520,8 @@ message, subscribe to `cmd/esp32-<serial>/+`, then publish telemetry.
 > **Reflash** re-issues a fresh identity and flashes it with the firmware already
 > in S3. A device whose serial console shows `[Setup] FATAL: no valid device
 > identity` has a missing, out-of-date or wrong-board `certs` partition and
-> deliberately refuses to start WiFi; Reflash fixes it. To pick up a change to the
-> *firmware* build itself, Deregister and Register the device instead (Reflash
-> reuses the firmware in S3).
+> deliberately refuses to start WiFi; Reflash fixes it. After rebuilding the
+> shared firmware, Reflash also picks up the new `shared/1.0.0-classical/` image.
 
 ---
 
@@ -572,7 +592,8 @@ There are three firmware variants, each built on demand and delivered over OTA:
    The picker pre-selects the next logical step for the device.
 3. Click **🚀 Flash**. This calls the `migrateFirmware` AppSync mutation with the
    chosen `variant`, which starts the `pqc-workshop-pqc-migration` Step Function:
-   it builds the selected variant (if not already built), pushes the image
+   it resolves the chosen variant to its shared prebuilt image
+   (`shared/<version>/`, built in step 4), pushes it
    over OTA, and the device reboots into it. Live progress appears on the card
    (Building… → Pushing OTA… → Rebooting…).
 4. When the device reconnects, its telemetry reports the new state. For
@@ -630,8 +651,8 @@ the SSM config and WiFi publish.
 | You changed | After `--stage-only` |
 |---|---|
 | Dashboard (`raw_device_builder/dashboard-v2/frontend/`) | Nothing — it is live. Hard-refresh the browser. |
-| Firmware sketches, `buildspec.yml`, wolfSSL config, partition table | Takes effect on the **next firmware build**. *Register & Flash* always builds. A dashboard migration **reuses** an existing `<serial>/<version>/firmware.bin`, so Deregister + Register the device (or delete that S3 prefix) to force a rebuild. |
-| Firmware-builder image (`Dockerfile`, `buildspec-image.yml`) | `aws codebuild start-build --project-name pqc-workshop-build-image` |
+| Firmware sketches, `buildspec.yml`, `variants.json` | Rebuild the shared images: `./raw_device_builder/codebuild/build-shared-firmware.sh --region us-east-1 --wait` (or `--variant <key>`). Registration and migrations then use them. |
+| Firmware-builder image (`Dockerfile`, `buildspec-image.yml`, wolfSSL config, partition table) | `aws codebuild start-build --project-name pqc-workshop-build-image` — it rebuilds the image and then every shared image. |
 | Builder-Pi app (`raw_device_builder/builder-pi/`) | `./raw_device_builder/setup-builder-pi-remote.sh --region us-east-1 --only deploy-app` |
 | CloudFormation, Lambda code, broker or cert-issuer image, SSM config, WiFi | Not covered — run the full `./deploy-workshop.sh us-east-1`. |
 
