@@ -191,6 +191,65 @@ change the production flow until 0.1–0.3 pass on a real board.
       subscribed from ONE `certs` partition; switching app images left it intact.
       Tests: 112 passed.
 
+## Workstream 3b — End-to-end on a rebuilt pqc-a, and PSRAM (added during testing)
+
+- [x] 3b.1 **From-scratch rebuild of pqc-a, following the workshop instructions**
+      (teardown-workshop.sh, then workshop pages 99.3 → 99.8 with a reimaged
+      Builder-Pi). Readiness check 40/40. Builder-Pi provisioning 11.5 min
+      (toolchain 8 min 40 s). First device FC22E0: identity build ~15 s, firmware
+      build ~2 min, 5-piece flash in 7 s, identity version deleted from S3.
+- [x] 3b.2 **Migrations on hardware with one identity flash:** classical →
+      2.0.0-pqc (ECDSA-signed OTA, chained to `ca_cls`) → 3.0.0-mldsa (8884, ML-DSA
+      cert from NVS) → 4.0.0-signer (first **ML-DSA-signed** OTA, chained to
+      `ca_mldsa`). This proves 3.4 for both NVS roots. Device cert and firmware
+      signer share a CA per algorithm (verified with OpenSSL 3.5); see the
+      backlog item on signer-cert scoping below.
+- [x] 3b.3 **Builder-Pi boot check false negative fixed.** `verify_boot` looked
+      for uppercase `MQTT`/`WiFi`; the firmware logs lowercase `[mqtt]`/`[wifi]`,
+      so every flash reported "Boot verification timed out". New
+      `classify_boot_line()` matches the exact success lines, ignores retry lines,
+      and fails fast on a panic or `[Setup] FATAL` (no valid identity). Tests use
+      real serial lines. Verified on four devices: `verifying → done`.
+- [x] 3b.4 **PSRAM enabled.** The XIAO ESP32-S3 has 8 MB octal PSRAM
+      (ESP32-S3R8, esptool: "Embedded PSRAM 8MB (AP_3v3)"), but the board menu
+      defaulted to PSRAM disabled: the build linked the `qio_qspi` IDF libs and
+      `ESP.getPsramSize()` reported 0. Added `PSRAM=opi` to the FQBN (defined
+      once in buildspec.yml for the compile and metadata.json; Pi constant kept
+      in sync), which selects `qio_opi` (`CONFIG_SPIRAM_MODE_OCT`). Note the
+      `sdkconfig` copied into the build dir is the generic one and always says
+      QUAD; the libs folder is what counts. App size +5 KB (1.21 MB, 33% of a
+      slot). No code changes: `SPIRAM_USE_MALLOC` + `MALLOC_ALWAYSINTERNAL=4096`
+      send >4 KB allocations to PSRAM.
+- [x] 3b.5 **PSRAM measured on hardware**, one device per firmware (all PSRAM
+      builds, pqc-a, Oct 30):
+
+      | Firmware | Free heap | Min heap (low-water) | Max block | PSRAM free / total |
+      |---|---|---|---|---|
+      | 1.0.0-classical (C69E18) | 170.0 KB | 116.6 KB | 120.8 KB | 8,362,752 / 8,388,608 |
+      | 2.0.0-pqc (FC22E0) | 169.9 KB | 116.4 KB | 118.8 KB | 8,362,752 / 8,388,608 |
+      | 3.0.0-mldsa (C69E44) | 170.3 KB | 136.9 KB | 118.8 KB | 8,354,296 / 8,388,608 |
+      | 4.0.0-signer (C69DE0) | 170.2 KB | 136.9 KB | 120.8 KB | 8,354,296 / 8,388,608 |
+
+      Before PSRAM, FC22E0 on 4.0.0-signer: free 140 KB, **min 63 KB**. Internal
+      heap is now flat across all variants and the heaviest path's low-water
+      more than doubled. ML-DSA variants hold ~8 KB more in PSRAM (cert/root
+      buffers). The higher internal low-water on 3.0.0/4.0.0 vs classical is
+      observed, not traced in the allocator. Classical handshake ~2.05 s with
+      and without PSRAM; PQC/ML-DSA handshake times on the PSRAM build were not
+      captured. Dashboard card now shows **PSRAM free / used / total**.
+- [x] 3b.6 **`deploy-workshop.sh --stage-only`** added for fast in-place updates
+      (re-stage sources + rebuild dashboard; no stack/image/cert/SSM changes).
+      Verified on pqc-a: 139 s vs ~20 min for a full redeploy. Documented in
+      DEPLOYMENT.md and the steering.
+- [ ] 3b.7 Backlog (not this branch): signer certs share a CA with device certs
+      and carry the same EKU (no `codeSigning`), and `otaVerifyChainToRoot` checks
+      only the chain, so any device's key could sign an OTA every device accepts.
+      Fix: issue signer certs with the `codeSigning` EKU and require it on the
+      device (or separate signer CAs / pinned signer keys). Also: the Builder-Pi
+      GUI has no "rebuild firmware" for a registered device (Reflash reuses the
+      S3 image), so a firmware-setting change needs Deregister + Register; and
+      optionally report `ESP.getMinFreePsram()` as a PSRAM low-water metric.
+
 ## Workstream 4 — Shared images and migration
 
 - [ ] 4.1 Build each variant once per deployment with no per-device inputs, sign
