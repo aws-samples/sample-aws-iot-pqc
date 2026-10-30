@@ -85,7 +85,7 @@ aws cloudformation deploy \
 
 ### 2. Setup Builder-Pi
 
-Two steps (see `cloudformation/DEPLOYMENT.md` §5 for detail):
+Two steps (see `cloudformation/DEPLOYMENT.md` §6 for detail):
 
 ```bash
 # On the deploy host: generate the SSM-bootstrap bundle

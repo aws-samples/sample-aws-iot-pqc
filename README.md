@@ -402,7 +402,8 @@ OTA update itself verifiable against a post-quantum trust anchor.
 > of this journey (review risks → review architecture → migrate key exchange →
 > migrate certificates → migrate firmware signing). This repository holds the
 > code those stages deploy; see `cloudformation/DEPLOYMENT.md` for the deploy and
-> `cloudformation/DEPLOYMENT.md` §7 for the ML-DSA-44 certificate step.
+> the ML-DSA-44 reference section in `cloudformation/DEPLOYMENT.md` for the
+> certificate step.
 
 The rest of this section describes the OTA delivery mechanism that every stage
 above uses. It compares three approaches for pushing a firmware update to a
@@ -1027,17 +1028,18 @@ done.
 
 - **Full workshop deployment** (the `deploy-workshop.sh` stack — ECS Fargate,
   ECR, CodeBuild, DynamoDB, AppSync, CloudFront, Cognito, AWS Private CA, NLB,
-  Secrets Manager, S3, Lambda, Step Functions, SSM): run the teardown script,
-  which empties the versioned S3 buckets and ECR repositories and deletes the
-  nested stacks:
+  Secrets Manager, S3, Lambda, Step Functions, SSM): Workshop Studio accounts are
+  cleaned automatically when the event ends. Otherwise run the teardown script,
+  which deletes the device Things, empties the versioned S3 buckets and ECR
+  repositories, and deletes the nested stacks:
 
   ```bash
-  CONFIRM_TEARDOWN=yes ./cloudformation/teardown-workshop.sh <region> --wait
+  ./cloudformation/teardown-workshop.sh us-east-1 --wait
   ```
 
-  See [`cloudformation/DEPLOYMENT.md`](cloudformation/DEPLOYMENT.md) for the full
-  teardown runbook, including the handful of resources (versioned buckets, ECR
-  images, the IoT Thing Type) that need attention around deletion.
+  The steps follow the workshop's **Cleanup** page; see
+  [`cloudformation/DEPLOYMENT.md` → Cleanup](cloudformation/DEPLOYMENT.md#cleanup-workshop-cleanup-page)
+  for what it does, its options, and what is deliberately left in place.
 
 - **Simple single-device stack** (the `esp32-pqc-iot` CloudFormation stack from
   the "AWS IoT Core Setup" section above): delete it with
