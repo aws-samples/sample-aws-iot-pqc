@@ -250,6 +250,35 @@ change the production flow until 0.1–0.3 pass on a real board.
       S3 image), so a firmware-setting change needs Deregister + Register; and
       optionally report `ESP.getMinFreePsram()` as a PSRAM low-water metric.
 
+- [x] 3b.8 **Memory deep dive (Oct 31, PSRAM build, FC22E0).** Tools added:
+      `cmd/<thing>/diag` (JSON on `dt/<thing>/diag` + console table; "full" adds
+      `heap_caps_print_heap_info`, "dump" adds `heap_caps_dump`), an OTA-peak log
+      line before the post-OTA reboot, and a static breakdown with `esp-idf-size`
+      on the build `.map`. Findings:
+      - **Static RAM is not the lever:** 55 KB total (.bss 32 KB + .data 23 KB),
+        almost all ESP-IDF/WiFi/LWIP. Ours: sketch 7.5 KB, of which the three 2 KB
+        OTA URL buffers are 6 KB; wolfSSL `SessionCache` 1.1 KB. Big crypto
+        tables (AES Te/Td, ML-KEM zetas) and `S3_ROOT_CA` are in flash (0x3c…).
+      - **"Max contiguous block" ≈ main-region free space, not fragmentation.**
+        Internal RAM is five regions; the main one (284 KB) had 15 free blocks
+        and a 120.8 KB largest block; a separate 32 KB region at 0x3fcf0000 is
+        almost entirely free but cannot join it.
+      - **Task stacks are the lever.** Peak use: MQTTTask 3.8 KB of 32 KB on both
+        classical and ML-DSA-cert handshakes (wolfSSL buffers live on the heap);
+        OTATask 11.5 KB of 32 KB on the heaviest path (ML-DSA-signed OTA verify);
+        loopTask ~2 KB of 8 KB; WiFiTask 2.7 KB of 4 KB; BlinkTask 0.7 KB of 2 KB.
+      - Heaviest-path low-water marks: internal heap 108.8 KB during the
+        ML-DSA OTA; PSRAM ~78 KB in use during OTA, ~104 KB during the ML-DSA
+        handshake (of 8 MB).
+- [ ] 3b.9 Backlog (with the modular-sketch refactor): reclaim ~50 KB internal
+      RAM — MQTTTask 32→8 KB (~24 KB), OTATask 32→16 KB (~16 KB; or create it only
+      during an OTA, ~32 KB), OTA URL buffers to on-demand PSRAM (6 KB), loopTask
+      8→4 KB via `SET_LOOP_TASK_STACK_SIZE` (4 KB), wolfSSL `NO_SESSION_CACHE`
+      (1.1 KB). Keep ~2x margin over the measured peaks (error/reconnect paths
+      were not measured); the FreeRTOS stack canary is enabled, so an overflow
+      panics with a core dump rather than corrupting memory. Not urgent: the
+      heaviest path already leaves 108 KB internal free.
+
 ## Workstream 4 — Shared images and migration
 
 - [x] 4.1 Build each variant once per deployment with no per-device inputs, sign
