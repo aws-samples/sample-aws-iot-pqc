@@ -760,6 +760,11 @@ Resources:
                   - dynamodb:DeleteItem
                   - dynamodb:GetItem
                 Resource: !GetAtt DeviceRegistryTable.Arn
+              # Remove the device's dashboard card (table owned by the dashboard stack).
+              - Effect: Allow
+                Action:
+                  - dynamodb:DeleteItem
+                Resource: !Sub 'arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/pqc-workshop-devices'
               - Effect: Allow
                 Action:
                   - s3:DeleteObject
@@ -793,6 +798,7 @@ Resources:
       Environment:
         Variables:
           REGISTRY_TABLE: !Ref DeviceRegistryTable
+          DEVICE_TABLE: pqc-workshop-devices
           FIRMWARE_BUCKET: !Sub '${FirmwareBucketName}-${AWS::AccountId}'
       Code: ../lambda/device-deregistrar
 

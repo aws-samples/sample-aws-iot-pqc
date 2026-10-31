@@ -10,13 +10,17 @@ Cleans up all AWS resources for a device:
   3. Deactivates and deletes certificate
   4. Deletes IoT policy
   5. Deletes IoT Thing
-  6. Removes from DynamoDB registry
+  6. Removes from the DynamoDB registry AND the dashboard device table
+     (pqc-workshop-devices), so its card disappears. A deregistered board that
+     keeps publishing cannot bring it back: the telemetry processor only
+     updates rows that carry serialNumber, which only the registrar writes.
   7. Removes the device's S3 objects: any not-yet-flashed identity image
      (identity/<serial>/, holds its private keys) and any legacy per-device
      firmware (<serial>/). Shared firmware (shared/<version>/) is not touched.
 
 Environment variables:
   REGISTRY_TABLE — DynamoDB device registry table
+  DEVICE_TABLE — dashboard device table (default pqc-workshop-devices)
   FIRMWARE_BUCKET — S3 firmware bucket
 """
 
@@ -31,6 +35,7 @@ s3 = boto3.client('s3')
 TABLE_NAME = os.environ['REGISTRY_TABLE']
 FIRMWARE_BUCKET = os.environ['FIRMWARE_BUCKET']
 table = dynamodb.Table(TABLE_NAME)
+device_table = dynamodb.Table(os.environ.get('DEVICE_TABLE', 'pqc-workshop-devices'))
 
 
 def handler(event, context):
@@ -92,11 +97,15 @@ def handler(event, context):
         except Exception as e:
             errors.append(f'delete_thing: {e}')
 
-        # Step 4: Remove from DynamoDB
+        # Step 4: Remove from DynamoDB: the registry, and the dashboard row.
         try:
             table.delete_item(Key={'serialNumber': serial_number})
         except Exception as e:
             errors.append(f'dynamodb delete: {e}')
+        try:
+            device_table.delete_item(Key={'thingName': thing_name})
+        except Exception as e:
+            errors.append(f'dashboard row delete: {e}')
 
         # Step 5: Remove the device's S3 objects. The identity image normally
         # disappears after flashing (the Pi deletes it); this covers a device
