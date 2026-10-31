@@ -341,24 +341,49 @@ class DeviceManager:
                 slot.log(f'Identity image not in S3 yet; retrying ({attempt}/{attempts - 1})')
                 time.sleep(delay)  # nosemgrep: arbitrary-sleep
 
-    def delete_identity(self, slot: DeviceSlot, firmware_dir: str) -> bool:
-        """Delete the flashed identity image: the S3 object version that was
-        downloaded, and the local copy. The keys then exist only on the device.
+    @staticmethod
+    def _identity_versions(s3, bucket, key):
+        """All version ids (incl. delete markers) of exactly this key."""
+        ids = []
+        for page in s3.get_paginator('list_object_versions').paginate(Bucket=bucket, Prefix=key):
+            for v in page.get('Versions', []) + page.get('DeleteMarkers', []):
+                if v['Key'] == key:
+                    ids.append(v['VersionId'])
+        return ids
 
-        Best effort: a failure is logged and the S3 lifecycle rule expires the
-        object after a day anyway.
+    def delete_identity(self, slot: DeviceSlot, firmware_dir: str) -> bool:
+        """Delete the device's identity image from S3 — EVERY version, not just
+        the one flashed — and the local copy, so the keys exist only on the
+        device. Older versions are identities issued but never flashed (e.g. a
+        registration whose flash failed, then a Reflash); each holds a valid
+        device key, so none may linger as a noncurrent version.
+
+        Falls back to deleting just the downloaded version if versions cannot
+        be listed. Best effort: failures are logged, and the S3 lifecycle rule
+        expires identity objects after a day anyway.
         """
         ok = True
         if slot.identity_key:
+            bucket = self.config['firmware_bucket']
+            s3 = self._s3()
             try:
-                args = {'Bucket': self.config['firmware_bucket'], 'Key': slot.identity_key}
-                if slot.identity_version_id:
-                    args['VersionId'] = slot.identity_version_id
-                self._s3().delete_object(**args)
-                slot.log(f'Deleted {slot.identity_key} from S3')
+                targets = self._identity_versions(s3, bucket, slot.identity_key)
             except Exception as e:
-                ok = False
-                slot.log(f'WARN: could not delete {slot.identity_key} from S3: {e}')
+                slot.log(f'WARN: cannot list versions of {slot.identity_key} ({e}); '
+                         'deleting only the flashed version')
+                targets = [slot.identity_version_id] if slot.identity_version_id else [None]
+            for version_id in targets:
+                try:
+                    args = {'Bucket': bucket, 'Key': slot.identity_key}
+                    if version_id:
+                        args['VersionId'] = version_id
+                    s3.delete_object(**args)
+                except Exception as e:
+                    ok = False
+                    slot.log(f'WARN: could not delete {slot.identity_key} '
+                             f'version {version_id}: {e}')
+            if ok:
+                slot.log(f'Deleted {slot.identity_key} from S3 ({len(targets)} version(s))')
         try:
             os.remove(os.path.join(firmware_dir, IDENTITY_FILE))
         except FileNotFoundError:

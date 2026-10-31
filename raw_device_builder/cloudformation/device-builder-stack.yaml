@@ -1503,14 +1503,21 @@ Resources:
                   - !GetAtt FirmwareBuildProject.Arn
                   - !GetAtt DeviceIdentityProject.Arn
               # After flashing a device's identity image the Pi deletes it
-              # (identity/<serial>/certs.bin holds the device private keys).
-              # DeleteObjectVersion removes the exact version it downloaded,
-              # so the keys do not linger as a noncurrent version.
+              # (identity/<serial>/certs.bin holds the device private keys) —
+              # every version, so an issued-but-never-flashed identity does not
+              # linger as a noncurrent version.
               - Effect: Allow
                 Action:
                   - s3:DeleteObject
                   - s3:DeleteObjectVersion
                 Resource: !Sub '${FirmwareBucket.Arn}/identity/*'
+              - Effect: Allow
+                Action:
+                  - s3:ListBucketVersions
+                Resource: !GetAtt FirmwareBucket.Arn
+                Condition:
+                  StringLike:
+                    s3:prefix: 'identity/*'
               # Read the workshop config params, incl. the WiFi SSID/password
               # the builder-Pi hostapd AP setup broadcasts. The password is a
               # SecureString, so allow kms:Decrypt scoped to the SSM service.

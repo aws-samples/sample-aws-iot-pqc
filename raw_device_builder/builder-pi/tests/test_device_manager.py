@@ -115,7 +115,7 @@ def test_flash_writes_pieces_and_identity_at_partition_offsets(env, monkeypatch)
     assert not any("merged" in a for a in argv)
 
 
-def test_flash_device_deletes_identity_version_after_success(env, monkeypatch):
+def test_flash_device_deletes_all_identity_versions_after_success(env, monkeypatch):
     dm, slot, s3 = env
     old = _put_identity(s3, b"old")
     new = _put_identity(s3, b"new")
@@ -124,9 +124,11 @@ def test_flash_device_deletes_identity_version_after_success(env, monkeypatch):
 
     assert dm.flash_device(slot.port, fw_dir) is True
 
-    versions = s3.list_object_versions(Bucket=BUCKET, Prefix=IDENTITY_KEY).get("Versions", [])
-    # Exactly the flashed version is gone (no delete marker left behind).
-    assert [v["VersionId"] for v in versions] == [old]
+    listing = s3.list_object_versions(Bucket=BUCKET, Prefix=IDENTITY_KEY)
+    # Every version is gone — including the older, never-flashed identity
+    # (a failed registration's) — and no delete marker is left behind.
+    assert listing.get("Versions", []) == []
+    assert listing.get("DeleteMarkers", []) == []
     assert new != old
     assert not os.path.exists(os.path.join(fw_dir, "certs.bin"))
     assert slot.identity_key is None
@@ -184,3 +186,20 @@ def test_download_uses_registrar_firmware_prefix(env):
 
     with open(os.path.join(fw_dir, "app.bin"), "rb") as f:
         assert f.read() == PIECES["firmware.bin"] + b"!"
+
+
+def test_delete_identity_falls_back_to_flashed_version(env, monkeypatch):
+    """Without ListBucketVersions, still delete the version that was flashed."""
+    dm, slot, s3 = env
+    _put_identity(s3, b"old")
+    new = _put_identity(s3, b"new")
+    fw_dir = dm.download_firmware(slot, IDENTITY_KEY)
+
+    def denied(*a, **k):
+        raise RuntimeError("AccessDenied")
+    monkeypatch.setattr(DeviceManager, "_identity_versions", staticmethod(denied))
+
+    dm.delete_identity(slot, fw_dir)
+
+    versions = [v["VersionId"] for v in s3.list_object_versions(Bucket=BUCKET, Prefix=IDENTITY_KEY)["Versions"]]
+    assert new not in versions and len(versions) == 1
