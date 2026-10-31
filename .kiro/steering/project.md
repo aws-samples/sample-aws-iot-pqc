@@ -169,6 +169,36 @@ the teardown/rebuild. Handle these to keep a from-scratch deploy clean:
   is reused across rebuilds (fine, just don't expect the stack to own it).
 
 Backlog candidates surfaced during rebuilds (not yet fixed):
+- **[TOP PRIORITY — own change, do on its own] OTA S3 download TLS: classical
+  key exchange and NO server authentication.** Found Sep 29. Two gaps in every
+  sketch's OTA path (`otaCtx` + `otaHttpsGetToBuffer`):
+  1. **No peer verification.** The sketches embed `S3_ROOT_CA` (Amazon Root CA 1)
+     but set `wolfSSL_CTX_set_verify(otaCtx, WOLFSSL_VERIFY_NONE)` because the
+     chain failed with `ASN_NO_SIGNER_E (-188)`. Integrity today rests only on the
+     SHA-256 + signed-image check; the TLS session to S3 is unauthenticated.
+     Likely root cause (hypothesis, verify on device): S3 sends a 3-cert chain
+     whose top cert is a CROSS-SIGNED Amazon Root CA 1 issued by Starfield
+     Services Root CA G2 (`openssl s_client -showcerts` against
+     `pqc-workshop-firmware-<acct>.s3.amazonaws.com`: leaf CN=s3.amazonaws.com
+     <- Amazon RSA 2048 M01 <- Amazon Root CA 1 <- Starfield G2). Without
+     `WOLFSSL_ALT_CERT_CHAINS`, wolfSSL tries to verify the top cert against
+     Starfield (not loaded) and fails. RSA is already enabled in
+     `wolfssl_user_settings_arduino.h`, so the RSA leaf is not the problem.
+     Fix: add `#define WOLFSSL_ALT_CERT_CHAINS` and switch the OTA ctx to
+     `WOLFSSL_VERIFY_PEER` (optionally also enforce the S3 hostname).
+  2. **Classical key exchange.** Only the broker client calls
+     `wolfSSL_UseKeyShare(WOLFSSL_SECP256R1MLKEM768)`; the OTA ctx does not, so
+     the S3 download likely negotiates classical ECDHE even on the PQC variants
+     (not verified on device). S3 supports hybrid PQ-TLS on TLS 1.3 at all public
+     endpoints; probed with OpenSSL 3.6: SecP256r1MLKEM768 and X25519MLKEM768
+     both negotiate (S3 default pick X25519MLKEM768), SecP384r1MLKEM1024 is NOT
+     offered. Fix: add `wolfSSL_UseKeyShare(..., WOLFSSL_SECP256R1MLKEM768)` on
+     the OTA connection in the PQC variants (v2-v4) and log the negotiated group
+     (`wolfSSL_get_curve_name`).
+  Retest: full chain fw1 -> 2 -> 3 -> 4 over OTA; log must show verify OK + the
+  hybrid group. Needs a shared-image rebuild (full deploy). Risk is low (image is
+  not secret, integrity checked separately) but it is an embarrassing gap in a
+  PQC workshop, hence top priority.
 - **[Firmware maintainability — modular sketches, own branch AFTER
   nvs-device-identity is done] Split the three ~2,100-line sketches into shared
   modules.** Today the classical / PQC / ML-DSA sketches are near-identical copies,
@@ -695,42 +725,24 @@ Backlog candidates surfaced during rebuilds (not yet fixed):
   - Net: root README = architecture + links (DEPLOYMENT.md, attendee_experience.md,
     docs/); DEPLOYMENT.md remains the single deployment source of truth. Do this
     before packaging WS artifacts.
-- **[Workshop Studio — FUTURE attendee experience, DESIGN ONLY, not built]
-  Let attendees edit the ESP32 `.ino` and OTA-update ONLY their own device via a
-  scoped submission to the central pipeline.** The compelling stretch experience:
-  an attendee tweaks the firmware source in their own account's Cloud IDE,
-  submits it, and the central account builds + pushes it OTA to *their* labelled
-  device. Design decisions already reasoned through (do NOT re-litigate without a
-  reason):
-  - **Invert the trust direction.** Do NOT give the attendee account broad
-    cross-account read into the central account. Instead the attendee performs
-    ONE tightly-scoped action against a single central entry point; the central
-    account holds all privilege + identity (cert/thing/policy, Private CA, IoT).
-  - **Entry point = S3 for now** (decided): the attendee drops their `.ino` into a
-    central S3 bucket under a key bound to THEIR device serial (a per-attendee
-    prefix / naming convention). A central trigger (S3 event → the existing
-    firmware pipeline) builds it. CodeCommit-as-source is a STRETCH only —
-    explicitly deferred because it means reworking the pipeline's source stage;
-    not doing that.
-  - **Enforce "only their device" server-side, not by label.** The label just
-    tells the human which device is theirs; it does not stop attendee A submitting
-    for attendee B's serial. Bind the submission to the caller's identity (e.g.
-    assumed-role session tag = their serial) and have the central build REJECT any
-    other serial. Required for a real room; a controlled demo can rely on
-    convention.
-  - **Attendee never sees secrets/keys.** The build already injects the device
-    cert + private key + WiFi inside the central pipeline (see buildspec.yml); the
-    attendee only supplies the sketch. This is an argument FOR the central-pipeline
-    model — the attendee account holds no identity material.
-  - Cross-account topology caveat: a persistent "central" account that all
-    ephemeral WS attendee accounts trust is NON-standard for Workshop Studio (WS
-    vends per-event accounts). Validate how WS supports a shared central account
-    before designing around it — likely the biggest feasibility risk.
-  - Scope: this is the weight-2 slot intentionally left open in the WS content
-    nav (introduction=0, deployment=1, [2 = future attendee-submit], attendee
-    plug-in=3, attendee migrate=4). Today's WS content ships the operator track +
-    a narrative-only attendee track (plug in → migrate via dashboard button); the
-    edit-and-submit flow is future work.
+- **[DECISION Sep 29 — SINGLE ACCOUNT, no attendee/admin account split.]** The
+  workshop runs in ONE AWS account. Do NOT design or propose separate
+  attendee/central/admin accounts, cross-account roles, per-attendee firmware
+  accounts, or attendee-submitted `.ino` pipelines — that idea is ABANDONED
+  (it replaced an earlier "central account + attendee accounts" design note).
+  Instead, the attendee experience grows through the **cloud dashboard**:
+  - Add more TABS to the dashboard (`dashboard-v2/frontend`) that show attendees
+    how AWS is configured for the workshop — e.g. the two Private CAs and the
+    certs they issued, the IoT Things/policies per device, the broker
+    (NLB listeners 8883/8884, Fargate task), the firmware bucket + shared images,
+    the migration Step Function and its executions, the OTA jobs.
+  - Optionally let attendees CHANGE a few safe things from those tabs (scoped
+    read-mostly actions through the existing AppSync/Lambda path, never broad
+    console access). Design which settings are safe to expose before building.
+  - Any read access these tabs need is added to the dashboard's own backend
+    (AppSync resolvers / Lambdas) in the same account — least privilege, read
+    by default.
+  Not yet designed; future work after the current feature branch.
 - **[Repeat-deploy hardening] Remove the remaining hardcoded resource names that
   block re-deploys into a shared account.** Root cause of the entire pqc-a
   rebuild saga: nearly every resource in the templates uses a fixed name, and

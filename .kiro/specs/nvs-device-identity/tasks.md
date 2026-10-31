@@ -324,7 +324,10 @@ change the production flow until 0.1–0.3 pass on a real board.
 - [ ] 5.2 Teardown: deregister removes the Thing and registry entry; lifecycle
       clears any stale identity objects; update `teardown-workshop.sh` if needed.
 - [ ] 5.3 Update `cloudformation/DEPLOYMENT.md`, the README code walkthrough,
-      and the workshop docs (flash layout and registration flow).
+      and the workshop docs (flash layout and registration flow). Attendee pages
+      3/4/5 "Behind the scenes" still say the image is "compiled for your
+      specific device" — rewrite for the WS4 shared, pre-built images (single
+      workshop account; the multi-account wording was removed Sep 29).
 - [ ] 5.4 Update the threat model (T003, T011, T013, and the T005 note), re-run
       `add_tc_metadata.py`.
 - [ ] 5.5 Definition of done: destroy and rebuild pqc-b, then pqc-a, from

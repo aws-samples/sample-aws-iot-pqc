@@ -10,8 +10,8 @@ of the compiled firmware image and into a dedicated NVS partition, so that:
 - identity is created when a device is plugged into the Builder-Pi and
   registered, with no serial list maintained in advance.
 
-This is the foundation for the later split deployment (central account plus
-per-attendee firmware accounts). Those later steps are out of scope here.
+The workshop stays in a single AWS account (decided Sep 29; the earlier
+central/attendee account split is abandoned).
 
 ## Background
 
@@ -85,5 +85,5 @@ the Builder-Pi. The threat model records the consequences as T003, T011 and T013
 
 ## Out of scope
 
-Central/attendee account split, attendee firmware pipelines, device claiming,
+Multi-account deployment (abandoned), attendee firmware pipelines, device claiming,
 NVS or flash encryption, secure boot.
