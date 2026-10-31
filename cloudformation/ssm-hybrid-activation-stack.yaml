@@ -437,6 +437,24 @@ Resources:
                       echo "ERROR: deploy-app had failures (rc=$rc); see log above."
                       exit 1
                   fi
+
+                  # Load the new code. On an already-provisioned Pi the GUI is
+                  # running and would keep serving the OLD code from memory
+                  # until a reboot. On first provisioning the unit does not
+                  # exist yet; configure-service (next) installs and starts it.
+                  if systemctl list-unit-files pqc-builder-gui.service >/dev/null 2>&1 \
+                     && systemctl cat pqc-builder-gui >/dev/null 2>&1; then
+                      echo "Restarting pqc-builder-gui to load the new app..."
+                      systemctl restart pqc-builder-gui
+                      sleep 3
+                      if systemctl is-active --quiet pqc-builder-gui; then
+                          echo "      pqc-builder-gui active (since $(systemctl show pqc-builder-gui -p ActiveEnterTimestamp --value))"
+                      else
+                          echo "ERROR: pqc-builder-gui failed to restart:"
+                          journalctl -u pqc-builder-gui -n 30 --no-pager
+                          exit 1
+                      fi
+                  fi
                   echo "=== deploy-app OK ==="
       Tags:
         - Key: Workshop
