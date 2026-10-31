@@ -1941,6 +1941,14 @@ void otaTask(void* pvParameters) {
             continue;
         }
 
+        // Peak memory of the OTA path (download + SHA-256 + chain + signature
+        // verify), logged now because the reboot resets the high-water marks.
+        ESP_LOGI(TAG_OTA, "[diag] OTA peak: OTATask stack used %u of %u B; internal heap "
+                 "low-water %u B; PSRAM low-water %u B",
+                 (unsigned)(OTA_TASK_STACK_SIZE - uxTaskGetStackHighWaterMark(NULL) * sizeof(StackType_t)),
+                 (unsigned)OTA_TASK_STACK_SIZE,
+                 (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL),
+                 (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_SPIRAM));
         ESP_LOGI(TAG_OTA, "OTA complete! v%s written to '%s'. Rebooting in 3s...",
                  g_otaVersion, otaPartition->label);
         vTaskDelay(pdMS_TO_TICKS(3000));
