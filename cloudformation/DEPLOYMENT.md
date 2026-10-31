@@ -651,8 +651,8 @@ the SSM config and WiFi publish.
 | You changed | After `--stage-only` |
 |---|---|
 | Dashboard (`raw_device_builder/dashboard-v2/frontend/`) | Nothing — it is live. Hard-refresh the browser. |
-| Firmware sketches, `buildspec.yml`, `variants.json` | Rebuild the shared images: `./raw_device_builder/codebuild/build-shared-firmware.sh --region us-east-1 --wait` (or `--variant <key>`). Registration and migrations then use them. |
-| Firmware-builder image (`Dockerfile`, `buildspec-image.yml`, wolfSSL config, partition table) | `aws codebuild start-build --project-name pqc-workshop-build-image` — it rebuilds the image and then every shared image. |
+| Firmware sketches, `buildspec.yml`, `variants.json`, wolfSSL config (`wolfssl_user_settings_arduino.h`), partition table | Rebuild the shared images: `./raw_device_builder/codebuild/build-shared-firmware.sh --region us-east-1 --wait` (or `--variant <key>`). Registration and migrations then use them. The wolfSSL config and partition table are overlaid by `buildspec.yml` at compile time, so they need no image rebuild. A partition-table change only reaches a device by a USB reflash at the Builder-Pi, never by OTA. |
+| Firmware-builder toolchain (`Dockerfile`, `buildspec-image.yml`: ESP32 core, pinned wolfSSL / MQTT library versions, OpenSSL) | `aws codebuild start-build --project-name pqc-workshop-build-image` — it rebuilds the image and then every shared image. |
 | Builder-Pi app (`raw_device_builder/builder-pi/`) | `./raw_device_builder/setup-builder-pi-remote.sh --region us-east-1 --only deploy-app` |
 | CloudFormation, Lambda code, broker or cert-issuer image, SSM config, WiFi | Not covered — run the full `./deploy-workshop.sh us-east-1`. |
 

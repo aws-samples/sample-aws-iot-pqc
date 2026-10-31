@@ -73,6 +73,21 @@ phases:
       - SKETCH_DIR="/tmp/firmware_build/$SKETCH_NAME"
       - mkdir -p "$SKETCH_DIR"
       - echo "Downloading firmware source from S3..." && aws s3 cp "s3://$FIRMWARE_BUCKET/source/$SKETCH_NAME.ino" "$SKETCH_DIR/$SKETCH_NAME.ino"
+      # ─── Build-time overlays (firmware source, not toolchain) ───────────────
+      # The wolfSSL compile-time config and the partition table are part of the
+      # firmware source: overlay them into the library / board package from
+      # source/ before compiling, so changing them needs no image rebuild.
+      # Arduino compiles libraries in isolation (they cannot see the sketch
+      # folder), so user_settings.h must sit in wolfSSL's src/. Fail closed if a
+      # target is missing rather than silently compiling with a stale config.
+      - WOLFSSL_SRC="/root/Arduino/libraries/wolfssl/src"
+      - PARTITIONS_DIR="/root/.arduino15/packages/esp32/hardware/esp32/3.3.10/tools/partitions"
+      - '[ -d "$WOLFSSL_SRC" ] && [ -d "$PARTITIONS_DIR" ] || { echo "ERROR: overlay target missing (image toolchain changed?)"; exit 1; }'
+      - aws s3 cp "s3://$FIRMWARE_BUCKET/source/wolfssl_user_settings_arduino.h" "$WOLFSSL_SRC/user_settings.h"
+      - aws s3 cp "s3://$FIRMWARE_BUCKET/source/partitions_pqc_workshop.csv" "$PARTITIONS_DIR/pqc_workshop.csv"
+      - WOLFSSL_SETTINGS_SHA256=$(sha256sum "$WOLFSSL_SRC/user_settings.h" | cut -d' ' -f1)
+      - PARTITIONS_SHA256=$(sha256sum "$PARTITIONS_DIR/pqc_workshop.csv" | cut -d' ' -f1)
+      - echo "wolfSSL user_settings.h sha256=$WOLFSSL_SETTINGS_SHA256 partitions sha256=$PARTITIONS_SHA256"
       # Sanitize the broker endpoint: MQTT_BROKER_ENDPOINT must be a BARE host
       # (the sketch supplies the port separately via MQTT_BROKER_PORT). If the
       # value arrives with a ':port' suffix (e.g. from the GUI/registry), strip
@@ -226,6 +241,8 @@ phases:
           "buildId": "$CODEBUILD_BUILD_ID",
           "buildTime": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
           "partitionTable": "pqc_workshop",
+          "partitionsSha256": "$PARTITIONS_SHA256",
+          "wolfsslSettingsSha256": "$WOLFSSL_SETTINGS_SHA256",
           "fqbn": "$FQBN"
         }
         EOF
