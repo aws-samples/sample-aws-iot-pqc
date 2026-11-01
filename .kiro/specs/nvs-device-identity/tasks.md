@@ -270,14 +270,21 @@ change the production flow until 0.1–0.3 pass on a real board.
       - Heaviest-path low-water marks: internal heap 108.8 KB during the
         ML-DSA OTA; PSRAM ~78 KB in use during OTA, ~104 KB during the ML-DSA
         handshake (of 8 MB).
-- [ ] 3b.9 Backlog (with the modular-sketch refactor): reclaim ~50 KB internal
-      RAM — MQTTTask 32→8 KB (~24 KB), OTATask 32→16 KB (~16 KB; or create it only
-      during an OTA, ~32 KB), OTA URL buffers to on-demand PSRAM (6 KB), loopTask
-      8→4 KB via `SET_LOOP_TASK_STACK_SIZE` (4 KB), wolfSSL `NO_SESSION_CACHE`
-      (1.1 KB). Keep ~2x margin over the measured peaks (error/reconnect paths
-      were not measured); the FreeRTOS stack canary is enabled, so an overflow
-      panics with a core dump rather than corrupting memory. Not urgent: the
-      heaviest path already leaves 108 KB internal free.
+- [x] 3b.9 **Reclaim internal RAM (Nov 1).** All three sketches: MQTTTask stack
+      32→8 KB, OTATask 32→24 KB (2x the 11.5 KB peak; 16 KB would only be 1.4x),
+      loopTask 8→4 KB (`SET_LOOP_TASK_STACK_SIZE`), the three 2 KB OTA URL
+      buffers moved to PSRAM (allocated once in `setup()`, internal fallback),
+      and wolfSSL `NO_SESSION_CACHE` (the sketches never resume sessions).
+      Static RAM 55,184 → 47,968 B. Creating the OTA task only during an OTA was
+      NOT done: it frees RAM only while idle, and the low-water mark that matters
+      is during the OTA, when the task exists anyway.
+      **Hardware-verified on pqc-a (FC22E0):** USB flash of the new classical
+      image, then OTA 1→2→3→4→5 (every verify path: unsigned→ECDSA, ECDSA,
+      ML-DSA-signed), plus an old-image device (C69DE0, pre-change v4) OTA-ing
+      onto the new v5. Each OTA ~99 s, no failures. Measured: MQTTTask 3.8 of
+      8 KB, loopTask ~2 of 4 KB, OTATask 11.7 of 24 KB on the ML-DSA-signed OTA.
+      **Heaviest-path internal heap low-water 108.8 KB → 155.7 KB (+47 KB)**;
+      idle internal free ~215 KB.
 
 ## Workstream 4 — Shared images and migration
 

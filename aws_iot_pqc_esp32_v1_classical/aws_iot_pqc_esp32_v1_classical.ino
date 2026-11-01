@@ -91,15 +91,18 @@ static const char* TAG_OTA     = "ota";
 
 // ─── FreeRTOS Task Configuration ────────────────────────────────────────────
 #define WIFI_TASK_STACK_SIZE    4096
-#define MQTT_TASK_STACK_SIZE    32768   // TLS handshake needs significant stack
+#define MQTT_TASK_STACK_SIZE    8192    // measured peak 3.8 KB (classical + ML-DSA handshakes; wolfSSL buffers are on the heap)
 #define BLINK_TASK_STACK_SIZE   2048
-#define OTA_TASK_STACK_SIZE     32768   // OTA download over TLS needs large stack
+#define OTA_TASK_STACK_SIZE     24576   // measured peak 11.5 KB (ML-DSA-signed OTA verify)
+#define LOOP_TASK_STACK_SIZE    4096    // Arduino loop(); measured peak ~2 KB (core default 8 KB)
+#define OTA_URL_MAX             2048    // presigned S3 URL is ~1500 bytes; 1024 truncated it
 #define WIFI_TASK_PRIORITY      1
 #define MQTT_TASK_PRIORITY      1
 #define BLINK_TASK_PRIORITY     0       // Lowest priority — just visual indicator
 #define OTA_TASK_PRIORITY       2       // Above MQTT so download runs promptly
 #define WIFI_TASK_CORE          0       // Run WiFi on core 0
 #define MQTT_TASK_CORE          1       // Run MQTT on core 1 (if available)
+SET_LOOP_TASK_STACK_SIZE(LOOP_TASK_STACK_SIZE);  // Arduino-ESP32 loopTask stack
 
 // ─── Firmware Version ───────────────────────────────────────────────────────
 // Single canonical version per variant. CodeBuild injects FIRMWARE_VERSION into
@@ -226,7 +229,7 @@ static volatile bool g_otaPending = false;
 // run by mqttTask (which owns the MQTT client) — see runDiagnostics().
 static volatile bool    g_diagPending = false;
 static volatile uint8_t g_diagLevel   = 0;   // 0 summary, 1 + region info, 2 + block dump
-static char g_otaUrl[2048] = {0};   // presigned S3 URL is ~1500 bytes; 1024 truncated it
+static char* g_otaUrl = NULL;            // OTA_URL_MAX bytes, allocated in setup() (PSRAM)
 static char g_otaVersion[32] = {0};
 static int  g_otaSize = 0;
 static SemaphoreHandle_t g_otaSemaphore = NULL;
@@ -236,8 +239,8 @@ static SemaphoreHandle_t g_otaSemaphore = NULL;
 // an unsigned push (classical 1.0.0 / legacy command). The otaTask fetches the
 // detached signature + signer leaf from these presigned URLs and verifies the
 // freshly-written image before switching the boot partition.
-static char g_otaSigUrl[2048] = {0};         // presigned firmware.bin.sig
-static char g_otaSignerCertUrl[2048] = {0};  // presigned signer.crt (leaf)
+static char* g_otaSigUrl = NULL;         // presigned firmware.bin.sig (OTA_URL_MAX, PSRAM)
+static char* g_otaSignerCertUrl = NULL;  // presigned signer.crt leaf (OTA_URL_MAX, PSRAM)
 static char g_otaSigAlg[16] = {0};           // "ecdsa-p256" | "mldsa44" | ""
 static char g_otaSha256[65] = {0};           // expected image sha256 (hex), enforced before boot
 
@@ -1184,7 +1187,7 @@ void mqttMessageHandler(String &topic, String &payload) {
         // colon and any spaces, then reads between the opening and closing quotes.
         String url = jsonGetString(payload, "url");
         if (url.length() > 0) {
-            url.toCharArray(g_otaUrl, sizeof(g_otaUrl));
+            url.toCharArray(g_otaUrl, OTA_URL_MAX);
 
             String ver = jsonGetString(payload, "version");
             if (ver.length() > 0) {
@@ -1208,9 +1211,9 @@ void mqttMessageHandler(String &topic, String &payload) {
             String sigAlg = jsonGetString(payload, "sigAlg");
             sigAlg.toCharArray(g_otaSigAlg, sizeof(g_otaSigAlg));
             String sigUrl = jsonGetString(payload, "sigUrl");
-            sigUrl.toCharArray(g_otaSigUrl, sizeof(g_otaSigUrl));
+            sigUrl.toCharArray(g_otaSigUrl, OTA_URL_MAX);
             String signerCertUrl = jsonGetString(payload, "signerCertUrl");
-            signerCertUrl.toCharArray(g_otaSignerCertUrl, sizeof(g_otaSignerCertUrl));
+            signerCertUrl.toCharArray(g_otaSignerCertUrl, OTA_URL_MAX);
 
             g_otaPending = true;
             if (g_otaSemaphore) xSemaphoreGive(g_otaSemaphore);
@@ -2171,6 +2174,13 @@ void blinkTask(void* pvParameters) {
     }
 }
 
+// Allocate one zeroed OTA_URL_MAX buffer, preferring PSRAM.
+static char* allocOtaBuffer() {
+    char* p = (char*)heap_caps_calloc(1, OTA_URL_MAX, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!p) p = (char*)calloc(1, OTA_URL_MAX);
+    return p;
+}
+
 void setup() {
     // Start blink task immediately — visual indicator the device is alive
     pinMode(LED_PIN, OUTPUT);
@@ -2293,6 +2303,17 @@ void setup() {
     }
     ESP_LOGD(TAG_MAIN, "MQTT task created (stack=%d, priority=%d, core=%d)",
              MQTT_TASK_STACK_SIZE, MQTT_TASK_PRIORITY, mqttCore);
+
+    // OTA URL buffers live in PSRAM (internal SRAM is the scarce pool; only the
+    // MQTT handler and otaTask touch them). Falls back to internal RAM on a
+    // board without PSRAM. Allocated once, before the tasks start.
+    g_otaUrl           = allocOtaBuffer();
+    g_otaSigUrl        = allocOtaBuffer();
+    g_otaSignerCertUrl = allocOtaBuffer();
+    if (!g_otaUrl || !g_otaSigUrl || !g_otaSignerCertUrl) {
+        ESP_LOGE(TAG_MAIN, "FATAL: Failed to allocate OTA URL buffers");
+        while (1) { delay(1000); }
+    }
 
     // Create OTA download task (waits on semaphore for ota-update commands)
     g_otaSemaphore = xSemaphoreCreateBinary();

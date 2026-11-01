@@ -199,6 +199,14 @@ Backlog candidates surfaced during rebuilds (not yet fixed):
   hybrid group. Needs a shared-image rebuild (full deploy). Risk is low (image is
   not secret, integrity checked separately) but it is an embarrassing gap in a
   PQC workshop, hence top priority.
+- **[Builder-Pi provisioning — trim the toolchain step] The Pi no longer
+  compiles firmware (since WS4 it only flashes shared images + the identity
+  partition), but the `install-toolchain` SSM document still installs the
+  ESP32 core (~5 GB, most of the 8 min 40 s toolchain step), wolfSSL, MQTT and
+  PubSubClient, and `deploy-app` still copies the wolfSSL header and partition
+  table into them. Check what the Pi actually needs (`arduino-cli board list`
+  for port detection, esptool for flashing — esptool can come from pip) and
+  drop the rest. Likely cuts several minutes from every Pi provisioning.
 - **[Firmware maintainability — modular sketches, own branch AFTER
   nvs-device-identity is done] Split the three ~2,100-line sketches into shared
   modules.** Today the classical / PQC / ML-DSA sketches are near-identical copies,
