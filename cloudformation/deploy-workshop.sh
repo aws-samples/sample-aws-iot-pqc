@@ -364,15 +364,23 @@ aws s3 cp "$PROJECT_ROOT/raw_device_builder/codebuild/buildspec-image.yml" \
 # Per-device firmware build spec (FirmwareBuildProject BuildSpec: buildspec.yml).
 aws s3 cp "$PROJECT_ROOT/raw_device_builder/codebuild/buildspec.yml" \
     "s3://${FIRMWARE_BUCKET}/source/buildspec.yml" >/dev/null
-# The two sketch variants the per-device build downloads from source/ by name:
-#   classical -> aws_iot_pqc_esp32_v1_classical.ino ; pqc -> aws_iot_pqc_esp32.ino
-aws s3 cp "$PROJECT_ROOT/aws_iot_pqc_esp32_v1_classical/aws_iot_pqc_esp32_v1_classical.ino" \
-    "s3://${FIRMWARE_BUCKET}/source/aws_iot_pqc_esp32_v1_classical.ino" >/dev/null
-aws s3 cp "$PROJECT_ROOT/aws_iot_pqc_esp32/aws_iot_pqc_esp32.ino" \
-    "s3://${FIRMWARE_BUCKET}/source/aws_iot_pqc_esp32.ino" >/dev/null
-# pqc-mldsa variant (Step 2): ML-KEM key exchange + ML-DSA-44 device cert, 8884.
-aws s3 cp "$PROJECT_ROOT/aws_iot_pqc_esp32_v3_mldsa/aws_iot_pqc_esp32_v3_mldsa.ino" \
-    "s3://${FIRMWARE_BUCKET}/source/aws_iot_pqc_esp32_v3_mldsa.ino" >/dev/null
+# The firmware sketch: ONE folder (aws_iot_pqc_esp32.ino + .h/.cpp modules)
+# builds every variant; buildspec.yml downloads the whole folder and selects the
+# variant through the generated secrets.h. Sync with --delete so a removed or
+# renamed module cannot linger and be compiled from a stale copy. Only source
+# files are staged: never a local secrets.h, nor the reference copy of the
+# wolfSSL settings (the real one is staged separately below).
+SKETCH_NAME="aws_iot_pqc_esp32"
+SKETCH_SRC="$PROJECT_ROOT/$SKETCH_NAME"
+aws s3 sync "$SKETCH_SRC/" "s3://${FIRMWARE_BUCKET}/source/firmware/$SKETCH_NAME/" --delete \
+    --exclude '*' --include '*.ino' --include '*.h' --include '*.cpp' \
+    --exclude 'secrets.h' --exclude 'wolfssl_user_settings.h' >/dev/null
+# The pre-modular layout staged three single-file sketches at the top of
+# source/. Nothing reads them any more; remove them so nobody mistakes them
+# for the current firmware (the bucket is versioned, so this is recoverable).
+for _legacy in aws_iot_pqc_esp32_v1_classical.ino aws_iot_pqc_esp32.ino aws_iot_pqc_esp32_v3_mldsa.ino; do
+    aws s3 rm "s3://${FIRMWARE_BUCKET}/source/$_legacy" >/dev/null 2>&1 || true
+done
 # The two extra firmware-image context files live in known repo locations. Use a
 # plain function (no associative array, whose dotted keys break under zsh) with
 # a fallback repo search that only skips the arduino-cli/data/ board cache.
@@ -406,9 +414,6 @@ REQUIRED_FW_SOURCE=(
     buildspec.yml                          # per-device firmware build spec
     buildspec-image.yml                    # one-time builder-image spec
     Dockerfile                             # builder image
-    aws_iot_pqc_esp32_v1_classical.ino     # classical sketch variant
-    aws_iot_pqc_esp32.ino                  # pqc sketch variant
-    aws_iot_pqc_esp32_v3_mldsa.ino         # pqc-mldsa sketch variant (Step 2)
     wolfssl_user_settings_arduino.h        # wolfSSL PQC config
     partitions_pqc_workshop.csv            # partition table
     build-shared-firmware.sh               # builds every variant into shared/<version>/
@@ -421,12 +426,29 @@ for obj in "${REQUIRED_FW_SOURCE[@]}"; do
         _missing_fw=1
     fi
 done
+# Every sketch module in the repo must be in source/firmware/<sketch>/ (a
+# missing .cpp is a link error deep in CodeBuild otherwise).
+_sketch_files=0
+for f in "$SKETCH_SRC"/*.ino "$SKETCH_SRC"/*.h "$SKETCH_SRC"/*.cpp; do
+    [[ -f "$f" ]] || continue
+    b="$(basename "$f")"
+    [[ "$b" == secrets.h || "$b" == wolfssl_user_settings.h ]] && continue
+    _sketch_files=$((_sketch_files + 1))
+    if ! aws s3api head-object --bucket "$FIRMWARE_BUCKET" --key "source/firmware/$SKETCH_NAME/$b" >/dev/null 2>&1; then
+        echo "          ! MISSING: s3://${FIRMWARE_BUCKET}/source/firmware/$SKETCH_NAME/$b"
+        _missing_fw=1
+    fi
+done
+if [[ "$_sketch_files" -eq 0 ]]; then
+    echo "          ! MISSING: no sketch files found in $SKETCH_SRC"
+    _missing_fw=1
+fi
 if [[ "$_missing_fw" -ne 0 ]]; then
     echo "[ERROR] Firmware source/ prefix is incomplete (see MISSING above)."
     echo "        Device firmware builds WILL fail. Aborting so this is not shipped."
     exit 1
 fi
-echo "          firmware source/ complete (${#REQUIRED_FW_SOURCE[@]} files)"
+echo "          firmware source/ complete (${#REQUIRED_FW_SOURCE[@]} files + ${_sketch_files} sketch files)"
 
 # ─── Stage the builder-Pi app + assets for the SSM deploy-app document ────────
 # The builder-Pi is no longer provisioned from a self-contained bundle; the SSM

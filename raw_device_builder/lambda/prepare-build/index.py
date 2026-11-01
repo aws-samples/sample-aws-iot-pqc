@@ -46,7 +46,7 @@ def _load_variants():
 # Picker variant key → {build_variant, version, signer_era, sig_alg}. The version
 # names the shared S3 dir and the OTA job, so each variant has its own version
 # namespace and a device can roll back one step. build_variant selects the
-# sketch/port in buildspec.yml: "signer"/"verified" build the same pqc-mldsa
+# FIRMWARE_VARIANT define/port in buildspec.yml: "signer"/"verified" build the same pqc-mldsa
 # firmware as 3.0.0 and differ only in their OTA signer (ML-DSA-44).
 VARIANT_CONFIG = _load_variants()
 DEFAULT_VARIANT = "pqc"  # backward-compatible with the original migrate-to-PQC flow

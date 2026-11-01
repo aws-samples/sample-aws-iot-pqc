@@ -91,7 +91,7 @@ def _append_log_file(name: str, line: str):
 def classify_boot_line(line: str) -> Optional[str]:
     """Classify one line of firmware serial output during boot verification.
 
-    Matches the exact success/failure lines the three sketches log (ESP_LOG,
+    Matches the exact success/failure lines the firmware logs (ESP_LOG,
     lowercase tags such as "[wifi]" / "[mqtt]"). Returns 'wifi', 'mqtt',
     'identity' (fail-closed: no valid NVS identity), 'panic', or None. Retry
     lines such as "Connecting to SSID" / "Connecting to PQC Mosquitto broker"

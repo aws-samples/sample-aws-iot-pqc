@@ -637,7 +637,7 @@ prompt in automation). It rejects `--vpc-id`, `--subnets` and `--wifi-*`.
 
 1. Re-stages everything the full deploy uploads to S3: the broker and
    cert-issuer build contexts, the firmware `source/` prefix (both buildspecs,
-   the three sketches, the wolfSSL config, the partition table, with the same
+   the firmware sketch folder, the wolfSSL config, the partition table, with the same
    completeness check), and the Builder-Pi `app.tgz` and assets.
 2. Rebuilds the dashboard in CodeBuild, syncs it and invalidates CloudFront.
 3. Prints, for each kind of change, what to run next.

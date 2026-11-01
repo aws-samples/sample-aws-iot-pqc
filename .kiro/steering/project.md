@@ -207,29 +207,34 @@ Backlog candidates surfaced during rebuilds (not yet fixed):
   table into them. Check what the Pi actually needs (`arduino-cli board list`
   for port detection, esptool for flashing — esptool can come from pip) and
   drop the rest. Likely cuts several minutes from every Pi provisioning.
-- **[Firmware maintainability — modular sketches, own branch AFTER
-  nvs-device-identity is done] Split the three ~2,100-line sketches into shared
-  modules.** Today the classical / PQC / ML-DSA sketches are near-identical copies,
-  so every fix is made three times (WS3 had to patch all three by script). Move
-  the shared code into a library all three include — `DeviceIdentity` (NVS
-  loader), `WifiManager`, `PqcTlsClient` (existing `WolfSSLClient` + wolfSSL ctx),
-  `MqttManager`, `Telemetry`, `OtaUpdater` (download + SHA-256 + chain + ECDSA /
-  ML-DSA verify), small `Backoff`/`Log`/`Led` utils — leaving a per-variant
-  `variant_config.h` (version, labels, key share, `ID_TLS_*`, port) and `setup()`.
-  Option to decide: one sketch with the variant chosen by the build's
-  `FIRMWARE_VARIANT` flag (aligns with WS4 shared images; workshop §3.3.1 shows
-  the classical-vs-PQC diff, so keep it readable). Real `.h/.cpp` files also
-  avoid the `.ino` prototype-hoisting quirk (the WS3 `IdBlob` compile error).
-  Memory wins it enables (splitting alone changes nothing): create the 32 KB OTA
-  task only while an OTA runs (frees ~32 KB internal SRAM almost always — task
-  stacks cannot live in PSRAM); right-size stacks from the logged high-water
-  marks; allocate the ~6–7 KB of OTA URL/sig buffers on demand in PSRAM. Measure
-  first (stack HWM + the build `.map`) before claiming savings. Also enables
-  host unit tests for backoff/topics/payloads. Costs: the steering's "single
-  `.ino`" convention must change (Arduino Cloud IDE supports tabs + uploaded
-  libraries); buildspec + deploy staging fetch a single `source/<sketch>.ino` and
-  must stage a folder/library; full hardware retest of classical → ML-KEM →
-  ML-DSA → ML-DSA-signed OTA, including OTA from the current firmware.
+- **[DONE Nov 1 — branch feature/modular-firmware] Modular firmware: one
+  sketch, `.h/.cpp` modules, variant chosen at build time.** The three
+  ~2,400-line near-identical sketches are replaced by ONE sketch folder
+  `aws_iot_pqc_esp32/` (a slim `.ino` + classes `DeviceIdentity`, `WifiManager`,
+  `WolfSSLClient` (pqc_tls_client), `MqttManager`, `OtaUpdater`, `Diagnostics`,
+  `StatusLed`, plus `json_util`, `app_config.h`, `variant_config.h`). The build
+  selects the variant with `#define FIRMWARE_VARIANT FW_VARIANT_{CLASSICAL,PQC,
+  PQC_MLDSA}` in the generated `secrets.h`; `variant_config.h` holds every
+  difference (key share via `VARIANT_PQC_KEX`, `ID_TLS_*`, cert alg, banner,
+  blink rate) and `#error`s if the variant is unset/unknown. buildspec downloads
+  the whole folder from `source/firmware/aws_iot_pqc_esp32/`; deploy-workshop.sh
+  stages it with `aws s3 sync --delete` (only *.ino/*.h/*.cpp, never secrets.h)
+  and removes the legacy `source/*.ino` keys. Function bodies were moved
+  verbatim (only global→accessor renames), so log strings — which the Pi boot
+  check matches — are unchanged. The `migrate-*` partition-swap commands are
+  REMOVED (they keyed on the image project name = sketch name, now identical
+  for every variant); the firmware logs a warning and ignores them. Hardware-
+  verified on pqc-a: USB flash + OTA 1→2→3→4→5 on modular images, old
+  monolithic images OTA onto modular ones, diag/LED/refused-swap commands.
+  Still open: host unit tests for backoff/topics/payloads (now possible).
+- **[Cleanup] Retire the pre-Builder-Pi local flash scripts in `esp32-flash/`.**
+  `bundle-for-esp32.sh`, `check_esp32_bundle.sh`, `flash-dual-boot.sh` and
+  `generate-secrets.sh` (+ its README sections) still assume the old per-sketch
+  folders, secrets compiled into `secrets.h`, and the retired `migrate-*`
+  partition swap; nothing in the deploy or the workshop references them. Delete
+  them (keep `partitions_pqc_workshop.csv/.bin`, `ota_data_initial.bin`, the
+  attendee serial-monitor doc and `spikes/`), or rewrite one script as a "local
+  build of the modular sketch" helper if a non-Pi path is wanted.
 - **[MEMORY — explore only IF we hit severe RAM/heap constraints] Keep the
   growing cert/signature material in memory-mapped FLASH, not SRAM.** As the
   firmware now carries more X.509 material (device cert + CA + the baked-in
@@ -544,7 +549,7 @@ Backlog candidates surfaced during rebuilds (not yet fixed):
     firmware re-bake entirely). Document it in the deploy runbook.
   - Bonus hardening: once SANs exist, tighten the firmware to actually ENFORCE
     hostname/SAN matching (wolfSSL domain-name check / `DOMAIN_NAME_CHECK`) — today
-    verification is chain-only (`WOLFSSL_VERIFY_PEER` in aws_iot_pqc_esp32.ino
+    verification is chain-only (`WOLFSSL_VERIFY_PEER` in pqc_tls_client.cpp
     ~line 595, no explicit domain-name check), so a hostname mismatch is NOT
     currently caught. For a PQC security workshop, enforcing SAN match is the
     correct end state.
@@ -947,6 +952,20 @@ Backlog candidates surfaced during rebuilds (not yet fixed):
   orchestrator, not in an on-Pi `setup-all.sh` — the on-Pi provisioning was moved
   to SSM documents; the outcome is the same: no manual `nmcli`.)
 - **[BLOCKER for pqc-b push] Dashboard LED on/off button not working.**
+  ROOT CAUSE FOUND (Nov 1, code reading, not yet fixed): the frontend's LED
+  toggle calls the AppSync `sendCommand` mutation, but dashboard-stack.yaml
+  attaches NO resolver to `sendCommand` (resolvers exist only for listDevices,
+  getDevice, updateDevice, migrateFirmware, getDeviceLog, getBrokerLog), so the
+  call resolves nowhere. Second bug behind it: the command-publisher Lambda
+  ignores action/topicSuffix and always publishes `{"action":"migrate-pqc"}` to
+  `cmd/<thing>/ota`, and its IAM only allows `cmd/*/ota`. Fix = add a
+  sendCommand resolver on CommandPublisherSource AND rewrite command-publisher
+  to publish `{"action": <action>}` to `cmd/<thing>/<topicSuffix>` (allowlist
+  actions led-on/led-off/diag; IAM `cmd/*/control` + `cmd/*/diag`). The
+  firmware side is verified working: publishing `{"action":"led-off"}` to
+  `cmd/esp32-<serial>/control` directly blinks off/on (pqc-a, FC22E0). The
+  migrate-* swap is now refused by the firmware, so the old Lambda behaviour is
+  harmless but useless.
   Re-confirmed on pqc-a (Sep 25) during the full migration test: the LED on/off
   control on the device card does not actuate the device. On the device
   dashboard, the LED (command) button does not actuate the device. Likely the
@@ -1298,7 +1317,7 @@ This is an Arduino sample project demonstrating how to connect an ESP32 microcon
 
 ## Conventions
 
-- Single `.ino` sketch file for Arduino Cloud IDE compatibility
+- One sketch folder (`aws_iot_pqc_esp32/`): a slim `.ino` plus `.h/.cpp` module classes (Arduino IDE / Cloud IDE tabs); the variant is chosen by `FIRMWARE_VARIANT` in `secrets.h`, and everything variant-specific lives in `variant_config.h`
 - Configuration and credentials isolated in `secrets.h` (never commit real values)
 - wolfSSL compile-time configuration documented in `wolfssl_user_settings.h` (reference only, not included directly)
 - FreeRTOS tasks use `xTaskCreatePinnedToCore` with explicit stack sizes

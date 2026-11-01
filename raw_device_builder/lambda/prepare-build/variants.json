@@ -1,5 +1,5 @@
 {
-  "_comment": "Firmware variants: the single source of truth for what each dashboard/picker variant builds and how it is signed. Read by prepare-build (packaged with the Lambda) and by raw_device_builder/codebuild/build-shared-firmware.sh (staged to the firmware bucket's source/), which builds every variant once per deployment into shared/<version>/. build_variant selects the sketch/port in buildspec.yml; signer_era null = unsigned (classical 1.0.0 is USB/trusted-flash only, never OTA).",
+  "_comment": "Firmware variants: the single source of truth for what each dashboard/picker variant builds and how it is signed. Read by prepare-build (packaged with the Lambda) and by raw_device_builder/codebuild/build-shared-firmware.sh (staged to the firmware bucket's source/), which builds every variant once per deployment into shared/<version>/. build_variant selects the FIRMWARE_VARIANT define (one sketch builds every variant) and the broker port in buildspec.yml; signer_era null = unsigned (classical 1.0.0 is USB/trusted-flash only, never OTA).",
   "variants": {
     "classical": {"build_variant": "classical", "version": "1.0.0-classical", "signer_era": null, "sig_alg": null},
     "pqc": {"build_variant": "pqc", "version": "2.0.0-pqc", "signer_era": "classical", "sig_alg": "ecdsa-p256"},
