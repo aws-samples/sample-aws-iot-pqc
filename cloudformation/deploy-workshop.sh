@@ -82,9 +82,11 @@ PROFILE=""
 #   3. Interactive prompt (only when run from a terminal): the SSID prompt
 #      defaults to 'reinvent-pqc-iot-wifi'; the password is read hidden and is
 #      required (re-prompts until non-empty). No password default ever exists.
-# Non-interactive with nothing supplied: SSID falls back to the workshop default
-# (not a secret), the password falls back to the harmless 'changeme' placeholder
-# (devices won't join a real network, but the deploy still succeeds + WARNs).
+# Non-interactive with nothing supplied: a REDEPLOY keeps the values already in
+# SSM (registered devices hold that PSK, and the Pi AP is rebuilt from it). Only
+# a first deploy with nothing in SSM falls back to the workshop SSID default (not
+# a secret) and the harmless 'changeme' password placeholder (devices won't join
+# a real network, but the deploy still succeeds + WARNs).
 # The resolved values are threaded to the master stack as parameter overrides
 # and published to SSM (password as a SecureString) as the single source of
 # truth the registrar/migration Lambdas and the builder-Pi AP setup consume.
@@ -130,6 +132,7 @@ elif [[ -t 0 ]]; then
     WORKSHOP_WIFI_SSID="${_ssid_in:-$WORKSHOP_WIFI_SSID_DEFAULT}"
 else
     WORKSHOP_WIFI_SSID="$WORKSHOP_WIFI_SSID_DEFAULT"
+    WIFI_SSID_DEFAULTED="true"   # not supplied: keep an existing SSM value (see publish)
 fi
 
 # Resolve WiFi password: CLI flag -> env var -> interactive hidden prompt
@@ -148,6 +151,7 @@ elif [[ -t 0 ]]; then
     done
 else
     WORKSHOP_WIFI_PASSWORD="changeme"
+    WIFI_PASSWORD_DEFAULTED="true"   # not supplied: keep an existing SSM value (see publish)
 fi
 
 # VPC mode: if neither --vpc-id nor --subnets is given, the stack creates its
@@ -598,6 +602,30 @@ put_param /pqc-workshop/broker/endpoint           "$(get_out BrokerEndpoint)"
 # writes it into each device's "certs" NVS partition at registration.
 # SSID is a plain String; the password is a SecureString (put_param hardcodes
 # --type String, so publish the password with a dedicated call).
+# A redeploy run without the WiFi flags/env (non-interactive) must NOT replace a
+# real value already in SSM with the default/placeholder: the registered
+# devices hold the existing PSK in their identity partition, and the Builder-Pi
+# AP is rebuilt from SSM, so overwriting it locks every device off the network
+# (seen on pqc-a: 4WAY_HANDSHAKE_TIMEOUT on all devices after a redeploy).
+_ssm_value() {
+    aws ssm get-parameter --name "$1" --with-decryption --query Parameter.Value \
+        --output text --region "$AWS_REGION" 2>/dev/null || true
+}
+if [[ "${WIFI_SSID_DEFAULTED:-}" == "true" ]]; then
+    _existing=$(_ssm_value /pqc-workshop/wifi/ssid)
+    if [[ -n "$_existing" && "$_existing" != "None" && "$_existing" != "changeme" ]]; then
+        WORKSHOP_WIFI_SSID="$_existing"
+        echo "    WiFi SSID not supplied: keeping the existing /pqc-workshop/wifi/ssid"
+    fi
+fi
+if [[ "${WIFI_PASSWORD_DEFAULTED:-}" == "true" ]]; then
+    _existing=$(_ssm_value /pqc-workshop/wifi/password)
+    if [[ -n "$_existing" && "$_existing" != "None" && "$_existing" != "changeme" ]]; then
+        WORKSHOP_WIFI_PASSWORD="$_existing"
+        echo "    WiFi password not supplied: keeping the existing /pqc-workshop/wifi/password"
+    fi
+fi
+unset _existing
 put_param /pqc-workshop/wifi/ssid "$WORKSHOP_WIFI_SSID"
 aws ssm put-parameter --name /pqc-workshop/wifi/password --type SecureString \
     --overwrite --value "$WORKSHOP_WIFI_PASSWORD" --region "$AWS_REGION" >/dev/null \
