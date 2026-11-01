@@ -199,14 +199,25 @@ Backlog candidates surfaced during rebuilds (not yet fixed):
   hybrid group. Needs a shared-image rebuild (full deploy). Risk is low (image is
   not secret, integrity checked separately) but it is an embarrassing gap in a
   PQC workshop, hence top priority.
-- **[Builder-Pi provisioning — trim the toolchain step] The Pi no longer
-  compiles firmware (since WS4 it only flashes shared images + the identity
-  partition), but the `install-toolchain` SSM document still installs the
-  ESP32 core (~5 GB, most of the 8 min 40 s toolchain step), wolfSSL, MQTT and
-  PubSubClient, and `deploy-app` still copies the wolfSSL header and partition
-  table into them. Check what the Pi actually needs (`arduino-cli board list`
-  for port detection, esptool for flashing — esptool can come from pip) and
-  drop the rest. Likely cuts several minutes from every Pi provisioning.
+- **[DONE Nov 1 — branch feature/modular-firmware] Builder-Pi provisioning
+  no longer installs a compile toolchain.** The Pi only lists USB ports, reads
+  the chip MAC and flashes prebuilt images, so: InstallToolchainDocument (and
+  its stack outputs) is DELETED — no arduino-cli, ESP32 core (~7 GB on the SD
+  card), wolfSSL/PubSubClient libraries, arduino-cli.yaml or ARDUINO_CLI_CONFIG;
+  deploy-app no longer copies the wolfSSL header / partition CSV into a core and
+  REMOVES the old toolchain dirs + /usr/local/bin/arduino-cli from an already
+  provisioned Pi; deploy-workshop.sh no longer stages builder-pi/ copies of
+  those two files (and deletes the stale ones). InstallAwscliDocument became
+  "install-base" (awscli, python3, pip, curl, ca-certificates, udev) — logical
+  id/output name kept. The chain is now 4 steps: install-base → deploy-app →
+  configure-service → configure-wifi-ap (`--only install-base`, alias awscli).
+  Port detection moved from `arduino-cli board list` to pyserial
+  `list_ports.comports()` filtered on the ESP32 USB VIDs (303a/10c4/1a86/0403),
+  ttyACM/ttyUSB glob fallback. Found while doing it: the arduino-cli path had
+  been failing on EVERY scan (35,668 times on pqc-a — arduino-cli 1.x returns
+  `{"detected_ports": [...]}`, which the code iterated as a list), so the glob
+  fallback was what actually worked. `esptool.py` (deprecated in esptool v5)
+  replaced by `esptool`. Measure the new provisioning time on the WS5.5 reimage.
 - **[DONE Nov 1 — branch feature/modular-firmware] Modular firmware: one
   sketch, `.h/.cpp` modules, variant chosen at build time.** The three
   ~2,400-line near-identical sketches are replaced by ONE sketch folder
@@ -1238,9 +1249,8 @@ Backlog candidates surfaced during rebuilds (not yet fixed):
   the ONLY per-event config is the built-in WiFi credentials.** Today standing up
   a builder-Pi is a multi-step live-provisioning dance: `bundle-for-builder-pi.sh`
   mints an SSM activation + zip, the operator unzips and runs `setup-ssm.sh` on
-  the Pi, then `setup-builder-pi-remote.sh` runs 5 SSM documents (install-awscli,
-  install-toolchain [the slow ~5GB arduino-cli + ESP32 core], deploy-app,
-  configure-service, configure-wifi-ap) against the running Pi. That is slow,
+  the Pi, then `setup-builder-pi-remote.sh` runs 4 SSM documents (install-base,
+  deploy-app, configure-service, configure-wifi-ap) against the running Pi. That is slow,
   online-dependent, and a known source of flakiness (the `set -e`/`$HOME`-unset
   abort that drove the "bundle = SSM bootstrap only" refactor; the AP PSK-typo
   4-way-handshake timeout that drove the SSM-document AP automation). A baked
@@ -1255,13 +1265,14 @@ Backlog candidates surfaced during rebuilds (not yet fixed):
   build, then publishes the artifact. Use it as the reference for a
   `pqc-workshop-builder-pi-image` pipeline in THIS repo.
 
-  What the baked image must contain (i.e. everything the 5 SSM documents install
+  What the baked image must contain (i.e. everything the 4 SSM documents install
   today — audit `setup-builder-pi-remote.sh` + the `*Document` resources in
   `cloudformation/ssm-hybrid-activation-stack.yaml` for the authoritative list):
   - AWS CLI + the SSM agent (still register as a managed instance for OTA/logs)
-  - arduino-cli + the pinned ESP32 Arduino core + the wolfSSL PQC user_settings
-    header + `partitions_pqc_workshop.csv` (the slow install-toolchain step —
-    baking this in is the single biggest time saver)
+  - python3 + pip and the GUI's pip deps (flask, boto3, pyserial, requests,
+    esptool). NOTE (Nov 1): the Pi no longer needs arduino-cli / the ESP32 core
+    / wolfSSL / the partition CSV — that slow step was deleted, which removes
+    most of the time a baked image would have saved; re-weigh this item.
   - the builder-Pi Flask GUI app (`raw_device_builder/builder-pi/`) + its
     `pqc-builder-gui.service` systemd unit, enabled
   - the CloudWatch agent config

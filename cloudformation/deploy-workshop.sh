@@ -455,21 +455,19 @@ echo "          firmware source/ complete (${#REQUIRED_FW_SOURCE[@]} files + ${_
 # documents (pqc-workshop-deploy-app) fetch the app + assets from the firmware
 # bucket instead of the bundle shipping them. So stage them here, next to the
 # firmware source, under the builder-pi/ prefix:
-#   - app.tgz                          the Flask GUI + workshop-builder CLI tree
-#   - partitions_pqc_workshop.csv      custom ESP32 partition table
-#   - wolfssl_user_settings_arduino.h  wolfSSL PQC config applied to the lib
-# The deploy-app document unpacks app.tgz into /opt/pqc-workshop/builder-app and
-# applies the two asset files. config.json is written by the document from SSM
-# (not from the tarball), so the tarball's config.json is just a harmless
-# template. setup-builder-pi.sh is deliberately excluded — it is retired.
-echo "        - staging builder-Pi app + assets -> s3://${FIRMWARE_BUCKET}/builder-pi/"
+#   - app.tgz    the Flask GUI + workshop-builder CLI tree
+# The deploy-app document unpacks app.tgz into /opt/pqc-workshop/builder-app.
+# config.json is written by the document from SSM (not from the tarball), so the
+# tarball's config.json is just a harmless template. The Pi never compiles
+# firmware, so it needs no wolfSSL config or partition CSV (those are firmware
+# SOURCE, staged to source/ above for CodeBuild).
+echo "        - staging builder-Pi app -> s3://${FIRMWARE_BUCKET}/builder-pi/"
 BUILDER_PI_SRC="$PROJECT_ROOT/raw_device_builder/builder-pi"
 APP_TGZ="$(mktemp -t builder-pi-app.XXXX.tgz)"
-# Pack the app tree, excluding: the retired on-Pi setup script, python caches,
-# and the tests dir (not needed on the Pi). Paths inside the tarball are
-# relative to builder-pi/ so they unpack directly into $APP_DIR.
+# Pack the app tree, excluding python caches and the tests dir (not needed on
+# the Pi). Paths inside the tarball are relative to builder-pi/ so they unpack
+# directly into $APP_DIR.
 tar -czf "$APP_TGZ" -C "$BUILDER_PI_SRC" \
-    --exclude 'setup-builder-pi.sh' \
     --exclude '__pycache__' \
     --exclude '*.pyc' \
     --exclude 'tests' \
@@ -477,21 +475,11 @@ tar -czf "$APP_TGZ" -C "$BUILDER_PI_SRC" \
 aws s3 cp "$APP_TGZ" "s3://${FIRMWARE_BUCKET}/builder-pi/app.tgz" >/dev/null
 rm -f "$APP_TGZ"
 
-# Partition table (canonical copy under esp32-flash/) and the wolfSSL PQC header
-# (with the firmware-builder codebuild sources). Reuse stage_extra's fallback
-# search so a moved file still resolves.
-_stage_builder_asset() {
-    local name="$1" f="$2"
-    [[ -f "$f" ]] || f=$(find "$PROJECT_ROOT" -name "$name" -not -path '*/arduino-cli/data/*' 2>/dev/null | head -1)
-    if [[ -n "$f" && -f "$f" ]]; then
-        echo "          - $name"
-        aws s3 cp "$f" "s3://${FIRMWARE_BUCKET}/builder-pi/$name" >/dev/null
-    else
-        echo "          ! WARN: $name not found; builder-Pi deploy-app doc will warn"
-    fi
-}
-_stage_builder_asset partitions_pqc_workshop.csv     "$PROJECT_ROOT/esp32-flash/partitions_pqc_workshop.csv"
-_stage_builder_asset wolfssl_user_settings_arduino.h "$PROJECT_ROOT/raw_device_builder/codebuild/wolfssl_user_settings_arduino.h"
+# Older deploys also staged the wolfSSL header and partition CSV here for the
+# Pi's (now removed) compile toolchain. Remove those stale copies.
+for _legacy in partitions_pqc_workshop.csv wolfssl_user_settings_arduino.h; do
+    aws s3 rm "s3://${FIRMWARE_BUCKET}/builder-pi/$_legacy" >/dev/null 2>&1 || true
+done
 
 # Fail fast if the app tarball didn't land — the deploy-app SSM doc hard-depends
 # on it, and a missing object only surfaces as a confusing SSM failure later.
@@ -500,7 +488,7 @@ if ! aws s3api head-object --bucket "$FIRMWARE_BUCKET" --key "builder-pi/app.tgz
     echo "        The builder-Pi deploy-app SSM document would fail. Aborting."
     exit 1
 fi
-echo "          builder-Pi app + assets staged"
+echo "          builder-Pi app staged"
 
 if [[ "$STAGE_ONLY" != "true" ]]; then
 # ─── Full deploy only: images, broker certs, broker scale-up, SSM + WiFi ─────

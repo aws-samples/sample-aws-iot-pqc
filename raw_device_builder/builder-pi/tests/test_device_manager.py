@@ -203,3 +203,44 @@ def test_delete_identity_falls_back_to_flashed_version(env, monkeypatch):
 
     versions = [v["VersionId"] for v in s3.list_object_versions(Bucket=BUCKET, Prefix=IDENTITY_KEY)["Versions"]]
     assert new not in versions and len(versions) == 1
+
+
+class FakePort:
+    def __init__(self, device, vid):
+        self.device = device
+        self.vid = vid
+
+
+def test_scan_ports_keeps_only_esp32_usb_vids(monkeypatch):
+    from serial.tools import list_ports
+    monkeypatch.setattr(list_ports, "comports", lambda: [
+        FakePort("/dev/ttyACM1", 0x303A),   # XIAO ESP32-S3 native USB
+        FakePort("/dev/ttyACM0", 0x303A),
+        FakePort("/dev/ttyUSB0", 0x10C4),   # CP210x bridge
+        FakePort("/dev/ttyAMA10", None),    # Pi UART: not an ESP32
+        FakePort("/dev/ttyACM9", 0x2341),   # some other USB device
+    ])
+    dm = DeviceManager({"region": "us-east-1"})
+    assert dm.scan_ports() == ["/dev/ttyACM0", "/dev/ttyACM1", "/dev/ttyUSB0"]
+
+
+def test_scan_ports_falls_back_to_glob(monkeypatch):
+    from serial.tools import list_ports
+    monkeypatch.setattr(list_ports, "comports", lambda: [])
+    monkeypatch.setattr(device_manager.glob, "glob",
+                        lambda pat: ["/dev/ttyACM0"] if pat == "/dev/ttyACM*" else [])
+    dm = DeviceManager({"region": "us-east-1"})
+    assert dm.scan_ports() == ["/dev/ttyACM0"]
+
+
+def test_get_serial_number_uses_esptool_entry_point(monkeypatch):
+    calls = []
+
+    def fake_run(argv, **kwargs):
+        calls.append(argv)
+        return subprocess.CompletedProcess(argv, 0, stdout="MAC: 10:20:ba:c6:9d:e0\n", stderr="")
+
+    monkeypatch.setattr(device_manager.subprocess, "run", fake_run)
+    dm = DeviceManager({"region": "us-east-1"})
+    assert dm.get_serial_number("/dev/ttyACM0") == "C69DE0"
+    assert calls[0][0] == "esptool"   # not the deprecated esptool.py alias

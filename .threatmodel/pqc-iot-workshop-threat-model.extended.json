@@ -2106,7 +2106,7 @@
       "protocol": "HTTPS",
       "port": 443,
       "encryption": true,
-      "description": "Run Command executes install-toolchain / deploy-app / configure-service / configure-wifi-ap as root on the Pi."
+      "description": "Run Command executes install-base / deploy-app / configure-service / configure-wifi-ap as root on the Pi."
     },
     {
       "id": "CN064",

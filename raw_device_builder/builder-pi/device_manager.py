@@ -4,7 +4,8 @@
 """
 Device Manager — USB detection, serial identification, and flash operations.
 
-Uses arduino-cli to list boards and esptool to read the chip MAC and flash.
+Uses pyserial to list USB serial ports and esptool to read the chip MAC and
+flash. The Pi never compiles firmware: it flashes prebuilt images from S3.
 Handles up to 4 simultaneous USB-connected ESP32 devices on the builder-pi.
 
 Flashing writes the app pieces plus the per-device identity image (the "certs"
@@ -15,7 +16,6 @@ use firmware.merged.bin, which is padded to 8 MB and would overwrite "certs".
 import subprocess
 import time
 import os
-import json
 import glob
 import threading
 import serial
@@ -24,10 +24,11 @@ from typing import Optional, Dict, List
 
 
 # ─── Constants ───────────────────────────────────────────────────────────────
-# Reference only (the Pi flashes prebuilt images and never compiles); keep in
-# sync with FQBN in raw_device_builder/codebuild/buildspec.yml.
-FQBN = "esp32:esp32:XIAO_ESP32S3:USBMode=hwcdc,CDCOnBoot=cdc,PSRAM=opi,DebugLevel=info,PartitionScheme=default_8MB"
-ARDUINO_CLI = "arduino-cli"
+# USB vendor IDs of the ESP32 boards and USB-UART bridges we flash (the same
+# set as the udev rule the configure-service SSM document installs):
+# Espressif native USB (XIAO ESP32-S3, 0x303a), Silicon Labs CP210x, WCH CH340,
+# FTDI.
+ESP32_USB_VIDS = {0x303A, 0x10C4, 0x1A86, 0x0403}
 FIRMWARE_DIR = "/opt/pqc-workshop/firmware"
 
 # What is written over USB, as (offset, local file, S3 name under the shared
@@ -154,7 +155,7 @@ class DeviceSlot:
 
 
 class DeviceManager:
-    """Manages USB-connected ESP32 devices using arduino-cli."""
+    """Manages the USB-connected ESP32 devices on the builder-Pi."""
 
     def __init__(self, config: dict):
         self.config = config
@@ -165,35 +166,22 @@ class DeviceManager:
         self._serial_stop_events: Dict[str, threading.Event] = {}
 
     def scan_ports(self) -> List[str]:
-        """Detect connected ESP32 USB serial ports using arduino-cli."""
+        """Detect connected ESP32 USB serial ports.
+
+        Primary: pyserial's port list, filtered to the ESP32 USB vendor IDs.
+        Fallback (no pyserial metadata, e.g. an unusual kernel): glob the tty
+        nodes the boards appear as.
+        """
         ports = []
-
-        # Primary method: arduino-cli board list (most reliable)
         try:
-            result = subprocess.run(
-                [ARDUINO_CLI, 'board', 'list', '--format', 'json'],
-                capture_output=True, text=True, timeout=10
-            )
-            if result.returncode == 0:
-                boards = json.loads(result.stdout)
-                for entry in boards:
-                    port_info = entry.get('port', {})
-                    address = port_info.get('address', '')
-                    protocol = port_info.get('protocol', '')
-                    if protocol == 'serial' and address:
-                        ports.append(address)
-        except (subprocess.TimeoutExpired, json.JSONDecodeError, Exception) as e:
-            print(f"arduino-cli board list failed: {e}")
+            from serial.tools import list_ports
+            ports = [p.device for p in list_ports.comports()
+                     if p.vid in ESP32_USB_VIDS]
+        except Exception as e:
+            print(f"pyserial port listing failed: {e}")
 
-        # Fallback: glob for known ESP32 USB paths
         if not ports:
-            patterns = [
-                '/dev/ttyUSB*',
-                '/dev/ttyACM*',
-                '/dev/serial/by-id/*CP210*',
-                '/dev/serial/by-id/*CH340*',
-            ]
-            for pattern in patterns:
+            for pattern in ('/dev/ttyUSB*', '/dev/ttyACM*'):
                 ports.extend(glob.glob(pattern))
 
         return sorted(set(ports))
@@ -202,7 +190,7 @@ class DeviceManager:
         """Read the ESP32 chip MAC/serial via esptool."""
         try:
             result = subprocess.run(
-                ['esptool.py', '--port', port, 'read_mac'],
+                ['esptool', '--port', port, 'read_mac'],
                 capture_output=True, text=True, timeout=15
             )
             output = result.stdout + result.stderr
@@ -399,7 +387,7 @@ class DeviceManager:
         """Flash the app pieces and the identity image in one esptool call.
 
         Writes each FLASH_LAYOUT file at its offset. Not firmware.merged.bin:
-        arduino-cli pads that to the full 8 MB, so it would overwrite the
+        the build pads that to the full 8 MB, so it would overwrite the
         certs partition at 0x721000.
         """
         slot = self.devices.get(port)

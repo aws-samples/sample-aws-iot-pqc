@@ -7,27 +7,29 @@
 # this orchestrator waits for it to come Online, then runs the CFN-owned SSM
 # documents in order:
 #
-#   1. install-awscli       the AWS CLI (prerequisite for the S3/SSM calls below)
-#   2. install-toolchain    arduino-cli + ESP32 core (~5GB, slow)
-#   3. deploy-app           GUI app + assets from S3, config.json
-#   4. configure-service    udev + systemd (GUI auto-starts) + CloudWatch
-#   5. configure-wifi-ap    bring up the 2.4GHz workshop WiFi AP on the Pi's
+#   1. install-base         apt: AWS CLI, python3 + pip, curl, udev (fast)
+#   2. deploy-app           GUI app from S3 + pip deps (esptool, pyserial), config.json
+#   3. configure-service    udev + systemd (GUI auto-starts) + CloudWatch
+#   4. configure-wifi-ap    bring up the 2.4GHz workshop WiFi AP on the Pi's
 #                           USB MediaTek radio (wlan1) so devices can join
+#
+# The Pi does not compile firmware (the cloud builds the images; the Pi only
+# flashes them), so there is no arduino-cli / ESP32 core install.
 #
 # Each document is run with send-command and polled to completion. On any
 # non-Success the orchestrator prints the command output + a console URL and
 # stops — so you can fix the cause and re-run JUST that document (they are
-# independently re-runnable; the slow toolchain install is not repeated).
+# independently re-runnable).
 #
 # Usage:
 #   ./setup-builder-pi-remote.sh [--region REGION] [--instance-id mi-XXXX] \
-#       [--only install-toolchain|deploy-app|configure-service|configure-wifi-ap]
+#       [--only install-base|deploy-app|configure-service|configure-wifi-ap]
 #
 #   --region       AWS region (default: $AWS_DEFAULT_REGION or us-east-1)
 #   --instance-id  Target managed instance. Omit to auto-discover the single
 #                  Online pqc-workshop-builder-pi instance.
-#   --only         Run just ONE document (for isolated retry): awscli,
-#                  install-toolchain, deploy-app, configure-service, or
+#   --only         Run just ONE document (for isolated retry): install-base
+#                  (alias: awscli), deploy-app, configure-service, or
 #                  configure-wifi-ap.
 #   --profile      AWS CLI profile (optional; else ambient credentials)
 #
@@ -84,11 +86,10 @@ get_out() {
         --output text 2>/dev/null || echo ""
 }
 DOC_AWSCLI=$(get_out InstallAwscliDocumentName)
-DOC_TOOLCHAIN=$(get_out InstallToolchainDocumentName)
 DOC_DEPLOYAPP=$(get_out DeployAppDocumentName)
 DOC_CONFIGURE=$(get_out ConfigureServiceDocumentName)
 DOC_WIFIAP=$(get_out ConfigureWifiApDocumentName)
-for pair in "InstallAwscliDocumentName:$DOC_AWSCLI" "InstallToolchainDocumentName:$DOC_TOOLCHAIN" \
+for pair in "InstallAwscliDocumentName:$DOC_AWSCLI" \
             "DeployAppDocumentName:$DOC_DEPLOYAPP" "ConfigureServiceDocumentName:$DOC_CONFIGURE" \
             "ConfigureWifiApDocumentName:$DOC_WIFIAP"; do
     if [[ -z "${pair#*:}" || "${pair#*:}" == "None" ]]; then
@@ -151,10 +152,11 @@ run_doc() {
             echo "[ERROR] send-command failed for $doc"; return 1; }
     echo "    command: $cid"
 
-    # Poll. The toolchain install can take ~15 min, so allow a generous window
-    # (240 * 15s = 60 min) and surface the phase as it progresses.
+    # Poll. No step is slow any more (the longest is a fresh Pi's apt update +
+    # pip install, a few minutes), so 80 * 15s = 20 min covers the longest
+    # document timeout (deploy-app, 15 min) with margin.
     local status="" i
-    for i in $(seq 1 240); do
+    for i in $(seq 1 80); do
         status=$("${AWS[@]}" ssm get-command-invocation \
             --command-id "$cid" --instance-id "$INSTANCE_ID" \
             --query 'Status' --output text 2>/dev/null || echo "Pending")
@@ -183,23 +185,24 @@ run_doc() {
 }
 
 # ─── Run the requested document(s) ───────────────────────────────────────────
-# Order: install-awscli (prerequisite) -> install-toolchain -> deploy-app ->
-# configure-service -> configure-wifi-ap. awscli first because deploy-app's
-# S3/SSM calls need it; configure-wifi-ap last so the Pi ends fully networked.
+# Order: install-base (prerequisite) -> deploy-app -> configure-service ->
+# configure-wifi-ap. install-base first because deploy-app's S3/SSM calls and
+# pip installs need it; configure-wifi-ap last so the Pi ends fully networked.
 case "$ONLY" in
     "")
-        run_doc "$DOC_AWSCLI"    "1/5 install-awscli"     awscli
-        run_doc "$DOC_TOOLCHAIN" "2/5 install-toolchain"  install-toolchain
-        run_doc "$DOC_DEPLOYAPP" "3/5 deploy-app"         deploy-app
-        run_doc "$DOC_CONFIGURE" "4/5 configure-service"  configure-service
-        run_doc "$DOC_WIFIAP"    "5/5 configure-wifi-ap"  configure-wifi-ap
+        run_doc "$DOC_AWSCLI"    "1/4 install-base"       install-base
+        run_doc "$DOC_DEPLOYAPP" "2/4 deploy-app"         deploy-app
+        run_doc "$DOC_CONFIGURE" "3/4 configure-service"  configure-service
+        run_doc "$DOC_WIFIAP"    "4/4 configure-wifi-ap"  configure-wifi-ap
         ;;
-    awscli)             run_doc "$DOC_AWSCLI"    "install-awscli"    awscli ;;
-    install-toolchain)  run_doc "$DOC_TOOLCHAIN" "install-toolchain" install-toolchain ;;
+    install-base|awscli) run_doc "$DOC_AWSCLI"   "install-base"      install-base ;;
     deploy-app)         run_doc "$DOC_DEPLOYAPP" "deploy-app"        deploy-app ;;
     configure-service)  run_doc "$DOC_CONFIGURE" "configure-service" configure-service ;;
     configure-wifi-ap)  run_doc "$DOC_WIFIAP"    "configure-wifi-ap" configure-wifi-ap ;;
-    *) echo "[ERROR] --only must be one of: awscli, install-toolchain, deploy-app, configure-service, configure-wifi-ap"; exit 1 ;;
+    install-toolchain)
+        echo "[ERROR] install-toolchain was removed: the Pi no longer compiles firmware."
+        echo "        Use install-base, deploy-app, configure-service or configure-wifi-ap."; exit 1 ;;
+    *) echo "[ERROR] --only must be one of: install-base, deploy-app, configure-service, configure-wifi-ap"; exit 1 ;;
 esac
 
 # ─── Success: prune stale managed instances + print the GUI URL ──────────────

@@ -356,15 +356,11 @@ Outputs:
     Value: !GetAtt SSMActivationStack.Outputs.SSMActivationId
 
   InstallAwscliDocumentName:
-    Description: SSM document — install the AWS CLI (prerequisite, step 0)
+    Description: SSM document — install-base (AWS CLI, python3 + pip, curl, udev; step 1)
     Value: !GetAtt SSMActivationStack.Outputs.InstallAwscliDocumentName
 
-  InstallToolchainDocumentName:
-    Description: SSM document — install the builder-Pi toolchain (step 1)
-    Value: !GetAtt SSMActivationStack.Outputs.InstallToolchainDocumentName
-
   DeployAppDocumentName:
-    Description: SSM document — deploy the builder-Pi app + assets (step 2)
+    Description: SSM document — deploy the builder-Pi app (step 2)
     Value: !GetAtt SSMActivationStack.Outputs.DeployAppDocumentName
 
   ConfigureServiceDocumentName:

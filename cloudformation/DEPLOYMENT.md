@@ -261,9 +261,10 @@ aws ecs list-tasks --cluster pqc-workshop-broker --desired-status RUNNING \
 ### 6. Provision the Builder-Pi (workshop 99.6)
 
 The Builder-Pi is provisioned in two phases. The **bundle only registers the
-SSM agent**; everything else (arduino-cli, the ESP32 core, the GUI app, the
-systemd service) is installed *remotely* by SSM documents run from the deploy
-host. This is deliberate: running the provisioning via SSM (as root, with a
+SSM agent**; everything else (a few system packages, the GUI app with
+`esptool`, the systemd service) is installed *remotely* by SSM documents run
+from the deploy host. The Pi never compiles firmware (the cloud builds every
+image), so it needs no Arduino toolchain. This is deliberate: running the provisioning via SSM (as root, with a
 consistent environment, output captured to SSM + CloudWatch, each step
 independently re-runnable) is far more reliable and debuggable than a big
 self-contained script run under `sudo` on the Pi.
@@ -300,8 +301,8 @@ aws ssm describe-instance-information \
 
 **Step 6.2 — provision the Pi from the deploy host.** Back on the machine with
 AWS credentials, run the orchestrator. It waits for the Pi to be Online, then
-runs the SSM documents in order (install-awscli → install-toolchain →
-deploy-app → configure-service → configure-wifi-ap):
+runs the SSM documents in order (install-base → deploy-app →
+configure-service → configure-wifi-ap):
 
 ```bash
 ./raw_device_builder/setup-builder-pi-remote.sh            # add --region / --profile if needed
@@ -310,13 +311,13 @@ deploy-app → configure-service → configure-wifi-ap):
 The GUI **auto-starts** at the end (systemd `enable`d + started), reachable at
 `http://<pi-ip>:8080`, **and the workshop 2.4 GHz WiFi AP is brought up on the
 Pi's USB radio** by the final `configure-wifi-ap` document — so the Pi ends fully
-networked with no manual step (see §7). The toolchain step is slow (~10-15 min:
-the ~5 GB ESP32 core). Every step's output is captured by SSM and shipped to the
+networked with no manual step (see §7). No step is slow: on a freshly imaged Pi
+the longest is the first `apt` and `pip` install. Every step's output is
+captured by SSM and shipped to the
 `/pqc-workshop/builder-pi` CloudWatch log group.
 
 **If a step fails**, the orchestrator prints the failing document's output and a
-console link, then stops. Fix the cause and re-run just that document without
-repeating the slow toolchain install, e.g.:
+console link, then stops. Fix the cause and re-run just that document, e.g.:
 
 ```bash
 ./raw_device_builder/setup-builder-pi-remote.sh --only deploy-app
@@ -370,7 +371,7 @@ Pi's onboard radio is a weak AP, so a capable USB radio hosts the workshop AP
 
 | Component | Specification | Notes | Where to buy (The Pi Hut) |
 |---|---|---|---|
-| Single-board computer | Raspberry Pi 5 Model B (Rev 1.1), 16 GB RAM | 64-bit quad-core Arm Cortex-A76 @ 2.4 GHz; 16 GB gives ample headroom for the ESP32 toolchain + concurrent flashing | [Raspberry Pi 5 (16GB variant)](https://thepihut.com/products/raspberry-pi-5) |
+| Single-board computer | Raspberry Pi 5 Model B (Rev 1.1), 16 GB RAM | 64-bit quad-core Arm Cortex-A76 @ 2.4 GHz; 16 GB gives ample headroom for concurrent flashing | [Raspberry Pi 5 (16GB variant)](https://thepihut.com/products/raspberry-pi-5) |
 | Operating system | Raspberry Pi OS (Debian 13 "Trixie", 64-bit), kernel `6.18.50+rpt-rpi-2712` | NetworkManager-based network stack (used for the AP); check yours with `cat /etc/os-release` | (ships on Raspberry Pi OS media) |
 | USB WiFi adapter | AC1300 Dual-Band USB WiFi Adapter — MediaTek **MT7612U** (`0e8d:7612`), 802.11a/b/g/n/ac, USB 3.0 | 2.4 GHz + 5 GHz; the `mt76x2u` driver ships with Raspberry Pi OS and has strong AP-mode support. Hosts the workshop 2.4 GHz AP. | [AC1300 Dual-Band USB WiFi Adapter (MT7612U)](https://thepihut.com/collections/raspberry-pi-store/products/dual-band-usb-wifi-adapter-for-raspberry-pi-5ghz-2-4ghz-mt7612u) |
 

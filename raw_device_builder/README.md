@@ -59,7 +59,7 @@ This module simulates a real-world IoT production line scenario. A "builder-pi" 
 
 1. **Builder-Pi** — Raspberry Pi with:
    - SSM Agent registered via the bundle (`bundle-for-builder-pi.sh` →
-     `setup-ssm.sh`); the toolchain (Python/Flask/esptool/arduino-cli), GUI app,
+     `setup-ssm.sh`); the base packages, GUI app (Python/Flask/esptool/pyserial)
      and systemd service are then installed remotely by the SSM documents the
      orchestrator runs (`setup-builder-pi-remote.sh`)
    - USB ports available for ESP32 connection
@@ -95,7 +95,7 @@ raw_device_builder/bundle-for-builder-pi.sh --region us-east-1
 unzip builder-pi-bundle.zip && cd builder-pi-bundle && sudo ./setup-ssm.sh
 
 # Back on the deploy host: provision the Pi via SSM documents (installs the
-# toolchain + GUI app; the GUI auto-starts)
+# base packages + GUI app; the GUI auto-starts)
 ./raw_device_builder/setup-builder-pi-remote.sh --region us-east-1
 ```
 
