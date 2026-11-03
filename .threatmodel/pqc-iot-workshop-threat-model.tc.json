@@ -2,7 +2,7 @@
   "schema": 1,
   "applicationInfo": {
     "name": "Threat Model Export",
-    "description": "Post-Quantum Cryptography Migration for IoT workshop (AWS Workshop Studio / re:Invent builders session, also published as the public aws-samples/sample-aws-iot-pqc sample). ESP32-S3 field devices connect over MQTT/TLS 1.3 with a hybrid SecP256r1MLKEM768 key exchange to a containerized Mosquitto PQC broker (ECS Fargate in private subnets behind an internet-facing NLB on 8883 classical / 8884 ML-DSA-44), which bridges over classical mTLS to AWS IoT Core. Two Private CAs (classical ECDSA P-256 and ML-DSA-44) issue broker and device certificates. A cloud pipeline (API Gateway + Lambda registrar, CodeBuild firmware builder container, Step Functions PQC migration, S3 presigned-URL OTA) builds per-device firmware with embedded credentials and migrates devices classical -> PQC key exchange -> PQC certificates over the air. An on-site Raspberry Pi (Builder-Pi, managed via SSM hybrid activation) runs a Flask GUI that registers and USB-flashes devices and hosts the 2.4GHz workshop WiFi AP. A CloudFront + S3 React dashboard backed by AppSync, Cognito, DynamoDB and IoT Rules -> Lambdas shows live telemetry and sends LED/OTA commands. Deployed per event from a single master CloudFormation stack in a throwaway account. In scope: device firmware, broker, NLB, PKI, build/registration/OTA/migration pipeline, Builder-Pi, dashboard and their AWS resources. Out of scope: AWS-managed service internals, the physical venue network beyond the workshop AP, attendee laptops."
+    "description": "Post-Quantum Cryptography Migration for IoT workshop (AWS Workshop Studio / re:Invent builders session, also published as the public aws-samples/sample-aws-iot-pqc sample). ESP32-S3 field devices connect over MQTT/TLS 1.3 with a hybrid SecP256r1MLKEM768 key exchange to a containerized Mosquitto PQC broker (ECS Fargate in private subnets behind an internet-facing NLB on 8883 classical / 8884 ML-DSA-44), which bridges over classical mTLS to AWS IoT Core. Two Private CAs (classical ECDSA P-256 and ML-DSA-44) issue broker and device certificates. A cloud pipeline (API Gateway + Lambda registrar, CodeBuild firmware builder container, Step Functions PQC migration, S3 presigned-URL OTA) builds each firmware variant once (no device data in the image), issues each device's identity into a separate certs flash partition and migrates devices classical -> PQC key exchange -> PQC certificates over the air. An on-site Raspberry Pi (Builder-Pi, managed via SSM hybrid activation) runs a Flask GUI that registers and USB-flashes devices and hosts the 2.4GHz workshop WiFi AP. A CloudFront + S3 React dashboard backed by AppSync, Cognito, DynamoDB and IoT Rules -> Lambdas shows live telemetry and sends LED/OTA commands. Deployed per event from a single master CloudFormation stack in a throwaway account. In scope: device firmware, broker, NLB, PKI, build/registration/OTA/migration pipeline, Builder-Pi, dashboard and their AWS resources. Out of scope: AWS-managed service internals, the physical venue network beyond the workshop AP, attendee laptops."
   },
   "architecture": {
     "description": ""
@@ -146,16 +146,16 @@
     {
       "id": "e3b59a40-6700-56ce-ab08-e76446580fdf",
       "numericId": 12,
-      "status": "mitigationIdentified",
-      "content": "Stop persisting device private keys in stored firmware: expire per-device images after flashing/OTA (lifecycle rule, short noncurrent-version expiry) or move the key to a separately flashed NVS partition that is never uploaded.",
+      "status": "mitigationResolved",
+      "content": "Device identity is never in a firmware image: keys, certificates, CA roots and WiFi go into a separate certs NVS partition image built per device at registration, flashed by the Builder-Pi and then deleted from S3 (every version), with a 1-day lifecycle rule on identity/ as a backstop.",
       "displayOrder": 12,
       "metadata": []
     },
     {
       "id": "bb3b4df9-2c21-52d9-b4c3-150143179951",
       "numericId": 13,
-      "status": "mitigationIdentified",
-      "content": "Keep the WiFi PSK only in SSM: drop wifiPassword from the registry and pass it to CodeBuild as a PARAMETER_STORE environment variable instead of PLAINTEXT (project env, registrar override and state machine).",
+      "status": "mitigationResolved",
+      "content": "Keep the WiFi PSK only in SSM: the device-identity CodeBuild job reads it as a PARAMETER_STORE environment variable, and the registry, registrar, prepare-build and migration state machine no longer store or pass it.",
       "displayOrder": 13,
       "metadata": []
     },
@@ -277,6 +277,14 @@
       "status": "mitigationResolved",
       "content": "start-migration validates the requested variant against an allow-list before starting a migration.",
       "displayOrder": 28,
+      "metadata": []
+    },
+    {
+      "id": "a920bb9c-39f8-5676-945e-7ae7b09dbe5e",
+      "numericId": 29,
+      "status": "mitigationIdentified",
+      "content": "Separate code signing from device identity: issue the OTA signer certificates with the codeSigning extended key usage (and device certificates without it) and make the device require codeSigning on the signer leaf; optionally use a dedicated signer CA or pin the signer public keys in the firmware.",
+      "displayOrder": 29,
       "metadata": []
     }
   ],
@@ -457,6 +465,14 @@
     {
       "mitigationId": "df7f3205-1c64-5ccd-892f-1810dda46d45",
       "linkedId": "477d100c-666d-543d-98e1-038585bc15c6"
+    },
+    {
+      "mitigationId": "a920bb9c-39f8-5676-945e-7ae7b09dbe5e",
+      "linkedId": "09ef5efa-0937-56fb-8409-c24c4b58a2d6"
+    },
+    {
+      "mitigationId": "9792381f-1bd2-548e-a804-93bbb51476fd",
+      "linkedId": "09ef5efa-0937-56fb-8409-c24c4b58a2d6"
     }
   ],
   "threats": [
@@ -531,27 +547,24 @@
       "numericId": 3,
       "threatSource": "anonymous internet user",
       "prerequisites": "with Cognito guest credentials within 15 minutes of a migration",
-      "threatAction": "read OTA commands through getDeviceLog and use a still-valid presigned URL to download that device's firmware image",
-      "threatImpact": "disclosure of the device private key and WiFi PSK embedded in the image, enabling impersonation of that device",
+      "threatAction": "read OTA commands through getDeviceLog and use a still-valid presigned URL to download the firmware image it points to",
+      "threatImpact": "access to the shared, identity-free firmware image only (the same code as the public repository), not to any device key or the WiFi PSK",
       "impactedGoal": [],
       "impactedAssets": [
         "A007",
-        "A006",
-        "A001",
-        "A005"
+        "A006"
       ],
-      "statement": "A anonymous internet user with Cognito guest credentials within 15 minutes of a migration can read OTA commands through getDeviceLog and use a still-valid presigned URL to download that device's firmware image, which leads to disclosure of the device private key and WiFi PSK embedded in the image, enabling impersonation of that device",
+      "statement": "A anonymous internet user with Cognito guest credentials within 15 minutes of a migration can read OTA commands through getDeviceLog and use a still-valid presigned URL to download the firmware image it points to, which leads to access to the shared, identity-free firmware image only (the same code as the public repository), not to any device key or the WiFi PSK",
       "displayOrder": 3,
-      "status": "threatIdentified",
+      "status": "threatResolved",
       "tags": [
         "appsync",
-        "presigned-url",
-        "key-exposure"
+        "presigned-url"
       ],
       "metadata": [
         {
           "key": "Priority",
-          "value": "High"
+          "value": "Low"
         },
         {
           "key": "STRIDE",
@@ -598,14 +611,14 @@
       "numericId": 5,
       "threatSource": "workshop attendee",
       "prerequisites": "with physical access to their own ESP32 board",
-      "threatAction": "dump the board's flash over USB and recover its device private key, certificate and the WiFi PSK",
-      "threatImpact": "the attendee holding a broker-trusted device identity and access to the workshop AP, enabling the broker-level attacks",
+      "threatAction": "dump the board's flash over USB and read the unencrypted certs NVS partition",
+      "threatImpact": "the attendee holding that board's two broker-trusted device identities (ECDSA P-256 and ML-DSA-44 keys and certificates) and the WiFi PSK, enabling the broker-level attacks",
       "impactedGoal": [],
       "impactedAssets": [
         "A001",
         "A005"
       ],
-      "statement": "A workshop attendee with physical access to their own ESP32 board can dump the board's flash over USB and recover its device private key, certificate and the WiFi PSK, which leads to the attendee holding a broker-trusted device identity and access to the workshop AP, enabling the broker-level attacks",
+      "statement": "A workshop attendee with physical access to their own ESP32 board can dump the board's flash over USB and read the unencrypted certs NVS partition, which leads to the attendee holding that board's two broker-trusted device identities (ECDSA P-256 and ML-DSA-44 keys and certificates) and the WiFi PSK, enabling the broker-level attacks",
       "displayOrder": 5,
       "status": "threatResolved",
       "tags": [
@@ -788,15 +801,15 @@
       "numericId": 11,
       "threatSource": "attacker",
       "prerequisites": "with root on the Builder-Pi or its role credentials",
-      "threatAction": "use the Pi role to download every device's firmware from the firmware bucket",
-      "threatImpact": "disclosure of every device private key and the PSK, allowing impersonation of the whole fleet",
+      "threatAction": "use the Pi role (bucket-wide s3:GetObject and the builder API) to read identity images that are waiting to be flashed, or register a serial to have a new identity issued",
+      "threatImpact": "disclosure of the keys of devices being registered and the ability to obtain broker-trusted device identities; firmware images carry no keys, and identity images exist in S3 only until flashed",
       "impactedGoal": [],
       "impactedAssets": [
         "A001",
         "A006",
         "A010"
       ],
-      "statement": "A attacker with root on the Builder-Pi or its role credentials can use the Pi role to download every device's firmware from the firmware bucket, which leads to disclosure of every device private key and the PSK, allowing impersonation of the whole fleet",
+      "statement": "A attacker with root on the Builder-Pi or its role credentials can use the Pi role (bucket-wide s3:GetObject and the builder API) to read identity images that are waiting to be flashed, or register a serial to have a new identity issued, which leads to disclosure of the keys of devices being registered and the ability to obtain broker-trusted device identities; firmware images carry no keys, and identity images exist in S3 only until flashed",
       "displayOrder": 11,
       "status": "threatIdentified",
       "tags": [
@@ -806,7 +819,7 @@
       "metadata": [
         {
           "key": "Priority",
-          "value": "High"
+          "value": "Medium"
         },
         {
           "key": "STRIDE",
@@ -860,7 +873,7 @@
       ],
       "statement": "A user or role with read-only account access with CodeBuild, Step Functions or DynamoDB read permissions can read the workshop WiFi PSK from the CodeBuild project environment, build details, Step Functions execution history or the registry table, which leads to disclosure of the PSK outside its SecureString",
       "displayOrder": 13,
-      "status": "threatIdentified",
+      "status": "threatResolved",
       "tags": [
         "secrets-handling"
       ],
@@ -1130,13 +1143,13 @@
       "threatSource": "harvest-now-decrypt-later adversary",
       "prerequisites": "with a future cryptographically relevant quantum computer",
       "threatAction": "record and later decrypt the classical-only links: bridge TLS 1.2, Builder-Pi HTTPS and the OTA firmware download from S3",
-      "threatImpact": "future disclosure of telemetry and of key-bearing firmware images, contrary to the workshop's PQC message",
+      "threatImpact": "future disclosure of telemetry and of firmware images, contrary to the workshop's PQC message",
       "impactedGoal": [],
       "impactedAssets": [
         "A006",
         "A008"
       ],
-      "statement": "A harvest-now-decrypt-later adversary with a future cryptographically relevant quantum computer can record and later decrypt the classical-only links: bridge TLS 1.2, Builder-Pi HTTPS and the OTA firmware download from S3, which leads to future disclosure of telemetry and of key-bearing firmware images, contrary to the workshop's PQC message",
+      "statement": "A harvest-now-decrypt-later adversary with a future cryptographically relevant quantum computer can record and later decrypt the classical-only links: bridge TLS 1.2, Builder-Pi HTTPS and the OTA firmware download from S3, which leads to future disclosure of telemetry and of firmware images, contrary to the workshop's PQC message",
       "displayOrder": 22,
       "status": "threatResolved",
       "tags": [
@@ -1162,14 +1175,12 @@
       "threatSource": "workshop attendee",
       "prerequisites": "with a rogue AP using the workshop SSID and extracted PSK",
       "threatAction": "intercept a device's OTA download, which does not verify the server certificate, and serve or capture the image",
-      "threatImpact": "capture of key-bearing firmware images, and installation of a modified image on any device sent an unsigned OTA",
+      "threatImpact": "capture of firmware images, and installation of a modified image on any device sent an unsigned OTA",
       "impactedGoal": [],
       "impactedAssets": [
-        "A006",
-        "A001",
-        "A005"
+        "A006"
       ],
-      "statement": "A workshop attendee with a rogue AP using the workshop SSID and extracted PSK can intercept a device's OTA download, which does not verify the server certificate, and serve or capture the image, which leads to capture of key-bearing firmware images, and installation of a modified image on any device sent an unsigned OTA",
+      "statement": "A workshop attendee with a rogue AP using the workshop SSID and extracted PSK can intercept a device's OTA download, which does not verify the server certificate, and serve or capture the image, which leads to capture of firmware images, and installation of a modified image on any device sent an unsigned OTA",
       "displayOrder": 23,
       "status": "threatIdentified",
       "tags": [
@@ -1186,6 +1197,40 @@
           "key": "STRIDE",
           "value": [
             "T"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "09ef5efa-0937-56fb-8409-c24c4b58a2d6",
+      "numericId": 24,
+      "threatSource": "workshop attendee",
+      "prerequisites": "with a device private key extracted from their own board",
+      "threatAction": "sign a modified firmware image with that key and push it to other devices as a signed OTA, because the OTA signer and device certificates are issued by the same CAs with the same extended key usage and devices only check that the signer chains to one of those CA roots",
+      "threatImpact": "every device accepting attacker-chosen firmware as authentic",
+      "impactedGoal": [],
+      "impactedAssets": [
+        "A006",
+        "A007",
+        "A002"
+      ],
+      "statement": "A workshop attendee with a device private key extracted from their own board can sign a modified firmware image with that key and push it to other devices as a signed OTA, because the OTA signer and device certificates are issued by the same CAs with the same extended key usage and devices only check that the signer chains to one of those CA roots, which leads to every device accepting attacker-chosen firmware as authentic",
+      "displayOrder": 24,
+      "status": "threatIdentified",
+      "tags": [
+        "ota",
+        "code-signing",
+        "pki"
+      ],
+      "metadata": [
+        {
+          "key": "Priority",
+          "value": "High"
+        },
+        {
+          "key": "STRIDE",
+          "value": [
+            "S"
           ]
         }
       ]

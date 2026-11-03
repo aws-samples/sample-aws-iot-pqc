@@ -330,13 +330,23 @@ change the production flow until 0.1–0.3 pass on a real board.
       every OTA; `identity/<serial>/certs.bin` removed after flashing. _Requirements: R7.1_
 - [ ] 5.2 Teardown: deregister removes the Thing and registry entry; lifecycle
       clears any stale identity objects; update `teardown-workshop.sh` if needed.
-- [ ] 5.3 Update `cloudformation/DEPLOYMENT.md`, the README code walkthrough,
-      and the workshop docs (flash layout and registration flow). Attendee pages
-      3/4/5 "Behind the scenes" still say the image is "compiled for your
-      specific device" — rewrite for the WS4 shared, pre-built images (single
-      workshop account; the multi-account wording was removed Sep 29).
-- [ ] 5.4 Update the threat model (T003, T011, T013, and the T005 note), re-run
-      `add_tc_metadata.py`.
+- [x] 5.3 Docs (Nov 3). The workshop content (now on its `mainline`) was
+      updated by the user and is the golden source; README.md (code walkthrough,
+      OTA delivery, registration, memory, troubleshooting, security) and
+      raw_device_builder/README.md were brought into line with it. Workshop page
+      3.7.3's min-heap table predates the 3b.9 memory reclaim (reported to the
+      user, not edited).
+- [x] 5.4 Threat model updated (Nov 3) in all three files, then
+      `add_tc_metadata.py` re-run (24 threats). T003 and T013 resolved (identity-
+      free shared images; PSK only in SSM via PARAMETER_STORE), T011 reduced to
+      Medium (in-flight identities only, still bucket-wide GetObject, M011),
+      T005 note updated (identity in the unencrypted certs partition), T022/T023
+      "key-bearing image" wording removed, M012/M013 resolved. NEW T024 (signer
+      and device certs share CA + EKU; High/Possible) with M029 (codeSigning EKU,
+      enforced on the device; = 3b.7). Stale component / data-asset text
+      (C001, C002, C003, C012, C014, C015, C017, C022, CN001, CN034, CN040,
+      CN051, D011, DP001, DP004, DP005, A001, A006) rewritten. The MCP server's
+      persisted state was NOT updated: re-exporting would overwrite these edits.
 - [ ] 5.5 Definition of done: destroy and rebuild pqc-b, then pqc-a, from
       scratch, both fully working. _Requirements: R7.2_
 - [ ] 5.6 (after 5.5) **Re-assess the high-risk findings against the new

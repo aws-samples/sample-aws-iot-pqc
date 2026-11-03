@@ -70,26 +70,23 @@
       "numericId": 3,
       "threatSource": "anonymous internet user",
       "prerequisites": "with Cognito guest credentials within 15 minutes of a migration",
-      "threatAction": "read OTA commands through getDeviceLog and use a still-valid presigned URL to download that device's firmware image",
-      "threatImpact": "disclosure of the device private key and WiFi PSK embedded in the image, enabling impersonation of that device",
+      "threatAction": "read OTA commands through getDeviceLog and use a still-valid presigned URL to download the firmware image it points to",
+      "threatImpact": "access to the shared, identity-free firmware image only (the same code as the public repository), not to any device key or the WiFi PSK",
       "impactedGoal": [],
       "impactedAssets": [
         "A007",
-        "A006",
-        "A001",
-        "A005"
+        "A006"
       ],
       "metadata": [],
-      "statement": "A anonymous internet user with Cognito guest credentials within 15 minutes of a migration can read OTA commands through getDeviceLog and use a still-valid presigned URL to download that device's firmware image, which leads to disclosure of the device private key and WiFi PSK embedded in the image, enabling impersonation of that device",
+      "statement": "A anonymous internet user with Cognito guest credentials within 15 minutes of a migration can read OTA commands through getDeviceLog and use a still-valid presigned URL to download the firmware image it points to, which leads to access to the shared, identity-free firmware image only (the same code as the public repository), not to any device key or the WiFi PSK",
       "displayOrder": 3,
-      "status": "threatIdentified",
+      "status": "threatResolved",
       "tags": [
         "appsync",
-        "presigned-url",
-        "key-exposure"
+        "presigned-url"
       ],
       "category": "Information Disclosure",
-      "severity": "High",
+      "severity": "Low",
       "likelihood": "Possible",
       "affected_components": [
         "C022",
@@ -129,15 +126,15 @@
       "numericId": 5,
       "threatSource": "workshop attendee",
       "prerequisites": "with physical access to their own ESP32 board",
-      "threatAction": "dump the board's flash over USB and recover its device private key, certificate and the WiFi PSK",
-      "threatImpact": "the attendee holding a broker-trusted device identity and access to the workshop AP, enabling the broker-level attacks",
+      "threatAction": "dump the board's flash over USB and read the unencrypted certs NVS partition",
+      "threatImpact": "the attendee holding that board's two broker-trusted device identities (ECDSA P-256 and ML-DSA-44 keys and certificates) and the WiFi PSK, enabling the broker-level attacks",
       "impactedGoal": [],
       "impactedAssets": [
         "A001",
         "A005"
       ],
       "metadata": [],
-      "statement": "A workshop attendee with physical access to their own ESP32 board can dump the board's flash over USB and recover its device private key, certificate and the WiFi PSK, which leads to the attendee holding a broker-trusted device identity and access to the workshop AP, enabling the broker-level attacks",
+      "statement": "A workshop attendee with physical access to their own ESP32 board can dump the board's flash over USB and read the unencrypted certs NVS partition, which leads to the attendee holding that board's two broker-trusted device identities (ECDSA P-256 and ML-DSA-44 keys and certificates) and the WiFi PSK, enabling the broker-level attacks",
       "displayOrder": 5,
       "status": "threatResolved",
       "tags": [
@@ -296,8 +293,8 @@
       "numericId": 11,
       "threatSource": "attacker",
       "prerequisites": "with root on the Builder-Pi or its role credentials",
-      "threatAction": "use the Pi role to download every device's firmware from the firmware bucket",
-      "threatImpact": "disclosure of every device private key and the PSK, allowing impersonation of the whole fleet",
+      "threatAction": "use the Pi role (bucket-wide s3:GetObject and the builder API) to read identity images that are waiting to be flashed, or register a serial to have a new identity issued",
+      "threatImpact": "disclosure of the keys of devices being registered and the ability to obtain broker-trusted device identities; firmware images carry no keys, and identity images exist in S3 only until flashed",
       "impactedGoal": [],
       "impactedAssets": [
         "A001",
@@ -305,7 +302,7 @@
         "A010"
       ],
       "metadata": [],
-      "statement": "A attacker with root on the Builder-Pi or its role credentials can use the Pi role to download every device's firmware from the firmware bucket, which leads to disclosure of every device private key and the PSK, allowing impersonation of the whole fleet",
+      "statement": "A attacker with root on the Builder-Pi or its role credentials can use the Pi role (bucket-wide s3:GetObject and the builder API) to read identity images that are waiting to be flashed, or register a serial to have a new identity issued, which leads to disclosure of the keys of devices being registered and the ability to obtain broker-trusted device identities; firmware images carry no keys, and identity images exist in S3 only until flashed",
       "displayOrder": 11,
       "status": "threatIdentified",
       "tags": [
@@ -313,7 +310,7 @@
         "least-privilege"
       ],
       "category": "Information Disclosure",
-      "severity": "High",
+      "severity": "Medium",
       "likelihood": "Possible",
       "affected_components": [
         "C003",
@@ -361,7 +358,7 @@
       "metadata": [],
       "statement": "A user or role with read-only account access with CodeBuild, Step Functions or DynamoDB read permissions can read the workshop WiFi PSK from the CodeBuild project environment, build details, Step Functions execution history or the registry table, which leads to disclosure of the PSK outside its SecureString",
       "displayOrder": 13,
-      "status": "threatIdentified",
+      "status": "threatResolved",
       "tags": [
         "secrets-handling"
       ],
@@ -600,14 +597,14 @@
       "threatSource": "harvest-now-decrypt-later adversary",
       "prerequisites": "with a future cryptographically relevant quantum computer",
       "threatAction": "record and later decrypt the classical-only links: bridge TLS 1.2, Builder-Pi HTTPS and the OTA firmware download from S3",
-      "threatImpact": "future disclosure of telemetry and of key-bearing firmware images, contrary to the workshop's PQC message",
+      "threatImpact": "future disclosure of telemetry and of firmware images, contrary to the workshop's PQC message",
       "impactedGoal": [],
       "impactedAssets": [
         "A006",
         "A008"
       ],
       "metadata": [],
-      "statement": "A harvest-now-decrypt-later adversary with a future cryptographically relevant quantum computer can record and later decrypt the classical-only links: bridge TLS 1.2, Builder-Pi HTTPS and the OTA firmware download from S3, which leads to future disclosure of telemetry and of key-bearing firmware images, contrary to the workshop's PQC message",
+      "statement": "A harvest-now-decrypt-later adversary with a future cryptographically relevant quantum computer can record and later decrypt the classical-only links: bridge TLS 1.2, Builder-Pi HTTPS and the OTA firmware download from S3, which leads to future disclosure of telemetry and of firmware images, contrary to the workshop's PQC message",
       "displayOrder": 22,
       "status": "threatResolved",
       "tags": [
@@ -629,15 +626,13 @@
       "threatSource": "workshop attendee",
       "prerequisites": "with a rogue AP using the workshop SSID and extracted PSK",
       "threatAction": "intercept a device's OTA download, which does not verify the server certificate, and serve or capture the image",
-      "threatImpact": "capture of key-bearing firmware images, and installation of a modified image on any device sent an unsigned OTA",
+      "threatImpact": "capture of firmware images, and installation of a modified image on any device sent an unsigned OTA",
       "impactedGoal": [],
       "impactedAssets": [
-        "A006",
-        "A001",
-        "A005"
+        "A006"
       ],
       "metadata": [],
-      "statement": "A workshop attendee with a rogue AP using the workshop SSID and extracted PSK can intercept a device's OTA download, which does not verify the server certificate, and serve or capture the image, which leads to capture of key-bearing firmware images, and installation of a modified image on any device sent an unsigned OTA",
+      "statement": "A workshop attendee with a rogue AP using the workshop SSID and extracted PSK can intercept a device's OTA download, which does not verify the server certificate, and serve or capture the image, which leads to capture of firmware images, and installation of a modified image on any device sent an unsigned OTA",
       "displayOrder": 23,
       "status": "threatIdentified",
       "tags": [
@@ -651,6 +646,38 @@
       "affected_components": [
         "C001",
         "C002"
+      ]
+    },
+    {
+      "id": "T024",
+      "numericId": 24,
+      "threatSource": "workshop attendee",
+      "prerequisites": "with a device private key extracted from their own board",
+      "threatAction": "sign a modified firmware image with that key and push it to other devices as a signed OTA, because the OTA signer and device certificates are issued by the same CAs with the same extended key usage and devices only check that the signer chains to one of those CA roots",
+      "threatImpact": "every device accepting attacker-chosen firmware as authentic",
+      "impactedGoal": [],
+      "impactedAssets": [
+        "A006",
+        "A007",
+        "A002"
+      ],
+      "metadata": [],
+      "statement": "A workshop attendee with a device private key extracted from their own board can sign a modified firmware image with that key and push it to other devices as a signed OTA, because the OTA signer and device certificates are issued by the same CAs with the same extended key usage and devices only check that the signer chains to one of those CA roots, which leads to every device accepting attacker-chosen firmware as authentic",
+      "displayOrder": 24,
+      "status": "threatIdentified",
+      "tags": [
+        "ota",
+        "code-signing",
+        "pki"
+      ],
+      "category": "Spoofing",
+      "severity": "High",
+      "likelihood": "Possible",
+      "affected_components": [
+        "C001",
+        "C018",
+        "C020",
+        "C021"
       ]
     }
   ],
@@ -790,26 +817,26 @@
     {
       "id": "M012",
       "numericId": 12,
-      "status": "mitigationIdentified",
-      "content": "Stop persisting device private keys in stored firmware: expire per-device images after flashing/OTA (lifecycle rule, short noncurrent-version expiry) or move the key to a separately flashed NVS partition that is never uploaded.",
+      "status": "mitigationResolved",
+      "content": "Device identity is never in a firmware image: keys, certificates, CA roots and WiFi go into a separate certs NVS partition image built per device at registration, flashed by the Builder-Pi and then deleted from S3 (every version), with a 1-day lifecycle rule on identity/ as a backstop.",
       "displayOrder": 12,
       "metadata": [],
       "type": "Preventive",
       "cost": "Medium",
       "effectiveness": "Medium",
-      "implementation_details": "S3 lifecycle on <serial>/ prefixes plus NoncurrentVersionExpiration; longer term a secrets NVS image generated and flashed by the Pi only."
+      "implementation_details": "Device-identity CodeBuild job writes identity/<serial>/certs.bin; Builder-Pi delete_identity() removes all versions after flashing; firmware loads identity from the certs partition (device_identity.cpp) and refuses one issued for another chip. Firmware images are built once per variant into shared/<version>/."
     },
     {
       "id": "M013",
       "numericId": 13,
-      "status": "mitigationIdentified",
-      "content": "Keep the WiFi PSK only in SSM: drop wifiPassword from the registry and pass it to CodeBuild as a PARAMETER_STORE environment variable instead of PLAINTEXT (project env, registrar override and state machine).",
+      "status": "mitigationResolved",
+      "content": "Keep the WiFi PSK only in SSM: the device-identity CodeBuild job reads it as a PARAMETER_STORE environment variable, and the registry, registrar, prepare-build and migration state machine no longer store or pass it.",
       "displayOrder": 13,
       "metadata": [],
       "type": "Preventive",
       "cost": "Low",
       "effectiveness": "High",
-      "implementation_details": "Already a backlog item; change the CodeBuild env type and the ASL WaitForBuild override, remove the registrar put_item field and prepare-build fallback."
+      "implementation_details": "DeviceIdentityProject env WIFI_PASSWORD Type PARAMETER_STORE; registrar writes no WiFi to the registry; the migration path pushes prebuilt shared images and has no build env."
     },
     {
       "id": "M014",
@@ -990,6 +1017,18 @@
       "cost": "Low",
       "effectiveness": "Low",
       "implementation_details": "VALID_VARIANTS check in raw_device_builder/lambda/start-migration/index.py."
+    },
+    {
+      "id": "M029",
+      "numericId": 29,
+      "status": "mitigationIdentified",
+      "content": "Separate code signing from device identity: issue the OTA signer certificates with the codeSigning extended key usage (and device certificates without it) and make the device require codeSigning on the signer leaf; optionally use a dedicated signer CA or pin the signer public keys in the firmware.",
+      "displayOrder": 29,
+      "metadata": [],
+      "type": "Preventive",
+      "cost": "Low",
+      "effectiveness": "High",
+      "implementation_details": "Broker cert provisioner: add ExtendedKeyUsage codeSigning to the signer issuance (custom ACM PCA template / ApiPassthrough). otaVerifyChainToRoot (ota_updater.cpp): reject a leaf without codeSigning. Tracked as spec task 3b.7."
     }
   ],
   "assumptions": [
@@ -1212,10 +1251,18 @@
     {
       "linkedId": "T023",
       "mitigationId": "M026"
+    },
+    {
+      "linkedId": "T024",
+      "mitigationId": "M029"
+    },
+    {
+      "linkedId": "T024",
+      "mitigationId": "M003"
     }
   ],
   "businessContext": {
-    "description": "Post-Quantum Cryptography Migration for IoT workshop (AWS Workshop Studio / re:Invent builders session, also published as the public aws-samples/sample-aws-iot-pqc sample). ESP32-S3 field devices connect over MQTT/TLS 1.3 with a hybrid SecP256r1MLKEM768 key exchange to a containerized Mosquitto PQC broker (ECS Fargate in private subnets behind an internet-facing NLB on 8883 classical / 8884 ML-DSA-44), which bridges over classical mTLS to AWS IoT Core. Two Private CAs (classical ECDSA P-256 and ML-DSA-44) issue broker and device certificates. A cloud pipeline (API Gateway + Lambda registrar, CodeBuild firmware builder container, Step Functions PQC migration, S3 presigned-URL OTA) builds per-device firmware with embedded credentials and migrates devices classical -> PQC key exchange -> PQC certificates over the air. An on-site Raspberry Pi (Builder-Pi, managed via SSM hybrid activation) runs a Flask GUI that registers and USB-flashes devices and hosts the 2.4GHz workshop WiFi AP. A CloudFront + S3 React dashboard backed by AppSync, Cognito, DynamoDB and IoT Rules -> Lambdas shows live telemetry and sends LED/OTA commands. Deployed per event from a single master CloudFormation stack in a throwaway account. In scope: device firmware, broker, NLB, PKI, build/registration/OTA/migration pipeline, Builder-Pi, dashboard and their AWS resources. Out of scope: AWS-managed service internals, the physical venue network beyond the workshop AP, attendee laptops.",
+    "description": "Post-Quantum Cryptography Migration for IoT workshop (AWS Workshop Studio / re:Invent builders session, also published as the public aws-samples/sample-aws-iot-pqc sample). ESP32-S3 field devices connect over MQTT/TLS 1.3 with a hybrid SecP256r1MLKEM768 key exchange to a containerized Mosquitto PQC broker (ECS Fargate in private subnets behind an internet-facing NLB on 8883 classical / 8884 ML-DSA-44), which bridges over classical mTLS to AWS IoT Core. Two Private CAs (classical ECDSA P-256 and ML-DSA-44) issue broker and device certificates. A cloud pipeline (API Gateway + Lambda registrar, CodeBuild firmware builder container, Step Functions PQC migration, S3 presigned-URL OTA) builds each firmware variant once (no device data in the image), issues each device's identity into a separate certs flash partition and migrates devices classical -> PQC key exchange -> PQC certificates over the air. An on-site Raspberry Pi (Builder-Pi, managed via SSM hybrid activation) runs a Flask GUI that registers and USB-flashes devices and hosts the 2.4GHz workshop WiFi AP. A CloudFront + S3 React dashboard backed by AppSync, Cognito, DynamoDB and IoT Rules -> Lambdas shows live telemetry and sends LED/OTA commands. Deployed per event from a single master CloudFormation stack in a throwaway account. In scope: device firmware, broker, NLB, PKI, build/registration/OTA/migration pipeline, Builder-Pi, dashboard and their AWS resources. Out of scope: AWS-managed service internals, the physical venue network beyond the workshop AP, attendee laptops.",
     "features": {
       "industry_sector": "Technology",
       "sensitivity_tier": "Confidential",
@@ -1246,7 +1293,7 @@
       "service_provider": "Other",
       "specific_service": "ESP32-S3 (XIAO) Arduino firmware, wolfSSL 5.7+, FreeRTOS",
       "version": null,
-      "description": "Three variants: v1 classical (ECDHE + ECDSA cert, port 8883), pqc (SecP256r1MLKEM768 + ECDSA cert, 8883), v3 mldsa (ML-KEM + ML-DSA-44 cert, 8884). mTLS to the broker with WOLFSSL_VERIFY_PEER chain check only (no hostname/SAN check). Publishes dt/<thing>/telemetry and lifecycle, subscribes cmd/<thing>/+. Dual-boot OTA: downloads from the URL in the command over TLS with WOLFSSL_VERIFY_NONE (no server cert check), enforces the sha256 from the same command if present, and verifies an ECDSA-P256 or ML-DSA-44 signature ONLY when the command includes sigAlg; an OTA without sigAlg is installed unsigned in all three variants.",
+      "description": "One modular sketch built as three variants: classical (ECDHE + ECDSA cert, port 8883), pqc (SecP256r1MLKEM768 + ECDSA cert, 8883), pqc-mldsa (ML-KEM + ML-DSA-44 cert, 8884). Identity (keys, certs, both CA roots, WiFi) is loaded at boot from the unencrypted certs NVS partition; an identity issued for another chip is refused. mTLS to the broker with WOLFSSL_VERIFY_PEER chain check only (no hostname/SAN check). Publishes dt/<thing>/telemetry and lifecycle, subscribes cmd/<thing>/+. Dual-boot OTA: downloads from the URL in the command over TLS with WOLFSSL_VERIFY_NONE (no server cert check), enforces the sha256 from the same command if present, and verifies an ECDSA-P256 or ML-DSA-44 signature ONLY when the command includes sigAlg; an OTA without sigAlg is installed unsigned in every variant. The signer leaf is checked only for chaining to a device CA root (no codeSigning EKU check).",
       "configuration": null
     },
     {
@@ -1256,7 +1303,7 @@
       "service_provider": "On-Premise",
       "specific_service": "NetworkManager AP on the Builder-Pi MediaTek USB radio",
       "version": null,
-      "description": "2.4GHz WPA2-PSK AP built by the configure-wifi-ap SSM document from /pqc-workshop/wifi/*. One shared PSK for every device and attendee; the same PSK is compiled into every firmware image.",
+      "description": "2.4GHz WPA2-PSK AP built by the configure-wifi-ap SSM document from /pqc-workshop/wifi/*. One shared PSK for every device and attendee; the same PSK is written into every device's certs partition.",
       "configuration": null
     },
     {
@@ -1266,7 +1313,7 @@
       "service_provider": "On-Premise",
       "specific_service": "Raspberry Pi, Flask app.py, arduino-cli/esptool, SSM agent, CloudWatch agent",
       "version": null,
-      "description": "Flask GUI bound to 0.0.0.0:8080 with NO authentication or CSRF protection. Routes: /api/register, /api/reflash, /api/deregister, /api/serial/<port>, /api/scan, GET/POST /api/config (POST merges arbitrary JSON into config incl. API endpoint/bucket/region). Calls the builder API with SigV4 using SSM hybrid-activation role credentials, downloads merged firmware from S3, and USB-flashes devices.",
+      "description": "Flask GUI bound to 0.0.0.0:8080 with NO authentication or CSRF protection. Routes: /api/register, /api/reflash, /api/deregister, /api/serial/<port>, /api/scan, GET/POST /api/config (POST merges arbitrary JSON into config incl. API endpoint/bucket/region). Calls the builder API with SigV4 using SSM hybrid-activation role credentials, downloads the shared firmware pieces and the device's identity image from S3, USB-flashes them, then deletes every version of the identity image.",
       "configuration": null
     },
     {
@@ -1356,7 +1403,7 @@
       "service_provider": "AWS",
       "specific_service": "Lambda pqc-workshop-device-registrar",
       "version": null,
-      "description": "Creates the IoT Thing and per-device policy, writes the registry (including the WiFi password in plaintext), seeds the dashboard device row, and starts the firmware CodeBuild with WIFI_PASSWORD as a plaintext env override. Role: iot:Create*/Attach* on *, iot:Publish cmd/*, SSM /pqc-workshop/* read.",
+      "description": "Creates the IoT Thing and per-device policy, writes the registry (no WiFi), seeds the dashboard device row, and starts the device-identity CodeBuild job (which reads the WiFi from SSM itself). Returns 503 until the shared classical image exists. Role: iot:Create*/Attach* on *, iot:Publish cmd/*, SSM /pqc-workshop/* read.",
       "configuration": null
     },
     {
@@ -1376,7 +1423,7 @@
       "service_provider": "AWS",
       "specific_service": "Lambdas pqc-workshop-start-migration and pqc-workshop-prepare-build",
       "version": null,
-      "description": "start-migration (invoked by AppSync migrateFirmware) validates the variant and starts the state machine. prepare-build resolves variant/version/signer era and the per-device build env (including the WiFi password).",
+      "description": "start-migration (invoked by AppSync migrateFirmware) validates the variant and starts the state machine. prepare-build resolves the variant to its prebuilt shared image (shared/<version>/) from variants.json; no per-device build.",
       "configuration": null
     },
     {
@@ -1386,7 +1433,7 @@
       "service_provider": "AWS",
       "specific_service": "Step Functions STANDARD pqc-workshop-pqc-migration",
       "version": null,
-      "description": "SetStatusBuilding -> PrepareBuild -> WaitForBuild (codebuild:startBuild.sync, WIFI_PASSWORD passed as PLAINTEXT env, visible in execution history) -> SetStatusPushing -> PublishOta -> SetStatusRebooting; Catch -> SetStatusFailed.",
+      "description": "PrepareBuild (resolves the shared image) -> SetStatusPushing -> PublishOta -> SetStatusRebooting; Catch -> SetStatusFailed. No build and no WiFi in the execution history.",
       "configuration": null
     },
     {
@@ -1406,7 +1453,7 @@
       "service_provider": "AWS",
       "specific_service": "CodeBuild pqc-workshop-firmware-build (firmware-builder ECR image)",
       "version": null,
-      "description": "Generates the device key + CSR in-container, issues the cert from the variant's ACM PCA, writes key, cert, WiFi SSID/PSK and broker endpoint into secrets.h, compiles with arduino-cli, signs firmware.bin with the era signer key from Secrets Manager, uploads all artifacts to s3://firmware/<serial>/<version>/. WIFI_PASSWORD is also a plaintext project env var.",
+      "description": "Runs once per version per deployment: writes only build settings (variant, version, broker host/port) into secrets.h, compiles the modular sketch with arduino-cli, signs firmware.bin with the era signer key from Secrets Manager, and uploads to s3://firmware/shared/<version>/. A separate device-identity job issues both device certificates per device and writes identity/<serial>/certs.bin.",
       "configuration": null
     },
     {
@@ -1456,7 +1503,7 @@
       "service_provider": "AWS",
       "specific_service": "AppSync GraphQL pqc-workshop-device-api, AWS_IAM auth",
       "version": null,
-      "description": "Queries listDevices/getDevice (devices table), getDeviceLog (message log), getBrokerLog (broker-log-reader). Mutations updateDevice (SETs arbitrary input fields on the device row), migrateFirmware (start-migration -> full build + OTA). sendCommand and deleteDevice are in the schema with NO resolvers. Subscription onDeviceUpdate.",
+      "description": "Queries listDevices/getDevice (devices table), getDeviceLog (message log), getBrokerLog (broker-log-reader). Mutations updateDevice (SETs arbitrary input fields on the device row), migrateFirmware (start-migration -> full build + OTA). sendCommand (command-publisher: led-on/led-off on cmd/<thing>/control, diag on cmd/<thing>/diag only; IAM limited to those topics). deleteDevice has no resolver. Subscription onDeviceUpdate.",
       "configuration": null
     },
     {
@@ -1548,7 +1595,7 @@
       "protocol": "Other",
       "port": null,
       "encryption": true,
-      "description": "Device joins the workshop AP with the shared WPA2 PSK baked into its firmware."
+      "description": "Device joins the workshop AP with the shared WPA2 PSK from its certs partition."
     },
     {
       "id": "CN002",
@@ -1845,7 +1892,7 @@
       "protocol": "HTTPS",
       "port": 443,
       "encryption": true,
-      "description": "WaitForBuild: codebuild:startBuild.sync with per-device env overrides incl. WIFI_PASSWORD as PLAINTEXT."
+      "description": "Retired: the migration no longer builds firmware (it pushes the prebuilt shared image)."
     },
     {
       "id": "CN035",
@@ -1899,7 +1946,7 @@
       "protocol": "Other",
       "port": null,
       "encryption": false,
-      "description": "Device private key, certs, signer roots and WiFi PSK are compiled into the app image stored in flash; OTA writes the inactive partition."
+      "description": "Device private keys, certs, CA roots and WiFi PSK are in the unencrypted certs NVS partition (0x721000), written by the Builder-Pi; OTA writes only the inactive app slot."
     },
     {
       "id": "CN041",
@@ -1998,7 +2045,7 @@
       "protocol": "HTTPS",
       "port": 443,
       "encryption": true,
-      "description": "Reads source/<sketch>.ino; writes <serial>/<version>/ firmware.bin, merged.bin (both embedding the device key and PSK), sig, signer cert, metadata."
+      "description": "Reads the sketch folder from source/firmware/; writes shared/<version>/ firmware.bin, merged.bin and the flash pieces (no device data), sig, signer cert, metadata. The device-identity job writes identity/<serial>/certs.bin."
     },
     {
       "id": "CN052",
@@ -2333,7 +2380,7 @@
       "classification": "Restricted",
       "encryption_at_rest": false,
       "backup_frequency": null,
-      "description": "Device private key, certificate, CA roots, OTA signer roots and WiFi PSK compiled into the app image in flash (PROGMEM). No ESP32 flash encryption or secure boot configured in the build FQBN as far as found, so anyone with the board can read them over USB."
+      "description": "Device private keys, certificates, both CA roots and the WiFi PSK in the certs NVS partition (0x721000), separate from the app image. No flash/NVS encryption or secure boot, so anyone with the board can read them over USB."
     }
   ],
   "threatActors": [
@@ -3099,7 +3146,7 @@
         "Device key persists in firmware artifacts in S3 (gap)",
         "WiFi PSK as plaintext build env (gap)"
       ],
-      "description": "Entry into the high-trust zone that issues certificates, holds signer keys and stores key-bearing firmware."
+      "description": "Entry into the high-trust zone that issues certificates, holds signer keys and stores shared firmware and short-lived identity images."
     },
     {
       "id": "TB008",
@@ -3145,7 +3192,7 @@
         "In transit",
         "In use"
       ],
-      "description": "Per-device ECDSA P-256 or ML-DSA-44 key generated in the firmware build and issued by a Private CA. Proves the device's identity to the broker.",
+      "description": "Per-device ECDSA P-256 and ML-DSA-44 keys generated by the device-identity job at registration, issued by the two Private CAs and stored in the device's certs partition. Proves the device's identity to the broker.",
       "owner": "Firmware build pipeline",
       "criticality": 5,
       "metadata": {}
@@ -3220,7 +3267,7 @@
         "At rest",
         "In transit"
       ],
-      "description": "Compiled per-device firmware (firmware.bin / merged.bin) embedding the device key and WiFi PSK; its integrity decides what code runs on the device.",
+      "description": "Shared per-version firmware (firmware.bin plus bootloader/partition pieces), identical for every device and free of keys or WiFi; its integrity decides what code runs on the device.",
       "owner": "Firmware build pipeline",
       "criticality": 5,
       "metadata": {}
@@ -3757,10 +3804,10 @@
     },
     {
       "threat_id": "T003",
-      "decision": "Open",
-      "residual_severity": "High",
+      "decision": "Accepted",
+      "residual_severity": "Low",
       "residual_likelihood": "Possible",
-      "rationale": "Logged presigned URLs plus key-bearing images give anonymous access to device keys for 15 minutes. Needs M004, M007 or M012.",
+      "rationale": "Resolved by the NVS identity design (M012): firmware images are built once per variant and carry no keys, certificates or WiFi PSK, so a leaked presigned URL discloses only public code. Presigned URLs in the message log remain an anonymous-read issue under T004 / M004 / M007.",
       "is_current": true
     },
     {
@@ -3776,7 +3823,7 @@
       "decision": "Accepted",
       "residual_severity": "Medium",
       "residual_likelihood": "Very Likely",
-      "rationale": "Accepted for the workshop: boards are handed to attendees and flash encryption/secure boot would complicate re-flashing. The design must not rely on key secrecy (see T006/T008), and M008 is documented as production guidance.",
+      "rationale": "Accepted for the workshop: boards are handed to attendees and flash/NVS encryption and secure boot would complicate re-flashing. The identity now lives only in the board's certs partition (never in firmware images, and deleted from S3 once flashed), so extraction is limited to the attendee's own board; the firmware refuses an identity issued for another chip, which stops copying a certs image onto another board but not reuse of an extracted key. The design must not rely on key secrecy (see T006, T008, T024), and M008 is documented as production guidance.",
       "is_current": true
     },
     {
@@ -3822,9 +3869,9 @@
     {
       "threat_id": "T011",
       "decision": "Open",
-      "residual_severity": "High",
+      "residual_severity": "Medium",
       "residual_likelihood": "Possible",
-      "rationale": "Pi compromise exposes every device key. M011 and M012.",
+      "rationale": "No longer fleet-wide: shared firmware images hold no keys, and each identity image is deleted (every version) after flashing with a 1-day lifecycle backstop. A Pi compromise still exposes identities in flight and can mint new ones through /register. M011 (scope GetObject to shared/* and identity/*), M010 and M009 reduce it further.",
       "is_current": true
     },
     {
@@ -3837,10 +3884,10 @@
     },
     {
       "threat_id": "T013",
-      "decision": "Open",
+      "decision": "Accepted",
       "residual_severity": "Low",
-      "residual_likelihood": "Likely",
-      "rationale": "PSK value is low (shared and compiled into firmware) but plaintext copies are an existing backlog item and a poor pattern for a sample. M013.",
+      "residual_likelihood": "Unlikely",
+      "rationale": "Resolved (M013): the PSK lives only in SSM as a SecureString. The device-identity CodeBuild job reads it as a PARAMETER_STORE variable, and the registrar, registry table, prepare-build and migration state machine no longer store or pass it. The remaining copies are by design: the Builder-Pi (it runs the AP), each device's certs partition, and the identity image until it is flashed.",
       "is_current": true
     },
     {
@@ -3912,7 +3959,7 @@
       "decision": "Accepted",
       "residual_severity": "Low",
       "residual_likelihood": "Unlikely",
-      "rationale": "Accepted: short-lived workshop data has no long-term secrecy value; the classical links are part of the teaching story (M023).",
+      "rationale": "Accepted: short-lived workshop data has no long-term secrecy value, and firmware images no longer carry keys. The classical links are part of the teaching story (M023); moving the OTA download to hybrid ML-KEM is a planned change (S3 supports it).",
       "is_current": true
     },
     {
@@ -3920,7 +3967,15 @@
       "decision": "Open",
       "residual_severity": "High",
       "residual_likelihood": "Possible",
-      "rationale": "Signed pushes are protected by M026, but unverified TLS exposes key-bearing images and unsigned pushes. M001 and M002.",
+      "rationale": "Signed pushes are protected by M026, and images no longer carry keys, but the unverified TLS still exposes unsigned pushes. M001 and M002.",
+      "is_current": true
+    },
+    {
+      "threat_id": "T024",
+      "decision": "Open",
+      "residual_severity": "High",
+      "residual_likelihood": "Possible",
+      "rationale": "The signature check holds only while signer keys are distinguishable from device keys, and today they are not. Combined with T005 (keys are extractable) and the missing broker ACL, one attendee could sign firmware for the whole room. M029, then M003.",
       "is_current": true
     }
   ],
@@ -3938,7 +3993,7 @@
       "Edge computing",
       "Event-driven architecture"
     ],
-    "description": "ESP32 Arduino firmware (wolfSSL TLS 1.3 + ML-KEM, FreeRTOS WiFi/MQTT tasks, dual-boot OTA) plus an AWS backend: ECS Fargate Mosquitto/OpenSSL 3.5 + oqs-provider broker, NLB, ACM Private CA, Lambda, Step Functions, CodeBuild, API Gateway, AppSync, Cognito, DynamoDB, S3, CloudFront, IoT Core, SSM, Secrets Manager. Raspberry Pi edge host running a Flask GUI and arduino-cli/esptool. MIT-0 licensed sample."
+    "description": "ESP32 Arduino firmware (wolfSSL TLS 1.3 + ML-KEM, FreeRTOS WiFi/MQTT tasks, dual-boot OTA) plus an AWS backend: ECS Fargate Mosquitto/OpenSSL 3.5 + oqs-provider broker, NLB, ACM Private CA, Lambda, Step Functions, CodeBuild, API Gateway, AppSync, Cognito, DynamoDB, S3, CloudFront, IoT Core, SSM, Secrets Manager. Raspberry Pi edge host running a Flask GUI with pyserial/esptool (it never compiles firmware). MIT-0 licensed sample."
   },
   "dataAssetProfiles": [
     {
@@ -3961,7 +4016,7 @@
       "volume_tier": "Small",
       "lifecycle_state": "Active",
       "business_domain": "Engineering",
-      "description": "Per-device ECDSA P-256 and ML-DSA-44 key pairs and certificates issued by the shared cert-issuer CodeBuild job, compiled into each device's firmware image, stored in device flash, and used for device-to-broker mTLS."
+      "description": "Per-device ECDSA P-256 and ML-DSA-44 key pairs and certificates issued at registration by the device-identity CodeBuild job, written to the device's unencrypted certs NVS partition (the S3 copy is deleted after flashing), and used for device-to-broker mTLS."
     },
     {
       "id": "DP002",
@@ -4025,7 +4080,7 @@
       "volume_tier": "Small",
       "lifecycle_state": "Active",
       "business_domain": "Operations",
-      "description": "Workshop AP SSID and PSK. Source of truth is SSM SecureString /pqc-workshop/wifi/password; also compiled into firmware, configured on the Builder-Pi AP, and (known backlog item) still written in plaintext to the pqc-workshop-device-registry DynamoDB table by the registrar."
+      "description": "Workshop AP SSID and PSK. Source of truth is SSM SecureString /pqc-workshop/wifi/password; also written into each device's certs partition by the device-identity job and configured on the Builder-Pi AP."
     },
     {
       "id": "DP005",
@@ -4047,7 +4102,7 @@
       "volume_tier": "Small",
       "lifecycle_state": "Active",
       "business_domain": "Engineering",
-      "description": "Per-device classical / PQC / PQC+ML-DSA firmware binaries in the versioned firmware S3 bucket under <serial>/<version>/, delivered to the Builder-Pi for USB flashing and to devices over OTA via presigned S3 URLs. Each image embeds that device's private key and the WiFi PSK, and integrity determines what code runs on the device."
+      "description": "Shared firmware binaries, one per version (classical / PQC / PQC+ML-DSA / ML-DSA-signed), in the versioned firmware S3 bucket under shared/<version>/, flashed by the Builder-Pi and delivered to devices over OTA via presigned S3 URLs. Images carry no keys, certificates or WiFi; integrity determines what code runs on the device."
     },
     {
       "id": "DP006",
