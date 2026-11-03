@@ -260,6 +260,7 @@ Resources:
         DeviceCount: !Ref DeviceCount
         DeviceNamePrefix: !Ref DeviceNamePrefix
         StartMigrationFunctionArn: !GetAtt DeviceBuilderStack.Outputs.StartMigrationFunctionArn
+        IoTEndpoint: !Ref IoTEndpoint
         DashboardTriggerBuild: !Ref DashboardTriggerBuild
       Tags:
         - Key: Workshop

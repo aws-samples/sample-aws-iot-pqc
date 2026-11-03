@@ -20,6 +20,12 @@ Parameters:
     Default: esp32-pqc-device
     Description: Prefix for device Thing names (e.g., esp32-pqc-device-001)
 
+  IoTEndpoint:
+    Type: String
+    Description: >
+      AWS IoT Core data endpoint (iot:Data-ATS) for the command publisher.
+      Account-specific (a random prefix, not the account id); passed down from
+      the master IoTEndpoint parameter.
   StartMigrationFunctionArn:
     Type: String
     Description: >
@@ -639,7 +645,7 @@ Resources:
       Role: !GetAtt CommandPublisherRole.Arn
       Environment:
         Variables:
-          IOT_ENDPOINT: !Sub '${AWS::AccountId}-ats.iot.${AWS::Region}.amazonaws.com'
+          IOT_ENDPOINT: !Ref IoTEndpoint
       Code: ../lambda/command-publisher
 
   # ═══════════════════════════════════════════════════════════════════════════
