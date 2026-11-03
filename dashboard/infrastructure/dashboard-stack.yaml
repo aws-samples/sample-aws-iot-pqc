@@ -458,6 +458,34 @@ Resources:
         }
     DependsOn: DeviceApiSchema
 
+  # Dashboard device commands (LED toggle, diagnostics). The command-publisher
+  # Lambda allowlists the (topicSuffix, action) pairs it will publish.
+  SendCommandResolver:
+    Type: AWS::AppSync::Resolver
+    Properties:
+      ApiId: !GetAtt DeviceApi.ApiId
+      TypeName: Mutation
+      FieldName: sendCommand
+      DataSourceName: !GetAtt LambdaDataSource.Name
+      Runtime:
+        Name: APPSYNC_JS
+        RuntimeVersion: 1.0.0
+      Code: |
+        export function request(ctx) {
+          return {
+            operation: 'Invoke',
+            payload: {
+              thingName: ctx.args.thingName,
+              action: ctx.args.action,
+              topicSuffix: ctx.args.topicSuffix,
+            },
+          };
+        }
+        export function response(ctx) {
+          return ctx.result;
+        }
+    DependsOn: DeviceApiSchema
+
   MigrateFirmwareResolver:
     Type: AWS::AppSync::Resolver
     Properties:
@@ -581,8 +609,11 @@ Resources:
               - Effect: Allow
                 Action:
                   - iot:Publish
+                # Dashboard commands only (LED + diagnostics). Never cmd/*/ota:
+                # firmware changes go through migrateFirmware (signed OTA).
                 Resource:
-                  - !Sub 'arn:aws:iot:${AWS::Region}:${AWS::AccountId}:topic/cmd/*/ota'
+                  - !Sub 'arn:aws:iot:${AWS::Region}:${AWS::AccountId}:topic/cmd/*/control'
+                  - !Sub 'arn:aws:iot:${AWS::Region}:${AWS::AccountId}:topic/cmd/*/diag'
 
   CommandPublisherFunction:
     Type: AWS::Lambda::Function
