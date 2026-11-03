@@ -244,3 +244,31 @@ def test_get_serial_number_uses_esptool_entry_point(monkeypatch):
     dm = DeviceManager({"region": "us-east-1"})
     assert dm.get_serial_number("/dev/ttyACM0") == "C69DE0"
     assert calls[0][0] == "esptool"   # not the deprecated esptool.py alias
+
+
+def test_failed_registry_lookup_is_retried_not_treated_as_new(monkeypatch):
+    """A lookup that fails at boot must not offer Register for a registered device."""
+    dm = DeviceManager({"region": "us-east-1"})
+    answers = iter([None, True])          # first lookup fails, retry succeeds
+    monkeypatch.setattr(dm, "_check_registration", lambda serial: next(answers))
+    monkeypatch.setattr(dm, "get_serial_number", lambda port: "FC22E0")
+    monkeypatch.setattr(dm, "start_serial_monitor", lambda port: None)
+
+    slot = dm.detect_device("/dev/ttyACM0")
+    assert slot.status == "detecting" and not slot.is_registered and not slot.registry_checked
+
+    dm.recheck_registrations(interval=0)
+    assert slot.status == "registered" and slot.is_registered and slot.registry_checked
+
+
+def test_unregistered_device_is_ready_and_not_rechecked(monkeypatch):
+    dm = DeviceManager({"region": "us-east-1"})
+    calls = []
+    monkeypatch.setattr(dm, "_check_registration", lambda serial: calls.append(serial) or False)
+    monkeypatch.setattr(dm, "get_serial_number", lambda port: "C69E18")
+    monkeypatch.setattr(dm, "start_serial_monitor", lambda port: None)
+
+    slot = dm.detect_device("/dev/ttyACM1")
+    assert slot.status == "ready" and slot.registry_checked
+    dm.recheck_registrations(interval=0)
+    assert calls == ["C69E18"]            # no further lookups once answered

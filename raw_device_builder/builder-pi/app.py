@@ -65,6 +65,8 @@ def port_scanner():
             # Remove disconnected devices
             for port in known_ports - current_ports:
                 device_manager.remove_device(port)
+            # Retry registry lookups that failed (e.g. right after boot)
+            device_manager.recheck_registrations()
 
         except Exception as e:
             print(f"Port scan error: {e}")

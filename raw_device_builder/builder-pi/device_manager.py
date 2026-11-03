@@ -122,6 +122,12 @@ class DeviceSlot:
     progress: List[str] = field(default_factory=list)
     is_registered: bool = False
     identity_build_id: Optional[str] = None
+    # True once the registry has answered for this serial. A lookup that fails
+    # (e.g. at boot, before the network or the clock is up) leaves it False and
+    # the slot in 'detecting', so the scanner retries instead of offering
+    # "Register" for a device that is already registered.
+    registry_checked: bool = False
+    last_registry_try: float = 0.0
     # S3 key + version of the downloaded identity image, deleted after flashing.
     identity_key: Optional[str] = None
     identity_version_id: Optional[str] = None
@@ -222,14 +228,7 @@ class DeviceManager:
             slot.thing_name = f'esp32-{serial_number}'
             slot.log(f'Device identified: {slot.thing_name} (serial: {serial_number})')
 
-            # Check if already registered
-            if self._check_registration(serial_number):
-                slot.is_registered = True  # nosemgrep: is-function-without-parentheses
-                slot.status = 'registered'
-                slot.log('Device is already registered')
-            else:
-                slot.status = 'ready'
-                slot.log('New device — ready for registration')
+            self._apply_registration(slot, self._check_registration(serial_number))
         else:
             slot.status = 'error'
             slot.error = 'Could not read device serial number'
@@ -245,8 +244,9 @@ class DeviceManager:
 
         return slot
 
-    def _check_registration(self, serial_number: str) -> bool:
-        """Check if a device is already registered in DynamoDB."""
+    def _check_registration(self, serial_number: str) -> Optional[bool]:
+        """Is the device in the registry? True / False, or None if the lookup
+        failed (network, credentials or clock not ready) and must be retried."""
         try:
             import boto3
             session = boto3.session.Session(region_name=self.config.get('region', 'us-east-1'))
@@ -254,8 +254,36 @@ class DeviceManager:
             table = dynamodb.Table('pqc-workshop-device-registry')
             response = table.get_item(Key={'serialNumber': serial_number})
             return 'Item' in response
-        except Exception:
-            return False
+        except Exception as e:
+            print(f"Registry lookup for {serial_number} failed: {e}")
+            return None
+
+    def _apply_registration(self, slot: DeviceSlot, registered: Optional[bool]):
+        slot.last_registry_try = time.time()
+        if registered is None:
+            if slot.status != 'detecting':
+                slot.log('Registry lookup failed; retrying (network or clock not ready?)')
+            slot.status = 'detecting'
+            return
+        slot.registry_checked = True
+        if registered:
+            slot.is_registered = True  # nosemgrep: is-function-without-parentheses
+            slot.status = 'registered'
+            slot.log('Device is already registered')
+        else:
+            slot.status = 'ready'
+            slot.log('New device — ready for registration')
+
+    def recheck_registrations(self, interval: float = 10.0):
+        """Retry the registry lookup for identified devices whose lookup failed.
+        Called by the GUI's port scanner loop."""
+        now = time.time()
+        with self._lock:
+            pending = [s for s in self.devices.values()
+                       if s.serial_number and not s.registry_checked
+                       and s.status == 'detecting' and now - s.last_registry_try >= interval]
+        for slot in pending:
+            self._apply_registration(slot, self._check_registration(slot.serial_number))
 
     def _s3(self):
         import boto3
