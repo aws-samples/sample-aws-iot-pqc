@@ -84,6 +84,13 @@ The remaining Probe findings are all INFO severity and are left as-is:
 - `hashicorp-tf-password` / `generic-api-key` — false positives over SSM
   parameter-path strings and ARNs; no credentials are hardcoded (cert/key
   material is created at runtime and stored in AWS Secrets Manager).
+- `generic-api-key` (gitleaks, 12 history fingerprints, first surfaced by a
+  local ProtoShield scan) — false positives over cryptographic algorithm
+  names: the TLS key-exchange group string `"SECP256R1_MLKEM768"` passed to
+  wolfSSL in the firmware sketches, `pqc_tls_client.cpp` and the OTA updater,
+  and the ACM PCA `KeyAlgorithm: EC_prime256v1` in the broker stack. They are
+  public, standard identifiers, not secrets. Suppressed by exact fingerprint in
+  `.gitleaksignore`.
 - `unquoted-variable-expansion-in-command`, `prefer-json-notation`,
   `missing-template-string-indicator`, `B106`/`B110` — style/false-positive
   noise in helper scripts and tests.
