@@ -33,17 +33,32 @@ SIG_MLDSA_ARN = "arn:aws:acm-pca:us-east-1:111:certificate-authority/signer-mlds
 SIGNERS = dict(signer_classical_ca_arn=SIG_CLS_ARN, signer_mldsa_ca_arn=SIG_MLDSA_ARN)
 
 
+def _openssl(args, bin_dir=None, **kwargs):
+    """Run the static 'openssl' command, optionally from a specific bin dir.
+
+    The command is always the literal 'openssl'; which build runs is chosen by
+    putting bin_dir first on PATH (the ML-DSA-capable OpenSSL 3.5 lives outside
+    the default PATH in the cert-issuer image).
+    """
+    env = dict(os.environ)
+    if bin_dir:
+        env["PATH"] = bin_dir + os.pathsep + env.get("PATH", "")
+    return subprocess.run(["openssl", *args], env=env, **kwargs)
+
+
 def _mldsa_openssl():
+    """The path of an ML-DSA-44 capable openssl, or None."""
     for cand in (issue_cert.OPENSSL35_BIN, shutil.which("openssl")):
         if cand and os.path.exists(cand):
-            probe = subprocess.run([cand, "genpkey", "-algorithm", "ML-DSA-44"],
-                                   capture_output=True)
+            probe = _openssl(["genpkey", "-algorithm", "ML-DSA-44"],
+                             bin_dir=os.path.dirname(cand), capture_output=True)
             if probe.returncode == 0:
                 return cand
     return None
 
 
 MLDSA_OPENSSL = _mldsa_openssl()
+MLDSA_OPENSSL_DIR = os.path.dirname(MLDSA_OPENSSL) if MLDSA_OPENSSL else None
 HAVE_NVS_GEN = importlib.util.find_spec("esp_idf_nvs_partition_gen") is not None
 needs_crypto = pytest.mark.skipif(MLDSA_OPENSSL is None, reason="no ML-DSA-capable openssl")
 needs_nvs = pytest.mark.skipif(not HAVE_NVS_GEN, reason="esp-idf-nvs-partition-gen not installed")
@@ -67,15 +82,16 @@ class SigningPca:
             tag = "mldsa" if "mldsa" in arn else "cls"
             name = arn.rsplit("/", 1)[-1]   # one key + cert per CA ARN
             key, crt = (os.path.join(self.dir, f"ca_{name}.{x}") for x in ("key", "pem"))
+            # bin dir of the openssl that handles this CA (None = default PATH)
+            o = MLDSA_OPENSSL_DIR if tag == "mldsa" else None
             if tag == "mldsa":
-                subprocess.run([MLDSA_OPENSSL, "genpkey", "-algorithm", "ML-DSA-44",
-                                "-out", key], check=True, capture_output=True)
+                _openssl(["genpkey", "-algorithm", "ML-DSA-44", "-out", key],
+                         bin_dir=o, check=True, capture_output=True)
             else:
-                subprocess.run(["openssl", "ecparam", "-name", "prime256v1", "-genkey",
-                                "-noout", "-out", key], check=True, capture_output=True)
-            o = MLDSA_OPENSSL if tag == "mldsa" else "openssl"
-            subprocess.run([o, "req", "-x509", "-new", "-key", key, "-subj", f"/CN=Test {name} CA",
-                            "-days", "2", "-out", crt], check=True, capture_output=True)
+                _openssl(["ecparam", "-name", "prime256v1", "-genkey", "-noout", "-out", key],
+                         check=True, capture_output=True)
+            _openssl(["req", "-x509", "-new", "-key", key, "-subj", f"/CN=Test {name} CA",
+                      "-days", "2", "-out", crt], bin_dir=o, check=True, capture_output=True)
             self.cas[arn] = (o, key, crt)
         return self.cas[arn]
 
@@ -86,9 +102,9 @@ class SigningPca:
         csr, leaf = (os.path.join(self.dir, f"leaf{n}.{x}") for x in ("csr", "pem"))
         with open(csr, "wb") as f:
             f.write(Csr)
-        subprocess.run([o, "x509", "-req", "-in", csr, "-CA", crt, "-CAkey", key,
-                        "-CAcreateserial", "-days", "2", "-out", leaf],
-                       check=True, capture_output=True)
+        _openssl(["x509", "-req", "-in", csr, "-CA", crt, "-CAkey", key,
+                  "-CAcreateserial", "-days", "2", "-out", leaf],
+                 bin_dir=o, check=True, capture_output=True)
         arn = f"{CertificateAuthorityArn}/certificate/{n}"
         self.leaves[arn] = leaf
         return {"CertificateArn": arn}
@@ -246,9 +262,9 @@ def test_signing_roots_are_in_the_partition_and_differ_from_device_cas(pca, tmp_
     idi.build_identity("C69DE0", CLS_ARN, MLDSA_ARN, SSID, PSK, str(out),
                        acm_pca_client=pca, **SIGNERS)
     image = out.read_bytes()
-    der = lambda arn: subprocess.run(  # noqa: E731
-        [pca.cas[arn][0], "x509", "-in", pca.cas[arn][2], "-outform", "DER"],
-        check=True, capture_output=True).stdout
+    der = lambda arn: _openssl(  # noqa: E731
+        ["x509", "-in", pca.cas[arn][2], "-outform", "DER"],
+        bin_dir=pca.cas[arn][0], check=True, capture_output=True).stdout
     # NVS splits blobs over ~4 KB into per-page chunks, so match each root's
     # first 256 bytes (it includes the unique serial number) rather than the
     # whole DER.

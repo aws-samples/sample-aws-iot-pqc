@@ -101,9 +101,8 @@ def test_flash_writes_pieces_and_identity_at_partition_offsets(env, monkeypatch)
     assert dm.flash_firmware(slot.port, fw_dir) is True
 
     argv = run.argv
-    assert os.path.basename(argv[0]) == "esptool"
-    assert argv[1:argv.index("write_flash")] == [
-        "--port", slot.port, "--baud", "921600", "--chip", "esp32s3"]
+    assert argv[:argv.index("write_flash")] == [
+        "esptool", "--port", slot.port, "--baud", "921600", "--chip", "esp32s3"]
     pairs = argv[argv.index("8MB") + 1:]
     assert [(o, os.path.basename(p)) for o, p in zip(pairs[::2], pairs[1::2])] == [
         ("0x0", "bootloader.bin"),
@@ -234,34 +233,31 @@ def test_scan_ports_falls_back_to_glob(monkeypatch):
     assert dm.scan_ports() == ["/dev/ttyACM0"]
 
 
-def test_get_serial_number_uses_esptool_entry_point(monkeypatch):
+def test_get_serial_number_uses_esptool_entry_point(monkeypatch, tmp_path):
     calls = []
 
     def fake_run(argv, **kwargs):
-        calls.append(argv)
+        calls.append((argv, kwargs))
         return subprocess.CompletedProcess(argv, 0, stdout="MAC: 10:20:ba:c6:9d:e0\n", stderr="")
 
     monkeypatch.setattr(device_manager.subprocess, "run", fake_run)
+    monkeypatch.setattr(device_manager.sys, "executable", str(tmp_path / "bin" / "python"))
     dm = DeviceManager({"region": "us-east-1"})
     assert dm.get_serial_number("/dev/ttyACM0") == "C69DE0"
-    # Not the deprecated esptool.py alias.
-    assert os.path.basename(calls[0][0]) == "esptool"
+    argv, kwargs = calls[0]
+    # A static command (not the deprecated esptool.py alias), resolved through
+    # PATH with the interpreter's bin/ first.
+    assert argv[0] == "esptool"
+    assert kwargs["env"]["PATH"].split(os.pathsep)[0] == str(tmp_path / "bin")
 
 
-def test_esptool_resolves_next_to_the_interpreter(monkeypatch, tmp_path):
+def test_esptool_env_puts_the_venv_bin_first_on_path(monkeypatch, tmp_path):
     """On the Pi the app runs from a venv whose bin/ is not on PATH."""
-    venv_bin = tmp_path / "bin"
-    venv_bin.mkdir()
-    exe = venv_bin / "esptool"
-    exe.write_text("#!/bin/sh\n")
-    exe.chmod(0o755)
+    venv_bin = tmp_path / "venv" / "bin"
     monkeypatch.setattr(device_manager.sys, "executable", str(venv_bin / "python"))
-    assert device_manager.esptool_bin() == str(exe)
-
-
-def test_esptool_falls_back_to_path(monkeypatch, tmp_path):
-    monkeypatch.setattr(device_manager.sys, "executable", str(tmp_path / "python"))
-    assert device_manager.esptool_bin() == "esptool"
+    monkeypatch.setenv("PATH", "/usr/bin:/bin")
+    assert device_manager.esptool_env()["PATH"] == os.pathsep.join(
+        [str(venv_bin), "/usr/bin:/bin"])
 
 
 def test_failed_registry_lookup_is_retried_not_treated_as_new(monkeypatch):

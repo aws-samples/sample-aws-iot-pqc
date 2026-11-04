@@ -1361,8 +1361,12 @@ Resources:
             Principal:
               Service: codebuild.amazonaws.com
             Action: sts:AssumeRole
+      # Two focused policies rather than one: the job's runtime plumbing (logs,
+      # pulling the cert-issuer image) and the identity work itself (Private
+      # CA, WiFi params, S3 upload). Same permissions in total; each document
+      # stays small enough to review at a glance.
       Policies:
-        - PolicyName: DeviceIdentityPolicy
+        - PolicyName: DeviceIdentityRuntime
           PolicyDocument:
             Version: '2012-10-17'
             Statement:
@@ -1385,6 +1389,10 @@ Resources:
                   - ecr:GetDownloadUrlForLayer
                   - ecr:BatchGetImage
                 Resource: !Sub 'arn:aws:ecr:${AWS::Region}:${AWS::AccountId}:repository/pqc-workshop-cert-issuer'
+        - PolicyName: DeviceIdentityIssue
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
               - Effect: Allow
                 Action:
                   - acm-pca:IssueCertificate
@@ -1503,8 +1511,11 @@ Resources:
             Action: sts:AssumeRole
       ManagedPolicyArns:
         - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+      # Three focused policies rather than one: firmware/identity artifacts in
+      # S3, the builder API, and config, registry and log shipping. Same
+      # permissions in total; each document stays small enough to review.
       Policies:
-        - PolicyName: BuilderPiAccess
+        - PolicyName: BuilderPiArtifacts
           PolicyDocument:
             Version: '2012-10-17'
             Statement:
@@ -1515,17 +1526,6 @@ Resources:
                 Resource:
                   - !GetAtt FirmwareBucket.Arn
                   - !Sub '${FirmwareBucket.Arn}/*'
-              - Effect: Allow
-                Action:
-                  - execute-api:Invoke
-                Resource:
-                  - !Sub 'arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${BuilderApi}/*'
-              - Effect: Allow
-                Action:
-                  - codebuild:BatchGetBuilds
-                Resource:
-                  - !GetAtt FirmwareBuildProject.Arn
-                  - !GetAtt DeviceIdentityProject.Arn
               # After flashing a device's identity image the Pi deletes it
               # (identity/<serial>/certs.bin holds the device private keys) —
               # every version, so an issued-but-never-flashed identity does not
@@ -1542,6 +1542,26 @@ Resources:
                 Condition:
                   StringLike:
                     s3:prefix: 'identity/*'
+        # The builder API (register/deregister) and polling its CodeBuild jobs.
+        - PolicyName: BuilderPiApi
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - execute-api:Invoke
+                Resource:
+                  - !Sub 'arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${BuilderApi}/*'
+              - Effect: Allow
+                Action:
+                  - codebuild:BatchGetBuilds
+                Resource:
+                  - !GetAtt FirmwareBuildProject.Arn
+                  - !GetAtt DeviceIdentityProject.Arn
+        - PolicyName: BuilderPiConfigAndLogs
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
               # Read the workshop config params, incl. the WiFi SSID/password
               # the builder-Pi hostapd AP setup broadcasts. The password is a
               # SecureString, so allow kms:Decrypt scoped to the SSM service.
