@@ -54,23 +54,27 @@ def flash_args(firmware_dir: str) -> List[str]:
     return args
 
 
-def esptool_bin() -> str:
-    """The esptool entry point installed alongside the running interpreter.
+def esptool_env() -> Dict[str, str]:
+    """Environment for running esptool: the interpreter's bin/ first on PATH.
 
     On the Pi the app runs from its own virtualenv (/opt/pqc-workshop/venv), so
     esptool lives in that venv's bin/, which is not on a login shell's PATH.
-    Resolving it next to sys.executable makes the GUI and the workshop-builder
-    CLI use the locked esptool however they were started. Falls back to
-    'esptool' on PATH (e.g. a dev machine without a venv).
+    Putting sys.executable's directory first makes the plain 'esptool' command
+    resolve to the locked copy in the venv however the GUI or the
+    workshop-builder CLI was started; elsewhere (no venv) PATH is unchanged in
+    effect. The command itself stays a static string, so nothing about which
+    program runs comes from device or user input.
     """
-    candidate = os.path.join(os.path.dirname(sys.executable), 'esptool')
-    return candidate if os.access(candidate, os.X_OK) else 'esptool'
+    env = dict(os.environ)
+    bin_dir = os.path.dirname(sys.executable)
+    env['PATH'] = bin_dir + os.pathsep + env.get('PATH', '')
+    return env
 
 
-def esptool_argv(port: str, address_args: List[str]) -> List[str]:
-    """Full esptool command line for a write_flash of address_args."""
+def esptool_write_flash_args(port: str, address_args: List[str]) -> List[str]:
+    """The esptool arguments (after the 'esptool' command) for a write_flash."""
     return [
-        esptool_bin(), '--port', port,
+        '--port', port,
         '--baud', '921600',
         '--chip', 'esp32s3',
         'write_flash',
@@ -210,8 +214,8 @@ class DeviceManager:
         """Read the ESP32 chip MAC/serial via esptool."""
         try:
             result = subprocess.run(
-                [esptool_bin(), '--port', port, 'read_mac'],
-                capture_output=True, text=True, timeout=15
+                ['esptool', '--port', port, 'read_mac'],
+                capture_output=True, text=True, timeout=15, env=esptool_env()
             )
             output = result.stdout + result.stderr
 
@@ -477,8 +481,8 @@ class DeviceManager:
             slot.log(f'  {offset}  {os.path.basename(path)} ({os.path.getsize(path)} bytes)')
         try:
             result = subprocess.run(
-                esptool_argv(port, address_args),
-                capture_output=True, text=True, timeout=120
+                ['esptool', *esptool_write_flash_args(port, address_args)],
+                capture_output=True, text=True, timeout=120, env=esptool_env()
             )
 
             # Persist the FULL esptool output to the device log file (not just
