@@ -282,8 +282,8 @@
     {
       "id": "a920bb9c-39f8-5676-945e-7ae7b09dbe5e",
       "numericId": 29,
-      "status": "mitigationIdentified",
-      "content": "Separate code signing from device identity: issue the OTA signer certificates with the codeSigning extended key usage (and device certificates without it) and make the device require codeSigning on the signer leaf; optionally use a dedicated signer CA or pin the signer public keys in the firmware.",
+      "status": "mitigationResolved",
+      "content": "Separate code signing from device identity: the OTA signer certificates are issued only by two dedicated firmware-signing root CAs (ECDSA P-256 and ML-DSA-44) with the codeSigning EKU; the device trusts only the signing root matching the image's sigAlg, requires codeSigning on the signer leaf, and never trusts a device CA root for OTA.",
       "displayOrder": 29,
       "metadata": []
     }
@@ -1216,7 +1216,7 @@
       ],
       "statement": "A workshop attendee with a device private key extracted from their own board can sign a modified firmware image with that key and push it to other devices as a signed OTA, because the OTA signer and device certificates are issued by the same CAs with the same extended key usage and devices only check that the signer chains to one of those CA roots, which leads to every device accepting attacker-chosen firmware as authentic",
       "displayOrder": 24,
-      "status": "threatIdentified",
+      "status": "threatResolved",
       "tags": [
         "ota",
         "code-signing",

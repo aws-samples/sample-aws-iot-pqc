@@ -113,7 +113,7 @@ Post-Quantum Cryptography Migration for IoT workshop (AWS Workshop Studio / re:I
 
 | ID | Name | Type | Service Provider | Description |
 |---|---|---|---|---|
-| C001 | ESP32 field device firmware | Compute | Other | One modular sketch built as three variants: classical (ECDHE + ECDSA cert, port 8883), pqc (SecP256r1MLKEM768 + ECDSA cert, 8883), pqc-mldsa (ML-KEM + ML-DSA-44 cert, 8884). Identity (keys, certs, both CA roots, WiFi) is loaded at boot from the unencrypted certs NVS partition; an identity issued for another chip is refused. mTLS to the broker with WOLFSSL_VERIFY_PEER chain check only (no hostname/SAN check). Publishes dt/<thing>/telemetry and lifecycle, subscribes cmd/<thing>/+. Dual-boot OTA: downloads from the URL in the command over TLS with WOLFSSL_VERIFY_NONE (no server cert check), enforces the sha256 from the same command if present, and verifies an ECDSA-P256 or ML-DSA-44 signature ONLY when the command includes sigAlg; an OTA without sigAlg is installed unsigned in every variant. The signer leaf is checked only for chaining to a device CA root (no codeSigning EKU check). |
+| C001 | ESP32 field device firmware | Compute | Other | One modular sketch built as three variants: classical (ECDHE + ECDSA cert, port 8883), pqc (SecP256r1MLKEM768 + ECDSA cert, 8883), pqc-mldsa (ML-KEM + ML-DSA-44 cert, 8884). Identity (keys, certs, both CA roots, WiFi) is loaded at boot from the unencrypted certs NVS partition; an identity issued for another chip is refused. mTLS to the broker with WOLFSSL_VERIFY_PEER chain check only (no hostname/SAN check). Publishes dt/<thing>/telemetry and lifecycle, subscribes cmd/<thing>/+. Dual-boot OTA: downloads from the URL in the command over TLS with WOLFSSL_VERIFY_NONE (no server cert check), enforces the sha256 from the same command if present, and verifies an ECDSA-P256 or ML-DSA-44 signature ONLY when the command includes sigAlg; an OTA without sigAlg is installed unsigned in every variant. The signer leaf must chain to the firmware-signing root for the image's sigAlg (sig_cls / sig_mldsa, separate CAs from the device roots) and carry the codeSigning EKU. |
 | C002 | Workshop WiFi access point | Network | On-Premise | 2.4GHz WPA2-PSK AP built by the configure-wifi-ap SSM document from /pqc-workshop/wifi/*. One shared PSK for every device and attendee; the same PSK is written into every device's certs partition. |
 | C003 | Builder-Pi edge host and Flask GUI | Compute | On-Premise | Flask GUI bound to 0.0.0.0:8080 with NO authentication or CSRF protection. Routes: /api/register, /api/reflash, /api/deregister, /api/serial/<port>, /api/scan, GET/POST /api/config (POST merges arbitrary JSON into config incl. API endpoint/bucket/region). Calls the builder API with SigV4 using SSM hybrid-activation role credentials, downloads the shared firmware pieces and the device's identity image from S3, USB-flashes them, then deletes every version of the identity image. |
 | C004 | Broker Network Load Balancer | Network | AWS | Internet-facing NLB in public subnets. TCP listeners 8883 and 8884 pass TLS through to the broker (no termination). Broker SG allows 0.0.0.0/0 on both ports. VPC BPA exclusion (allow-bidirectional) lets IGW ingress through on BPA accounts. |
@@ -850,21 +850,6 @@ Post-Quantum Cryptography Migration for IoT workshop (AWS Workshop Studio / re:I
 - **Residual Risk Rationale**: Signed pushes are protected by M026, and images no longer carry keys, but the unverified TLS still exposes unsigned pushes. M001 and M002.
 - **Assessment State**: Current
 
-#### T24: workshop attendee
-
-**Statement**: A workshop attendee with a device private key extracted from their own board can sign a modified firmware image with that key and push it to other devices as a signed OTA, because the OTA signer and device certificates are issued by the same CAs with the same extended key usage and devices only check that the signer chains to one of those CA roots, which leads to every device accepting attacker-chosen firmware as authentic
-
-- **Prerequisites**: with a device private key extracted from their own board
-- **Action**: sign a modified firmware image with that key and push it to other devices as a signed OTA, because the OTA signer and device certificates are issued by the same CAs with the same extended key usage and devices only check that the signer chains to one of those CA roots
-- **Impact**: every device accepting attacker-chosen firmware as authentic
-- **Impacted Assets**: A006, A007, A002
-- **Tags**: ota, code-signing, pki
-- **Residual Risk Decision**: Open
-- **Residual Severity**: High
-- **Residual Likelihood**: Possible
-- **Residual Risk Rationale**: The signature check holds only while signer keys are distinguishable from device keys, and today they are not. Combined with T005 (keys are extractable) and the missing broker ACL, one attendee could sign firmware for the whole room. M029, then M003.
-- **Assessment State**: Current
-
 ### Resolved Threats
 
 #### T18: internet attacker
@@ -941,6 +926,21 @@ Post-Quantum Cryptography Migration for IoT workshop (AWS Workshop Studio / re:I
 - **Residual Risk Rationale**: Accepted: short-lived workshop data has no long-term secrecy value, and firmware images no longer carry keys. The classical links are part of the teaching story (M023); moving the OTA download to hybrid ML-KEM is a planned change (S3 supports it).
 - **Assessment State**: Current
 
+#### T24: workshop attendee
+
+**Statement**: A workshop attendee with a device private key extracted from their own board can sign a modified firmware image with that key and push it to other devices as a signed OTA, because the OTA signer and device certificates are issued by the same CAs with the same extended key usage and devices only check that the signer chains to one of those CA roots, which leads to every device accepting attacker-chosen firmware as authentic
+
+- **Prerequisites**: with a device private key extracted from their own board
+- **Action**: sign a modified firmware image with that key and push it to other devices as a signed OTA, because the OTA signer and device certificates are issued by the same CAs with the same extended key usage and devices only check that the signer chains to one of those CA roots
+- **Impact**: every device accepting attacker-chosen firmware as authentic
+- **Impacted Assets**: A006, A007, A002
+- **Tags**: ota, code-signing, pki
+- **Residual Risk Decision**: Accepted
+- **Residual Severity**: Low
+- **Residual Likelihood**: Unlikely
+- **Residual Risk Rationale**: Resolved (M029): the OTA signers are issued only by two dedicated firmware-signing root CAs, with the codeSigning EKU. Devices trust only the signing root that matches the image's sigAlg and require codeSigning; device CA roots are used for TLS only. Verified on pqc-a hardware: an OTA signed with a device-CA certificate was refused (no chain to sig_cls), and one signed with a signing-root certificate lacking codeSigning was refused (no EKU). Residual: theft of a signer key from Secrets Manager or the build (T015, T016).
+- **Assessment State**: Current
+
 ## Mitigations
 
 ### Identified Mitigations
@@ -1009,10 +1009,6 @@ Post-Quantum Cryptography Migration for IoT workshop (AWS Workshop Studio / re:I
 
 **Addresses Threats**: T6, T7, T20, T24
 
-#### M29: Separate code signing from device identity: issue the OTA signer certificates with the codeSigning extended key usage (and device certificates without it) and make the device require codeSigning on the signer leaf; optionally use a dedicated signer CA or pin the signer public keys in the firmware.
-
-**Addresses Threats**: T24
-
 ### In Progress Mitigations
 
 #### M6: Throttle migrations: reject migrateFirmware while a device already has a migration in progress, cap start-migration concurrency, and set a CodeBuild concurrent-build limit.
@@ -1064,6 +1060,10 @@ Post-Quantum Cryptography Migration for IoT workshop (AWS Workshop Studio / re:I
 #### M13: Keep the WiFi PSK only in SSM: the device-identity CodeBuild job reads it as a PARAMETER_STORE environment variable, and the registry, registrar, prepare-build and migration state machine no longer store or pass it.
 
 **Addresses Threats**: T13
+
+#### M29: Separate code signing from device identity: the OTA signer certificates are issued only by two dedicated firmware-signing root CAs (ECDSA P-256 and ML-DSA-44) with the codeSigning EKU; the device trusts only the signing root matching the image's sigAlg, requires codeSigning on the signer leaf, and never trusts a device CA root for OTA.
+
+**Addresses Threats**: T24
 
 ## Assumptions
 

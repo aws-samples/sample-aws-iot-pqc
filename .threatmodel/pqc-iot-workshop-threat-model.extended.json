@@ -664,7 +664,7 @@
       "metadata": [],
       "statement": "A workshop attendee with a device private key extracted from their own board can sign a modified firmware image with that key and push it to other devices as a signed OTA, because the OTA signer and device certificates are issued by the same CAs with the same extended key usage and devices only check that the signer chains to one of those CA roots, which leads to every device accepting attacker-chosen firmware as authentic",
       "displayOrder": 24,
-      "status": "threatIdentified",
+      "status": "threatResolved",
       "tags": [
         "ota",
         "code-signing",
@@ -672,7 +672,7 @@
       ],
       "category": "Spoofing",
       "severity": "High",
-      "likelihood": "Possible",
+      "likelihood": "Unlikely",
       "affected_components": [
         "C001",
         "C018",
@@ -1021,14 +1021,14 @@
     {
       "id": "M029",
       "numericId": 29,
-      "status": "mitigationIdentified",
-      "content": "Separate code signing from device identity: issue the OTA signer certificates with the codeSigning extended key usage (and device certificates without it) and make the device require codeSigning on the signer leaf; optionally use a dedicated signer CA or pin the signer public keys in the firmware.",
+      "status": "mitigationResolved",
+      "content": "Separate code signing from device identity: the OTA signer certificates are issued only by two dedicated firmware-signing root CAs (ECDSA P-256 and ML-DSA-44) with the codeSigning EKU; the device trusts only the signing root matching the image's sigAlg, requires codeSigning on the signer leaf, and never trusts a device CA root for OTA.",
       "displayOrder": 29,
       "metadata": [],
       "type": "Preventive",
       "cost": "Low",
       "effectiveness": "High",
-      "implementation_details": "Broker cert provisioner: add ExtendedKeyUsage codeSigning to the signer issuance (custom ACM PCA template / ApiPassthrough). otaVerifyChainToRoot (ota_updater.cpp): reject a leaf without codeSigning. Tracked as spec task 3b.7."
+      "implementation_details": "FirmwareSignerCA / MlDsaFirmwareSignerCA in broker-container-stack.yaml; issue_broker_certs.py issues the signers with CodeSigningCertificate/V1; identity format 2 carries sig_cls / sig_mldsa (read-only for the identity job); otaVerifyChainToRoot in ota_updater.cpp. Verified on pqc-a, Nov 4."
     }
   ],
   "assumptions": [
@@ -1293,7 +1293,7 @@
       "service_provider": "Other",
       "specific_service": "ESP32-S3 (XIAO) Arduino firmware, wolfSSL 5.7+, FreeRTOS",
       "version": null,
-      "description": "One modular sketch built as three variants: classical (ECDHE + ECDSA cert, port 8883), pqc (SecP256r1MLKEM768 + ECDSA cert, 8883), pqc-mldsa (ML-KEM + ML-DSA-44 cert, 8884). Identity (keys, certs, both CA roots, WiFi) is loaded at boot from the unencrypted certs NVS partition; an identity issued for another chip is refused. mTLS to the broker with WOLFSSL_VERIFY_PEER chain check only (no hostname/SAN check). Publishes dt/<thing>/telemetry and lifecycle, subscribes cmd/<thing>/+. Dual-boot OTA: downloads from the URL in the command over TLS with WOLFSSL_VERIFY_NONE (no server cert check), enforces the sha256 from the same command if present, and verifies an ECDSA-P256 or ML-DSA-44 signature ONLY when the command includes sigAlg; an OTA without sigAlg is installed unsigned in every variant. The signer leaf is checked only for chaining to a device CA root (no codeSigning EKU check).",
+      "description": "One modular sketch built as three variants: classical (ECDHE + ECDSA cert, port 8883), pqc (SecP256r1MLKEM768 + ECDSA cert, 8883), pqc-mldsa (ML-KEM + ML-DSA-44 cert, 8884). Identity (keys, certs, both CA roots, WiFi) is loaded at boot from the unencrypted certs NVS partition; an identity issued for another chip is refused. mTLS to the broker with WOLFSSL_VERIFY_PEER chain check only (no hostname/SAN check). Publishes dt/<thing>/telemetry and lifecycle, subscribes cmd/<thing>/+. Dual-boot OTA: downloads from the URL in the command over TLS with WOLFSSL_VERIFY_NONE (no server cert check), enforces the sha256 from the same command if present, and verifies an ECDSA-P256 or ML-DSA-44 signature ONLY when the command includes sigAlg; an OTA without sigAlg is installed unsigned in every variant. The signer leaf must chain to the firmware-signing root for the image's sigAlg (sig_cls / sig_mldsa, separate CAs from the device roots) and carry the codeSigning EKU.",
       "configuration": null
     },
     {
@@ -3972,10 +3972,10 @@
     },
     {
       "threat_id": "T024",
-      "decision": "Open",
-      "residual_severity": "High",
-      "residual_likelihood": "Possible",
-      "rationale": "The signature check holds only while signer keys are distinguishable from device keys, and today they are not. Combined with T005 (keys are extractable) and the missing broker ACL, one attendee could sign firmware for the whole room. M029, then M003.",
+      "decision": "Accepted",
+      "residual_severity": "Low",
+      "residual_likelihood": "Unlikely",
+      "rationale": "Resolved (M029): the OTA signers are issued only by two dedicated firmware-signing root CAs, with the codeSigning EKU. Devices trust only the signing root that matches the image's sigAlg and require codeSigning; device CA roots are used for TLS only. Verified on pqc-a hardware: an OTA signed with a device-CA certificate was refused (no chain to sig_cls), and one signed with a signing-root certificate lacking codeSigning was refused (no EKU). Residual: theft of a signer key from Secrets Manager or the build (T015, T016).",
       "is_current": true
     }
   ],
