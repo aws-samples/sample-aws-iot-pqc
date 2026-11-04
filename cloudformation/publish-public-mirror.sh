@@ -8,7 +8,8 @@
 # This repo lives on an INTERNAL GitLab (origin) and is mirrored to a PUBLIC
 # GitHub repo (aws-samples). The public copy must NOT contain internal-only
 # content: the `.kiro/` working notes, the `.threatmodel/` threat model (an
-# inventory of known weaknesses), real AWS account IDs, the workshop WiFi
+# inventory of known weaknesses), the `.protoshield/` security-scan tooling,
+# real AWS account IDs, the workshop WiFi
 # PSK, or internal GitLab URLs. This script reproduces the exact curation that
 # was first done by hand, so refreshing the mirror after internal `main` moves
 # is one command instead of a manual, error-prone sequence.
@@ -18,7 +19,8 @@
 #   2. Snapshots the CURRENT branch (default: whatever you have checked out,
 #      normally `main`) onto a throwaway temp branch — your real branch is never
 #      modified.
-#   3. On the temp branch: removes `.kiro/` and `.threatmodel/`, scrubs
+#   3. On the temp branch: removes `.kiro/`, `.threatmodel/` and
+#      `.protoshield/`, scrubs
 #      account IDs + PSK, and
 #      rewrites the internal clone URL to the public GitHub URL.
 #   4. Runs a fail-closed safety sweep: if ANY configured secret/internal marker
@@ -140,7 +142,7 @@ echo ""
 echo "[1/5] Creating temp branch $TMP_BRANCH from $SOURCE_REF..."
 git checkout -q -b "$TMP_BRANCH" "$SOURCE_REF"
 
-echo "[2/5] Removing internal-only files (.kiro/, .threatmodel/ + this publisher script) ..."
+echo "[2/5] Removing internal-only files (.kiro/, .threatmodel/, .protoshield/ + this publisher script) ..."
 if git ls-files --error-unmatch .kiro >/dev/null 2>&1; then
   git rm -q -r .kiro
 else
@@ -152,6 +154,13 @@ if git ls-files --error-unmatch .threatmodel >/dev/null 2>&1; then
   git rm -q -r .threatmodel
 else
   echo "        (.threatmodel not tracked — nothing to remove)"
+fi
+# ProtoShield is internal security tooling (config + any scan reports). Scan
+# findings are a weakness inventory like the threat model; never publish it.
+if git ls-files --error-unmatch .protoshield >/dev/null 2>&1; then
+  git rm -q -r .protoshield
+else
+  echo "        (.protoshield not tracked — nothing to remove)"
 fi
 # This publisher script is INTERNAL tooling and carries the real account IDs /
 # PSK as scrubbing defaults — it must never appear on the public mirror.
@@ -223,6 +232,11 @@ if git ls-files .threatmodel/ | grep -q .; then
   echo "  [FAIL] .threatmodel/ files still tracked on snapshot"; SWEEP_FAIL=1
 else
   echo "  [ok]   .threatmodel/ removed"
+fi
+if git ls-files .protoshield/ | grep -q .; then
+  echo "  [FAIL] .protoshield/ files still tracked on snapshot"; SWEEP_FAIL=1
+else
+  echo "  [ok]   .protoshield/ removed"
 fi
 # The publisher script must be gone from the snapshot (it carries the real
 # account IDs/PSK as scrubbing defaults).
