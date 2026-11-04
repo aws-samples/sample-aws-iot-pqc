@@ -68,18 +68,20 @@ Blobs are used for anything that may exceed the 4,000-byte NVS string limit
 
 | Key | Type | Content | Approx size |
 |---|---|---|---|
-| `fmt` | u8 | Layout version, starts at `1` | 1 B |
+| `fmt` | u8 | Layout version: `2` (`1` = legacy, no signing roots) | 1 B |
 | `serial` | string | Device serial (e.g. `FC22E0`) | 6 B |
 | `wifi_ssid` | string | WiFi SSID | <33 B |
 | `wifi_psk` | string | WiFi password | <64 B |
 | `ca_cls` | blob | Classical CA root, DER | 471 B |
 | `ca_mldsa` | blob | ML-DSA-44 CA root, DER | 4,089 B |
+| `sig_cls` | blob | ECDSA P-256 firmware-signing root, DER (OTA trust only) | ~480 B |
+| `sig_mldsa` | blob | ML-DSA-44 firmware-signing root, DER (OTA trust only) | ~4,100 B |
 | `crt_cls` | blob | Classical device cert, DER | ~550 B |
 | `key_cls` | blob | P-256 private key, DER | ~140 B |
 | `crt_mldsa` | blob | ML-DSA-44 device cert, DER | ~4,170 B |
 | `key_mldsa` | blob | ML-DSA-44 private key as seed-only PKCS#8 DER | 54 B |
 
-Total is about 9.6 KB in a 64 KB partition. CA root sizes are measured from pqc-a; device cert sizes are
+Total is about 14.2 KB in a 64 KB partition (9.6 KB before the signing roots). CA root sizes are measured from pqc-a; device cert sizes are
 taken from the broker certs issued by the same CAs; key sizes are estimates.
 
 Firmware opens the partition read-only (`Preferences.begin("devid", true,
@@ -153,8 +155,11 @@ Shared helper in each sketch:
    Log with ESP_LOG/printf, not `Serial` (on this board `Serial` is UART0).
 2. Read the WiFi strings and the blobs for the active variant: the classical CA
    root, cert and key for classical and PQC; the ML-DSA CA root, cert and
-   seed-derived key for ML-DSA. Keep both CA roots loaded for OTA signer
-   verification.
+   seed-derived key for ML-DSA. Load both firmware-signing roots for OTA
+   verification; the OTA verifier uses only the one matching the image's
+   sigAlg and requires the codeSigning EKU, and never the device CA roots
+   (T024). A format-1 identity loads for TLS and WiFi but refuses every signed
+   OTA until the device is reflashed.
 3. Load into wolfSSL with `WOLFSSL_FILETYPE_ASN1`.
 4. On any failure, log `[Setup] identity missing/invalid: <reason>` and stay
    offline (no connect attempts).

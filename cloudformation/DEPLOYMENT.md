@@ -136,8 +136,10 @@ one is rejected. The script confirms the target account before any writes (set
    templates bucket;
 2. deploy the master stack (with `BrokerTriggerBuild=false`, so the broker's
    in-stack image build is skipped and its ECS service stays at `DesiredCount:
-   0`). The stack creates **both** ACM Private CAs here: the classical EC CA
-   (8883 path) and the **ML-DSA-44 CA** (8884 path, Step 2);
+   0`). The stack creates the four ACM Private CAs here: the classical EC CA
+   (8883 path), the **ML-DSA-44 CA** (8884 path, Step 2), and the two
+   **firmware-signing roots** (ECDSA P-256 and ML-DSA-44) that issue only the
+   OTA signer certificates;
 3. stage the broker + firmware Docker build contexts to S3, build the broker
    container image in CodeBuild, then build the **shared cert-issuer image**
    (`pqc-workshop-cert-issuer-image-build`, OpenSSL 3.5) and run the **broker
@@ -239,8 +241,9 @@ Before touching hardware, from the repository root:
 It prints a pass/warn/fail line per check and a summary. A healthy deploy is
 almost entirely passes; the Builder-Pi shows offline until step 6, and
 device-dependent checks warn until step 8. The check also validates the ML-DSA
-resources: **two** ACTIVE Private CAs (an `EC_prime256v1` classical CA and an
-`ML_DSA_44` CA) and the broker NLB's **8884** listener + `pqc-broker-mldsa-tg`
+resources: the ACTIVE device CAs (an `EC_prime256v1` classical CA and an
+`ML_DSA_44` CA), both firmware-signing root CAs (checked by their stack outputs)
+and the broker NLB's **8884** listener + `pqc-broker-mldsa-tg`
 target group, alongside the classical 8883 path.
 
 Open the dashboard (no devices yet) and keep the tab open:
@@ -489,8 +492,8 @@ On the cloud side that one click:
   policy and the registry entry;
 - **issues the device identity**: the `pqc-workshop-device-identity` CodeBuild
   job generates the keys, gets a classical (ECDSA P-256) and an ML-DSA-44 device
-  certificate from the two Private CAs, and packs them, both CA roots and the
-  WiFi into a 64 KB image for the device's `certs` partition
+  certificate from the two device CAs, and packs them, both device CA roots,
+  both firmware-signing roots and the WiFi into a 64 KB image for the device's `certs` partition
   (`identity/<serial>/certs.bin`, expired by an S3 lifecycle rule after a day);
 - **uses the shared classical firmware** from step 4 (`shared/1.0.0-classical/`)
   — nothing is compiled per device. The image holds no keys or WiFi, only the

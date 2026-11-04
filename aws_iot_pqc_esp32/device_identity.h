@@ -39,9 +39,13 @@ public:
     static const char* wifiPsk()         { return s_wifiPsk; }
     static const char* firmwareSha256()  { return s_firmwareSha256; }
 
-    // Both CA roots: broker trust (one of them) and OTA signer trust (both).
+    // Device CA roots: broker TLS trust only (the variant uses one of them).
     static const IdBlob& caClassical()   { return s_caCls; }
     static const IdBlob& caMlDsa()       { return s_caMldsa; }
+    // Firmware-signing roots: OTA signature trust only. Empty (len 0) on a
+    // legacy format-1 identity, in which case every signed OTA is refused.
+    static const IdBlob& signerRootClassical() { return s_sigCls; }
+    static const IdBlob& signerRootMlDsa()     { return s_sigMldsa; }
     // This variant's broker credentials (see ID_TLS_* in variant_config.h).
     static const IdBlob& tlsCa()         { return *s_tlsCa; }
     static const IdBlob& tlsCert()       { return s_tlsCert; }
@@ -54,6 +58,8 @@ private:
     static char          s_firmwareSha256[65];
     static IdBlob        s_caCls;
     static IdBlob        s_caMldsa;
+    static IdBlob        s_sigCls;
+    static IdBlob        s_sigMldsa;
     static IdBlob        s_tlsCert;
     static IdBlob        s_tlsKey;
     static const IdBlob* s_tlsCa;

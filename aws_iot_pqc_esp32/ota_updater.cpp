@@ -173,10 +173,13 @@ void OtaUpdater::handleCommand(const String& payload) {
 // OTA is not. Trust model:
 //   - The device holds NO signing key — it only VERIFIES, so wolfSSL crypto
 //     primitives (not a TPM) are sufficient.
-//   - The signer LEAF cert travels WITH each OTA (signerCertUrl); the device
-//     validates that leaf chains to one of the device's CA roots (ca_cls /
-//     ca_mldsa, read from the "certs" NVS partition) and then verifies the
-//     image signature with the leaf's public key.
+//   - The signer LEAF cert travels WITH each OTA (signerCertUrl). The device
+//     requires it to chain to the firmware-signing root for the image's
+//     algorithm (sig_cls for ecdsa-p256, sig_mldsa for mldsa44, from the
+//     "certs" NVS partition) and to carry the codeSigning EKU, then verifies
+//     the image signature with the leaf's public key. The device CA roots
+//     (ca_cls / ca_mldsa) are never trusted here: they issue every device's
+//     certificate, so trusting them would let any device key sign firmware.
 //   - classical era (ecdsa-p256): ECDSA-P256 over the image's SHA-256 digest,
 //     DER-encoded signature (~71 B). ML-DSA era (mldsa44): ML-DSA-44 over the
 //     RAW image (pure scheme, hashes internally), fixed 2420 B signature.
@@ -289,38 +292,73 @@ static bool otaHttpsGetToBuffer(const char* urlCstr, uint8_t* out, size_t cap, s
     return true;
 }
 
-// Validate that the signer leaf PEM chains to one of the device's CA roots
-// (ca_cls / ca_mldsa from the "certs" NVS partition). The firmware signers are
-// issued by the same two Private CAs, so trusting both lets either signer era
-// verify. Uses a throwaway wolfSSL cert manager so the trust decision is
-// independent of the TLS session. Returns true only if the leaf is signed
-// (transitively) by a loaded root.
-static bool otaVerifyChainToRoot(const uint8_t* leafPem, size_t leafLen) {
-    const IdBlob* roots[] = { &DeviceIdentity::caClassical(), &DeviceIdentity::caMlDsa() };
-    const char* names[] = { "ca_cls", "ca_mldsa" };
+// True if the leaf certificate (PEM) carries the codeSigning extended key usage.
+// The OTA signers are issued with ACM PCA's CodeSigningCertificate template;
+// device and broker certificates are not, so this rejects a TLS certificate
+// presented as a signer even if it were to chain to a signing root.
+static bool otaLeafHasCodeSigningEku(const uint8_t* leafPem, size_t leafLen) {
+    uint8_t* der = (uint8_t*)malloc(leafLen);  // DER is always smaller than its PEM
+    if (!der) return false;
+    int derLen = wc_CertPemToDer(leafPem, (int)leafLen, der, (int)leafLen, CERT_TYPE);
+    bool ok = false;
+    if (derLen > 0) {
+        DecodedCert cert;
+        wc_InitDecodedCert(&cert, der, (word32)derLen, NULL);
+        if (wc_ParseCert(&cert, CERT_TYPE, NO_VERIFY, NULL) == 0) {
+            ok = cert.extExtKeyUsageSet && (cert.extExtKeyUsage & EXTKEYUSE_CODESIGN);
+        }
+        wc_FreeDecodedCert(&cert);
+    }
+    free(der);
+    return ok;
+}
+
+// Validate the signer leaf PEM against the ONE firmware-signing root that
+// matches the image's signature algorithm (sig_cls for ecdsa-p256, sig_mldsa
+// for mldsa44), and require the codeSigning EKU. Uses a throwaway wolfSSL cert
+// manager so the trust decision is independent of the TLS session. Fails closed
+// if the root is missing (a legacy format-1 identity has none).
+static bool otaVerifyChainToRoot(const char* sigAlg, const uint8_t* leafPem, size_t leafLen) {
+    const IdBlob* root = nullptr;
+    const char* rootName = "";
+    if (strcmp(sigAlg, "ecdsa-p256") == 0) {
+        root = &DeviceIdentity::signerRootClassical();
+        rootName = "sig_cls";
+    } else if (strcmp(sigAlg, "mldsa44") == 0) {
+        root = &DeviceIdentity::signerRootMlDsa();
+        rootName = "sig_mldsa";
+    } else {
+        ESP_LOGE(TAG_OTA, "Unknown sigAlg '%s'; refusing", sigAlg);
+        return false;
+    }
+    if (!root->len) {
+        ESP_LOGE(TAG_OTA, "No firmware-signing root %s in this identity; refusing "
+                 "(fail-closed). Reflash at the Builder-Pi.", rootName);
+        return false;
+    }
 
     WOLFSSL_CERT_MANAGER* cm = wolfSSL_CertManagerNew();
     if (!cm) { ESP_LOGE(TAG_OTA, "CertManagerNew failed"); return false; }
-    int loaded = 0;
-    for (int i = 0; i < 2; i++) {
-        if (!roots[i]->len) continue;
-        int rc = wolfSSL_CertManagerLoadCABuffer(cm, roots[i]->data, (long)roots[i]->len,
-                                                 WOLFSSL_FILETYPE_ASN1);
-        if (rc == WOLFSSL_SUCCESS) loaded++;
-        else ESP_LOGW(TAG_OTA, "Load signer CA root %s failed (rc=%d)", names[i], rc);
-    }
-    if (loaded == 0) {
-        ESP_LOGE(TAG_OTA, "No signer CA root loaded; refusing (fail-closed)");
+    int rc = wolfSSL_CertManagerLoadCABuffer(cm, root->data, (long)root->len,
+                                             WOLFSSL_FILETYPE_ASN1);
+    if (rc != WOLFSSL_SUCCESS) {
+        ESP_LOGE(TAG_OTA, "Load firmware-signing root %s failed (rc=%d); refusing", rootName, rc);
         wolfSSL_CertManagerFree(cm);
         return false;
     }
     int ret = wolfSSL_CertManagerVerifyBuffer(cm, leafPem, (long)leafLen, WOLFSSL_FILETYPE_PEM);
     wolfSSL_CertManagerFree(cm);
     if (ret != WOLFSSL_SUCCESS) {
-        ESP_LOGE(TAG_OTA, "Signer leaf does NOT chain to a device CA root (rc=%d)", ret);
+        ESP_LOGE(TAG_OTA, "Signer leaf does NOT chain to firmware-signing root %s (rc=%d)",
+                 rootName, ret);
         return false;
     }
-    ESP_LOGI(TAG_OTA, "Signer leaf verified against device CA root");
+    if (!otaLeafHasCodeSigningEku(leafPem, leafLen)) {
+        ESP_LOGE(TAG_OTA, "Signer leaf has no codeSigning extended key usage; refusing");
+        return false;
+    }
+    ESP_LOGI(TAG_OTA, "Signer leaf verified against firmware-signing root %s (codeSigning)",
+             rootName);
     return true;
 }
 
@@ -457,14 +495,15 @@ static bool otaVerifyMlDsa44(const uint8_t* sig, size_t sigLen,
 
 // Top-level OTA verify gate. Given the signer material already fetched into RAM
 // and the written image (partition + size + its SHA-256 digest), run the full
-// policy: (1) chain the signer leaf to a device CA root, (2) verify the image
-// signature with the correct algorithm. Returns true ONLY if BOTH pass.
+// policy: (1) chain the signer leaf to the firmware-signing root for sigAlg and
+// require codeSigning, (2) verify the image signature with the correct
+// algorithm. Returns true ONLY if BOTH pass.
 static bool otaVerifyImage(const char* sigAlg,
                            const uint8_t* sig, size_t sigLen,
                            const uint8_t* leafPem, size_t leafLen,
                            const esp_partition_t* part, size_t imageLen,
                            const uint8_t* sha256Digest) {
-    if (!otaVerifyChainToRoot(leafPem, leafLen)) return false;
+    if (!otaVerifyChainToRoot(sigAlg, leafPem, leafLen)) return false;
 
     if (strcmp(sigAlg, "ecdsa-p256") == 0) {
         return otaVerifyEcdsaP256(sig, sigLen, sha256Digest, leafPem, leafLen);

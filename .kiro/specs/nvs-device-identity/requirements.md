@@ -41,8 +41,12 @@ the Builder-Pi. The threat model records the consequences as T003, T011 and T013
 2.3 The WiFi SSID and password and the device serial SHALL be stored as NVS
     strings. A format version SHALL be stored so firmware can reject an
     unknown layout.
-2.4 The OTA signer roots SHALL NOT be stored separately: the signer certificates
-    are issued by the same two CAs, so the two CA roots serve both purposes.
+2.4 The OTA signer certificates SHALL be issued by two dedicated
+    firmware-signing root CAs (ECDSA P-256 and ML-DSA-44), never by the device
+    CAs, with the codeSigning EKU. The partition SHALL hold both signing roots
+    (`sig_cls`, `sig_mldsa`), and the firmware SHALL trust them for OTA
+    signatures only and the device CA roots for TLS only (threat T024; this
+    reverses the earlier "the two CA roots serve both purposes").
 
 ### R3 — Issuance at registration
 3.1 Identity SHALL be generated when a device is plugged into the Builder-Pi and

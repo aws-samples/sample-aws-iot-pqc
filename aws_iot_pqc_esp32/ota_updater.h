@@ -6,8 +6,9 @@
 // An "ota-update" command on cmd/<thing>/ota carries presigned S3 URLs for the
 // image, its detached signature and the signer certificate. The task streams
 // the image into the inactive OTA slot, checks its SHA-256, verifies the
-// signature (ECDSA P-256 or ML-DSA-44) and that the signer chains to a CA root
-// in the device's NVS identity, and only then switches the boot slot.
+// signature (ECDSA P-256 or ML-DSA-44), that the signer chains to the matching
+// firmware-signing root in the device's NVS identity and has the codeSigning
+// EKU, and only then switches the boot slot.
 
 #ifndef OTA_UPDATER_H
 #define OTA_UPDATER_H

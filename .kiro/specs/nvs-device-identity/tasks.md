@@ -241,7 +241,22 @@ change the production flow until 0.1–0.3 pass on a real board.
       (re-stage sources + rebuild dashboard; no stack/image/cert/SSM changes).
       Verified on pqc-a: 139 s vs ~20 min for a full redeploy. Documented in
       DEPLOYMENT.md and the steering.
-- [ ] 3b.7 Backlog (not this branch): signer certs share a CA with device certs
+- [ ] 3b.7a **T024: dedicated firmware-signing roots (Nov 4, in progress).**
+      Two new ACM PCA roots (FirmwareSignerCA ECDSA P-256, MlDsaFirmwareSignerCA
+      ML-DSA-44) issue ONLY the two OTA signers, with CodeSigningCertificate/V1
+      (EKU codeSigning, verified on pqc-a for both algorithms). Identity format 2
+      adds sig_cls / sig_mldsa (identity job reads them with
+      GetCertificateAuthorityCertificate only, refuses a signing root equal to a
+      device root). Firmware trusts only the root matching sigAlg and requires
+      codeSigning; device CA roots are TLS-only; format-1 identities stay online
+      but refuse signed OTA (no fallback). Cloud side verified on pqc-a: CAs
+      ACTIVE, signers re-issued, 5 shared images rebuilt and signed, identity
+      job output checked (format 2, all 8 blobs). STILL TO DO on hardware:
+      reflash a device (fmt 2), OTA 1->2->3->4->5, and the T024 attack test
+      (/tmp/t024_attack.sh device-ca and no-eku must both be refused); then
+      update the threat model (T024 -> resolved, M029 resolved) and the
+      workshop pages (user approval). Cost: 4 general-purpose CAs instead of 2.
+- [x] 3b.7 Backlog (superseded by 3b.7a): signer certs share a CA with device certs
       and carry the same EKU (no `codeSigning`), and `otaVerifyChainToRoot` checks
       only the chain, so any device's key could sign an OTA every device accepts.
       Fix: issue signer certs with the `codeSigning` EKU and require it on the

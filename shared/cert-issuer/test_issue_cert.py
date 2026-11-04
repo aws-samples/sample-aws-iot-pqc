@@ -105,6 +105,18 @@ def test_issue_certificate_end_to_end_mocked(monkeypatch):
     assert fake.issued["SigningAlgorithm"] == "SHA256WITHECDSA"
     assert fake.issued["Validity"] == {"Type": "DAYS", "Value": 365}
     assert len(fake.issued["IdempotencyToken"]) <= 36
+    # Default template (ACM PCA EndEntityCertificate/V1): no TemplateArn sent.
+    assert "TemplateArn" not in fake.issued
+
+
+def test_issue_certificate_passes_code_signing_template(monkeypatch):
+    monkeypatch.setattr(issue_cert.time, "sleep", lambda *_: None)
+    fake = FakeAcmPca(pending_rounds=0)
+    issue_cert.issue_certificate(
+        common_name="pqc-firmware-signer-classical", key_mode="ec-p256",
+        ca_arn="arn:aws:acm-pca:us-east-1:111:certificate-authority/signer",
+        acm_pca_client=fake, template_arn=issue_cert.CODE_SIGNING_TEMPLATE_ARN)
+    assert fake.issued["TemplateArn"] == "arn:aws:acm-pca:::template/CodeSigningCertificate/V1"
 
 
 def test_issue_certificate_unknown_key_mode():

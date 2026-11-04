@@ -315,6 +315,25 @@ if echo "$CA_KEY_ALGS" | grep -qw "ML_DSA_44"; then
 else
     fail "No ACTIVE ML_DSA_44 Private CA found (Step 2 ML-DSA-44 cert path)"
 fi
+# Firmware-signing roots (T024): two dedicated CAs that issue ONLY the OTA
+# signer certs. Checked by the stack's own ARNs, so a device CA can never be
+# mistaken for one.
+for out_key in FirmwareSignerCAArn MlDsaFirmwareSignerCAArn; do
+    sig_arn=$(aws cloudformation describe-stacks --stack-name "$MASTER_STACK" \
+        --query "Stacks[0].Outputs[?OutputKey=='$out_key'].OutputValue | [0]" \
+        --output text 2>/dev/null) || sig_arn=""
+    if [[ -z "$sig_arn" || "$sig_arn" == "None" ]]; then
+        fail "Firmware-signing root CA output $out_key missing (OTA signer trust)"
+        continue
+    fi
+    sig_status=$(aws acm-pca describe-certificate-authority --certificate-authority-arn "$sig_arn" \
+        --query 'CertificateAuthority.Status' --output text 2>/dev/null) || sig_status=""
+    if [[ "$sig_status" == "ACTIVE" ]]; then
+        pass "Firmware-signing root CA ($out_key) is ACTIVE"
+    else
+        fail "Firmware-signing root CA ($out_key) is ${sig_status:-not found}, not ACTIVE"
+    fi
+done
 echo ""
 
 # ─── 10b. ML-DSA-44 device listener (NLB port 8884) ─────────────────────────

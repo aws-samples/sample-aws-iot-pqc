@@ -28,6 +28,9 @@ SSID = "spike-test-ssid"
 PSK = "spike-test-password"
 CLS_ARN = "arn:aws:acm-pca:us-east-1:111:certificate-authority/classical"
 MLDSA_ARN = "arn:aws:acm-pca:us-east-1:111:certificate-authority/mldsa"
+SIG_CLS_ARN = "arn:aws:acm-pca:us-east-1:111:certificate-authority/signer-classical"
+SIG_MLDSA_ARN = "arn:aws:acm-pca:us-east-1:111:certificate-authority/signer-mldsa"
+SIGNERS = dict(signer_classical_ca_arn=SIG_CLS_ARN, signer_mldsa_ca_arn=SIG_MLDSA_ARN)
 
 
 def _mldsa_openssl():
@@ -62,7 +65,8 @@ class SigningPca:
     def _ca(self, arn):
         if arn not in self.cas:
             tag = "mldsa" if "mldsa" in arn else "cls"
-            key, crt = (os.path.join(self.dir, f"ca_{tag}.{x}") for x in ("key", "pem"))
+            name = arn.rsplit("/", 1)[-1]   # one key + cert per CA ARN
+            key, crt = (os.path.join(self.dir, f"ca_{name}.{x}") for x in ("key", "pem"))
             if tag == "mldsa":
                 subprocess.run([MLDSA_OPENSSL, "genpkey", "-algorithm", "ML-DSA-44",
                                 "-out", key], check=True, capture_output=True)
@@ -70,7 +74,7 @@ class SigningPca:
                 subprocess.run(["openssl", "ecparam", "-name", "prime256v1", "-genkey",
                                 "-noout", "-out", key], check=True, capture_output=True)
             o = MLDSA_OPENSSL if tag == "mldsa" else "openssl"
-            subprocess.run([o, "req", "-x509", "-new", "-key", key, "-subj", f"/CN=Test {tag} CA",
+            subprocess.run([o, "req", "-x509", "-new", "-key", key, "-subj", f"/CN=Test {name} CA",
                             "-days", "2", "-out", crt], check=True, capture_output=True)
             self.cas[arn] = (o, key, crt)
         return self.cas[arn]
@@ -131,12 +135,12 @@ def test_s3_key_layout():
 
 
 def test_build_csv_layout_matches_firmware_contract():
-    blobs = {k: f"/w/{k}.der" for k in
-             ("ca_cls", "ca_mldsa", "crt_cls", "key_cls", "crt_mldsa", "key_mldsa")}
+    blobs = {k: f"/w/{k}.der" for k in idi.BLOB_KEYS}
+    assert {"sig_cls", "sig_mldsa"} <= set(blobs)
     lines = idi.build_csv("C69DE0", SSID, PSK, blobs).splitlines()
     assert lines[0] == "key,type,encoding,value"
     assert lines[1] == "devid,namespace,,"
-    assert "fmt,data,u8,1" in lines
+    assert "fmt,data,u8,2" in lines
     assert "serial,data,string,C69DE0" in lines
     assert f"wifi_psk,data,string,{PSK}" in lines
     for k, path in blobs.items():
@@ -188,10 +192,13 @@ def test_mismatched_key_and_cert_is_rejected(pca, tmp_path):
 def test_build_identity_end_to_end(pca, tmp_path):
     out = tmp_path / "certs.bin"
     summary = idi.build_identity("c69de0", CLS_ARN, MLDSA_ARN, SSID, PSK, str(out),
-                                 acm_pca_client=pca)
+                                 acm_pca_client=pca, **SIGNERS)
     assert out.stat().st_size == 0x10000
     assert summary["serial"] == "C69DE0"
     assert summary["blobSizes"]["key_mldsa"] == 54
+    assert summary["format"] == 2
+    assert summary["blobSizes"]["sig_mldsa"] > 3500   # ML-DSA-44 signing root
+    assert 300 < summary["blobSizes"]["sig_cls"] < 700
     # No secret material in the summary that ends up in the build log.
     text = str(summary)
     assert PSK not in text and "PRIVATE" not in text
@@ -206,9 +213,9 @@ def test_build_identity_end_to_end(pca, tmp_path):
 @needs_nvs
 def test_reissue_uses_new_tokens(pca, tmp_path):
     idi.build_identity("C69DE0", CLS_ARN, MLDSA_ARN, SSID, PSK, str(tmp_path / "a.bin"),
-                       acm_pca_client=pca)
+                       acm_pca_client=pca, **SIGNERS)
     idi.build_identity("C69DE0", CLS_ARN, MLDSA_ARN, SSID, PSK, str(tmp_path / "b.bin"),
-                       acm_pca_client=pca)
+                       acm_pca_client=pca, **SIGNERS)
     assert len(set(pca.tokens)) == 4
 
 
@@ -225,7 +232,54 @@ def test_upload_writes_identity_key():
 
 
 def test_main_requires_inputs(monkeypatch):
-    for v in ("DEVICE_SERIAL", "CA_ARN", "MLDSA_CA_ARN", "FIRMWARE_BUCKET"):
+    for v in ("DEVICE_SERIAL", "CA_ARN", "MLDSA_CA_ARN", "FIRMWARE_BUCKET",
+              "SIGNER_CLASSICAL_CA_ARN", "SIGNER_MLDSA_CA_ARN"):
         monkeypatch.delenv(v, raising=False)
     with pytest.raises(SystemExit):
         idi.main(["--no-upload"])
+
+
+@needs_crypto
+@needs_nvs
+def test_signing_roots_are_in_the_partition_and_differ_from_device_cas(pca, tmp_path):
+    out = tmp_path / "certs.bin"
+    idi.build_identity("C69DE0", CLS_ARN, MLDSA_ARN, SSID, PSK, str(out),
+                       acm_pca_client=pca, **SIGNERS)
+    image = out.read_bytes()
+    der = lambda arn: subprocess.run(  # noqa: E731
+        [pca.cas[arn][0], "x509", "-in", pca.cas[arn][2], "-outform", "DER"],
+        check=True, capture_output=True).stdout
+    # NVS splits blobs over ~4 KB into per-page chunks, so match each root's
+    # first 256 bytes (it includes the unique serial number) rather than the
+    # whole DER.
+    for arn in (CLS_ARN, MLDSA_ARN, SIG_CLS_ARN, SIG_MLDSA_ARN):
+        assert der(arn)[:256] in image, arn
+    # The job only READS the signing roots: it never asks them to issue.
+    issued_by = {t.split("/certificate/")[0] for t in pca.leaves}
+    assert issued_by == {CLS_ARN, MLDSA_ARN}
+
+
+@pytest.mark.parametrize("signers", [
+    dict(signer_classical_ca_arn=CLS_ARN, signer_mldsa_ca_arn=SIG_MLDSA_ARN),
+    dict(signer_classical_ca_arn=SIG_CLS_ARN, signer_mldsa_ca_arn=MLDSA_ARN),
+    dict(signer_classical_ca_arn="", signer_mldsa_ca_arn=SIG_MLDSA_ARN),
+])
+def test_rejects_signing_root_that_is_a_device_ca_or_missing(tmp_path, signers):
+    with pytest.raises(ValueError):
+        idi.build_identity("C69DE0", CLS_ARN, MLDSA_ARN, SSID, PSK, str(tmp_path / "x.bin"),
+                           acm_pca_client=object(), **signers)
+
+
+@needs_crypto
+def test_same_root_certificate_is_rejected(pca, tmp_path):
+    """Two ARNs that serve the same certificate are caught by comparing the DER."""
+    identity = {
+        "classical": issue_cert.issue_certificate("esp32-T1", "ec-p256", CLS_ARN, acm_pca_client=pca),
+        "mldsa": issue_cert.issue_certificate("esp32-T1", "mldsa44", MLDSA_ARN, acm_pca_client=pca),
+    }
+    w = tmp_path / "w"
+    w.mkdir()
+    blobs = idi.to_der(str(w), identity)
+    pca.cas[SIG_CLS_ARN] = pca.cas[CLS_ARN]          # alias the device CA
+    with pytest.raises(RuntimeError, match="separate CA"):
+        idi.signer_roots_to_der(str(w), pca, SIG_CLS_ARN, SIG_MLDSA_ARN, blobs)

@@ -203,6 +203,8 @@ Resources:
       Parameters:
         PrivateCAArn: !GetAtt BrokerStack.Outputs.PrivateCAArn
         MlDsaPrivateCAArn: !GetAtt BrokerStack.Outputs.MlDsaPrivateCAArn
+        FirmwareSignerCAArn: !GetAtt BrokerStack.Outputs.FirmwareSignerCAArn
+        MlDsaFirmwareSignerCAArn: !GetAtt BrokerStack.Outputs.MlDsaFirmwareSignerCAArn
         # OTA firmware signer secret ARNs (minted by the broker stack's cert
         # provisioner into pqc-broker/signer-*); the firmware build reads the
         # era-appropriate signer key to sign firmware.bin.
@@ -279,6 +281,14 @@ Outputs:
   MlDsaPrivateCAArn:
     Description: ML-DSA-44 Private CA ARN issuing post-quantum device certificates
     Value: !GetAtt BrokerStack.Outputs.MlDsaPrivateCAArn
+
+  FirmwareSignerCAArn:
+    Description: ECDSA P-256 firmware-signing root CA (issues only the classical OTA signer)
+    Value: !GetAtt BrokerStack.Outputs.FirmwareSignerCAArn
+
+  MlDsaFirmwareSignerCAArn:
+    Description: ML-DSA-44 firmware-signing root CA (issues only the ML-DSA OTA signer)
+    Value: !GetAtt BrokerStack.Outputs.MlDsaFirmwareSignerCAArn
 
   CertIssuerImageBuildProject:
     Description: CodeBuild project that builds the shared cert-issuer image

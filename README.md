@@ -90,7 +90,19 @@ Both the ESP32 and Mosquitto negotiate the **IANA-standardized** hybrid key exch
 
 ### Certificate trust
 
-An **AWS Private CA** (ACM Private CA) created by the broker stack is the single trust root for the workshop. It issues both the broker's server certificate and every device certificate, so device ↔ broker mTLS validates against one CA. The broker's cert/key and the IoT Core bridge credentials are stored in Secrets Manager.
+The broker stack creates four **AWS Private CA** roots, in two pairs:
+
+- **Device and broker roots** (ECDSA P-256 for the 8883 listener, ML-DSA-44 for
+  8884) issue the broker's server certificates and every device certificate.
+  Each broker listener accepts only client certificates from its own root, so
+  every connection is mutually authenticated.
+- **Firmware-signing roots** (ECDSA P-256 and ML-DSA-44) issue only the two OTA
+  signer certificates, with the `codeSigning` EKU. A device trusts these for OTA
+  signatures and nothing else, and the device roots for TLS and nothing else, so
+  a key extracted from any board cannot sign firmware.
+
+The broker's certificates and keys, the signers, and the IoT Core bridge
+credentials are stored in Secrets Manager.
 
 ### Workshop flow
 
@@ -229,7 +241,7 @@ the wolfSSL configuration does not enable TLS 1.3 and ML-KEM.
 | `aws_iot_pqc_esp32.ino` | `setup()`: starts the LED, loads the identity (fail closed), then starts the WiFi, MQTT and OTA tasks. `loop()`: a status report every 60 s. |
 | `variant_config.h` | Everything that differs between variants: `VARIANT_PQC_KEX` (key share), `ID_TLS_*` (which certificate and key to load), `CERT_SIGNATURE_ALG`, banner, blink rate. |
 | `app_config.h` | Shared includes, task stack sizes and priorities, timeouts, topic prefixes, and the wolfSSL compile-time guards. |
-| `device_identity.h/.cpp` | `DeviceIdentity`: the Thing name from the chip MAC (`esp32-XXYYZZ`), and keys, certificates, both CA roots and WiFi from the `certs` NVS partition. Refuses an identity issued for a different chip. |
+| `device_identity.h/.cpp` | `DeviceIdentity`: the Thing name from the chip MAC (`esp32-XXYYZZ`), and keys, certificates, the device and firmware-signing CA roots and WiFi from the `certs` NVS partition. Refuses an identity issued for a different chip. |
 | `wifi_manager.h/.cpp` | `WifiManager`: the WiFi station task (core 0), reconnect with exponential backoff and jitter. |
 | `pqc_tls_client.h/.cpp` | `WolfSSLClient`: wolfSSL TLS 1.3 under the Arduino `Client` interface, so the MQTT client can use it like any other connection. |
 | `mqtt_manager.h/.cpp` | `MqttManager`: NTP sync, the TLS context, broker connect with backoff, lifecycle and telemetry publishing, and dispatch of `cmd/<thing>/+`. |
@@ -456,8 +468,9 @@ Every stage uses the same over-the-air path:
    signer certificate, and publishes an `ota-update` command to
    `cmd/<thing>/ota`.
 4. The device streams the image into its **inactive** OTA slot, checks the
-   SHA-256, verifies the signature and that the signer chains to a CA root in its
-   `certs` partition, and only then switches the boot slot and reboots.
+   SHA-256, verifies the signature, checks that the signer chains to the
+   firmware-signing root for that algorithm in its `certs` partition and has the
+   `codeSigning` EKU, and only then switches the boot slot and reboots.
 5. The device reconnects on the new firmware; its telemetry (`firmware_version`,
    `pqc_algorithm`, `cert_sig_alg`, `ota_sig_alg`) shows the change on the
    dashboard. A rollback is the same path to an earlier variant.
@@ -578,8 +591,8 @@ The workshop's section 3.7 is the full explanation. In short:
 Devices are registered at the Builder-Pi: plug in the board, click **Register &
 Flash**. The registrar creates the IoT Thing and policy, and a CodeBuild job
 issues **both** device certificates (ECDSA P-256 and ML-DSA-44) from the two
-Private CAs and packs them, both CA roots and the WiFi credentials into a `certs`
-partition image. The Pi flashes that image with the shared classical firmware,
+Private CAs and packs them, both device CA roots, both firmware-signing roots
+and the WiFi credentials into a `certs` partition image. The Pi flashes that image with the shared classical firmware,
 then deletes the identity image from S3 so the private keys exist only on the
 device. Issuing the post-quantum identity alongside the classical one means the
 later certificate migration is a firmware change, not a re-provisioning.

@@ -41,6 +41,18 @@ Parameters:
       ARN of the ML-DSA-44 Private CA (from broker-container stack) used to issue
       post-quantum device certs for the pqc-mldsa firmware variant.
 
+  FirmwareSignerCAArn:
+    Type: String
+    Description: >-
+      ARN of the ECDSA P-256 firmware-signing root CA (broker-container stack).
+      The device-identity job only READS its root certificate into each
+      device's certs partition (OTA signer trust); it never issues from it.
+  MlDsaFirmwareSignerCAArn:
+    Type: String
+    Description: >-
+      ARN of the ML-DSA-44 firmware-signing root CA (broker-container stack),
+      read-only like FirmwareSignerCAArn.
+
   # ─── OTA firmware signer secret ARNs (from broker-container stack) ──────────
   # The firmware build reads the era-appropriate signer KEY to sign firmware.bin
   # and the signer CERT to ship alongside the OTA. Scoped to these four secrets
@@ -1381,6 +1393,14 @@ Resources:
                 Resource:
                   - !Ref PrivateCAArn
                   - !Ref MlDsaPrivateCAArn
+              # Firmware-signing roots: read the root certificate only. Never
+              # IssueCertificate, so a device identity can never be a signer.
+              - Effect: Allow
+                Action:
+                  - acm-pca:GetCertificateAuthorityCertificate
+                Resource:
+                  - !Ref FirmwareSignerCAArn
+                  - !Ref MlDsaFirmwareSignerCAArn
               # WiFi SSID/password, resolved by CodeBuild as PARAMETER_STORE
               # environment variables (never plaintext in the project or build).
               - Effect: Allow
@@ -1436,6 +1456,10 @@ Resources:
             Value: !Ref PrivateCAArn
           - Name: MLDSA_CA_ARN
             Value: !Ref MlDsaPrivateCAArn
+          - Name: SIGNER_CLASSICAL_CA_ARN
+            Value: !Ref FirmwareSignerCAArn
+          - Name: SIGNER_MLDSA_CA_ARN
+            Value: !Ref MlDsaFirmwareSignerCAArn
           - Name: FIRMWARE_BUCKET
             Value: !Sub '${FirmwareBucketName}-${AWS::AccountId}'
           - Name: WIFI_SSID

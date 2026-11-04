@@ -12,17 +12,19 @@
 // into this image. The Builder-Pi writes them over USB into a dedicated NVS
 // partition labelled "certs" (0x721000, 64 KB, see partitions_pqc_workshop.csv)
 // that OTA never touches. So the same app image runs on every device, and an
-// OTA image carries no secrets. Namespace "devid" (format 1):
-//   fmt (u8)                      layout version, must be ID_FORMAT
+// OTA image carries no secrets. Namespace "devid" (format 2):
+//   fmt (u8)                      layout version (ID_FORMAT; 1 = legacy, see below)
 //   serial, wifi_ssid, wifi_psk   strings
-//   ca_cls, ca_mldsa              CA roots (DER): broker trust + OTA signer trust
+//   ca_cls, ca_mldsa              device CA roots (DER): broker TLS trust ONLY
+//   sig_cls, sig_mldsa            firmware-signing roots (DER): OTA trust ONLY
 //   crt_cls, key_cls              classical device cert + key (DER)
 //   crt_mldsa, key_mldsa          ML-DSA-44 device cert + seed-only PKCS#8 key
 // The variant picks its broker credentials with ID_TLS_CA / ID_TLS_CERT /
 // ID_TLS_KEY (variant_config.h).
 #define ID_PARTITION   "certs"
 #define ID_NAMESPACE   "devid"
-#define ID_FORMAT      1
+#define ID_FORMAT      2
+#define ID_FORMAT_LEGACY 1   // no signing roots: TLS works, signed OTA is refused
 
 char          DeviceIdentity::s_thingName[32]      = {0};  // "esp32-XXYYZZ"
 char          DeviceIdentity::s_wifiSsid[33]       = {0};
@@ -30,6 +32,8 @@ char          DeviceIdentity::s_wifiPsk[65]        = {0};
 char          DeviceIdentity::s_firmwareSha256[65] = {0};
 IdBlob        DeviceIdentity::s_caCls              = {nullptr, 0};
 IdBlob        DeviceIdentity::s_caMldsa            = {nullptr, 0};
+IdBlob        DeviceIdentity::s_sigCls             = {nullptr, 0};
+IdBlob        DeviceIdentity::s_sigMldsa           = {nullptr, 0};
 IdBlob        DeviceIdentity::s_tlsCert            = {nullptr, 0};
 IdBlob        DeviceIdentity::s_tlsKey             = {nullptr, 0};
 const IdBlob* DeviceIdentity::s_tlsCa              = &DeviceIdentity::s_caCls;
@@ -86,7 +90,7 @@ bool DeviceIdentity::loadFromNvs() {
     }
     bool ok = true;
     uint8_t fmt = p.getUChar("fmt", 0);
-    if (fmt != ID_FORMAT) {
+    if (fmt != ID_FORMAT && fmt != ID_FORMAT_LEGACY) {
         ESP_LOGE(TAG_MAIN, "[Setup] Identity format %u, expected %u", fmt, ID_FORMAT);
         ok = false;
     }
@@ -105,15 +109,27 @@ bool DeviceIdentity::loadFromNvs() {
     ok = ok && idReadBlob(p, "ca_mldsa", s_caMldsa);
     ok = ok && idReadBlob(p, ID_TLS_CERT, s_tlsCert);
     ok = ok && idReadBlob(p, ID_TLS_KEY, s_tlsKey);
+    // Firmware-signing roots (format 2). They are separate CAs from the device
+    // CAs above: a device key can never chain to them, so it can never sign an
+    // OTA. A legacy format-1 identity has none, and stays usable for TLS and
+    // WiFi, but every signed OTA is refused until the device is re-registered.
+    // There is deliberately no fallback to the device CA roots.
+    if (ok && fmt == ID_FORMAT) {
+        ok = idReadBlob(p, "sig_cls", s_sigCls) && idReadBlob(p, "sig_mldsa", s_sigMldsa);
+    }
     p.end();
     if (!ok) return false;
+    if (fmt == ID_FORMAT_LEGACY) {
+        ESP_LOGW(TAG_MAIN, "[Setup] Identity format 1 has no firmware-signing roots: signed "
+                 "OTA updates will be refused. Reflash at the Builder-Pi to fix.");
+    }
 
     s_tlsCa = (strcmp(ID_TLS_CA, "ca_mldsa") == 0) ? &s_caMldsa : &s_caCls;
     ESP_LOGI(TAG_MAIN, "[Setup] Device identity loaded from NVS '%s' (serial %s, WiFi '%s')",
              ID_PARTITION, serial, s_wifiSsid);
-    ESP_LOGI(TAG_MAIN, "[Setup]   %s %u B, %s %u B; broker trust %s; OTA trust ca_cls %u B + ca_mldsa %u B",
+    ESP_LOGI(TAG_MAIN, "[Setup]   %s %u B, %s %u B; broker trust %s; OTA trust sig_cls %u B + sig_mldsa %u B",
              ID_TLS_CERT, (unsigned)s_tlsCert.len, ID_TLS_KEY, (unsigned)s_tlsKey.len,
-             ID_TLS_CA, (unsigned)s_caCls.len, (unsigned)s_caMldsa.len);
+             ID_TLS_CA, (unsigned)s_sigCls.len, (unsigned)s_sigMldsa.len);
     return true;
 }
 

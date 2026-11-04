@@ -440,6 +440,79 @@ Resources:
       Certificate: !GetAtt MlDsaPrivateCACertificate.Certificate
       Status: ACTIVE
 
+  # ═══════════════════════════════════════════════════════════════════════════
+  # AWS Private CA — dedicated FIRMWARE SIGNING roots (one per signer era)
+  # ═══════════════════════════════════════════════════════════════════════════
+  # The OTA signer certificates are issued ONLY by these two roots, never by
+  # the device/broker CAs above. Devices trust these roots for OTA signatures
+  # and nothing else, and the device CAs for TLS and nothing else, so a device
+  # key (extractable from any board) can never sign firmware (threat T024).
+  # The signer certificates also carry the codeSigning EKU, which the firmware
+  # requires. These CAs issue exactly two certificates per deployment.
+  FirmwareSignerCA:
+    Type: AWS::ACMPCA::CertificateAuthority
+    Properties:
+      Type: ROOT
+      KeyAlgorithm: EC_prime256v1
+      SigningAlgorithm: SHA256WITHECDSA
+      Subject:
+        CommonName: PQC Workshop Firmware Signing Root CA
+        Organization: AWS PQC Workshop
+        Country: US
+      RevocationConfiguration:
+        CrlConfiguration:
+          Enabled: false
+
+  FirmwareSignerCACertificate:
+    Type: AWS::ACMPCA::Certificate
+    Properties:
+      CertificateAuthorityArn: !Ref FirmwareSignerCA
+      CertificateSigningRequest: !GetAtt FirmwareSignerCA.CertificateSigningRequest
+      SigningAlgorithm: SHA256WITHECDSA
+      TemplateArn: arn:aws:acm-pca:::template/RootCACertificate/V1
+      Validity:
+        Type: YEARS
+        Value: 10
+
+  FirmwareSignerCAActivation:
+    Type: AWS::ACMPCA::CertificateAuthorityActivation
+    Properties:
+      CertificateAuthorityArn: !Ref FirmwareSignerCA
+      Certificate: !GetAtt FirmwareSignerCACertificate.Certificate
+      Status: ACTIVE
+
+  MlDsaFirmwareSignerCA:
+    Type: AWS::ACMPCA::CertificateAuthority
+    Properties:
+      Type: ROOT
+      KeyAlgorithm: ML_DSA_44
+      SigningAlgorithm: ML_DSA_44
+      Subject:
+        CommonName: PQC Workshop ML-DSA-44 Firmware Signing Root CA
+        Organization: AWS PQC Workshop
+        Country: US
+      RevocationConfiguration:
+        CrlConfiguration:
+          Enabled: false
+
+  MlDsaFirmwareSignerCACertificate:
+    Type: AWS::ACMPCA::Certificate
+    Properties:
+      CertificateAuthorityArn: !Ref MlDsaFirmwareSignerCA
+      CertificateSigningRequest: !GetAtt MlDsaFirmwareSignerCA.CertificateSigningRequest
+      SigningAlgorithm: ML_DSA_44
+      TemplateArn: arn:aws:acm-pca:::template/RootCACertificate/V1
+      Validity:
+        Type: YEARS
+        Value: 10
+
+  MlDsaFirmwareSignerCAActivation:
+    Type: AWS::ACMPCA::CertificateAuthorityActivation
+    Properties:
+      CertificateAuthorityArn: !Ref MlDsaFirmwareSignerCA
+      Certificate: !GetAtt MlDsaFirmwareSignerCACertificate.Certificate
+      Status: ACTIVE
+
   # ─── Broker Certificate (issued by Private CA via Lambda custom resource) ──
   # The CertProvisionerFunction generates a key, CSR, issues the cert from
   # Private CA, and stores everything in Secrets Manager automatically.
@@ -554,11 +627,12 @@ Resources:
   # ─── OTA firmware SIGNER cert secrets (one STABLE signer per era) ───────────
   # These are the stable per-era firmware-signing identities, distinct from the
   # broker TLS certs and the per-device certs. The classical signer (ECDSA P-256,
-  # classical CA) signs OTA images for the 2.0.0/3.0.0 era; the ML-DSA-44 signer
-  # (ML-DSA CA) signs the 4.0.0+ era. The firmware build READS the signer key to
-  # sign firmware.bin; the device verifies the signature against the signer leaf
-  # delivered with the OTA, which chains to the baked-in CA root. One signer per
-  # era (not per build/device), so the device trusts a single leaf per era.
+  # issued by FirmwareSignerCA) signs OTA images for the 2.0.0/3.0.0 era; the
+  # ML-DSA-44 signer (issued by MlDsaFirmwareSignerCA) signs the 4.0.0+ era. The
+  # firmware build READS the signer key to sign firmware.bin; the device verifies
+  # the signature against the signer leaf delivered with the OTA, which must
+  # chain to the matching firmware-signing root in the device's certs partition
+  # and carry the codeSigning EKU. The *-ca secrets hold those signing roots.
   SignerClassicalCACertSecret:
     Type: AWS::SecretsManager::Secret
     Metadata:
@@ -574,7 +648,7 @@ Resources:
             comment: "default AWS-managed KMS key for Secrets Manager; workshop sample"
     Properties:
       Name: pqc-broker/signer-classical-ca
-      Description: Classical CA cert for the firmware signer (device trust root, 2.0.0/3.0.0 era)
+      Description: ECDSA P-256 firmware-signing root CA cert (device OTA trust, 2.0.0/3.0.0 era)
 
   SignerClassicalCertSecret:
     Type: AWS::SecretsManager::Secret
@@ -625,7 +699,7 @@ Resources:
             comment: "default AWS-managed KMS key for Secrets Manager; workshop sample"
     Properties:
       Name: pqc-broker/signer-mldsa-ca
-      Description: ML-DSA-44 CA cert for the firmware signer (device trust root, 4.0.0+ era)
+      Description: ML-DSA-44 firmware-signing root CA cert (device OTA trust, 4.0.0+ era)
 
   SignerMlDsaCertSecret:
     Type: AWS::SecretsManager::Secret
@@ -1338,6 +1412,9 @@ Resources:
                 Resource:
                   - !Ref PrivateCA
                   - !Ref MlDsaPrivateCA
+                  # Dedicated firmware-signing roots: issue the two signer certs.
+                  - !Ref FirmwareSignerCA
+                  - !Ref MlDsaFirmwareSignerCA
               - Effect: Allow
                 Action:
                   - secretsmanager:PutSecretValue
@@ -1397,6 +1474,12 @@ Resources:
             Value: !Ref PrivateCA
           - Name: MLDSA_CA_ARN
             Value: !Ref MlDsaPrivateCA
+          # Firmware-signing roots: the signer certs are issued here, NOT by the
+          # device/broker CAs above (T024).
+          - Name: SIGNER_CLASSICAL_CA_ARN
+            Value: !Ref FirmwareSignerCA
+          - Name: SIGNER_MLDSA_CA_ARN
+            Value: !Ref MlDsaFirmwareSignerCA
           - Name: BROKER_CA_CERT_SECRET
             Value: !Ref BrokerCACertSecret
           - Name: BROKER_CERT_SECRET
@@ -1765,12 +1848,20 @@ Outputs:
     Description: ML-DSA-44 Private CA ARN (for issuing post-quantum device certificates)
     Value: !Ref MlDsaPrivateCA
 
+  FirmwareSignerCAArn:
+    Description: ECDSA P-256 firmware-signing root CA ARN (issues only the classical OTA signer)
+    Value: !Ref FirmwareSignerCA
+
+  MlDsaFirmwareSignerCAArn:
+    Description: ML-DSA-44 firmware-signing root CA ARN (issues only the ML-DSA OTA signer)
+    Value: !Ref MlDsaFirmwareSignerCA
+
   # ─── OTA firmware signer secret ARNs (consumed by the device-builder stack) ──
   # The firmware build reads the era-appropriate signer KEY to sign firmware.bin
   # and the signer CERT to ship alongside the OTA. Export the ARNs so the build's
   # CodeBuild role can be scoped to exactly these secrets.
   SignerClassicalCACertSecretArn:
-    Description: ARN of the classical firmware-signer CA cert secret (device trust root, 2.0.0/3.0.0)
+    Description: ARN of the ECDSA P-256 firmware-signing root CA cert secret (2.0.0/3.0.0)
     Value: !Ref SignerClassicalCACertSecret
 
   SignerClassicalCertSecretArn:
@@ -1782,7 +1873,7 @@ Outputs:
     Value: !Ref SignerClassicalKeySecret
 
   SignerMlDsaCACertSecretArn:
-    Description: ARN of the ML-DSA-44 firmware-signer CA cert secret (device trust root, 4.0.0+)
+    Description: ARN of the ML-DSA-44 firmware-signing root CA cert secret (4.0.0+)
     Value: !Ref SignerMlDsaCACertSecret
 
   SignerMlDsaCertSecretArn:
