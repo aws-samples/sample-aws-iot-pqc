@@ -331,9 +331,10 @@ Resources:
                           --no-deps "$APP_DIR" 2>&1 | tail -3 || rc=1
                       # Older provisioning pip-installed the CLI system-wide;
                       # replace it with a link to the venv's entry point.
-                      if pip3 show workshop-builder 2>/dev/null | grep -q '^Location: /usr/local/'; then
-                          pip3 uninstall -y --break-system-packages workshop-builder >/dev/null 2>&1 || true
-                      fi
+                      wb_loc=$(pip3 show workshop-builder 2>/dev/null | sed -n 's/^Location: //p')
+                      case "$wb_loc" in
+                          /usr/local/*) pip3 uninstall -y --break-system-packages workshop-builder >/dev/null 2>&1 || true ;;
+                      esac
                       ln -sf "$VENV/bin/workshop-builder" /usr/local/bin/workshop-builder
                       command -v workshop-builder >/dev/null 2>&1 \
                           && echo "      workshop-builder: $(command -v workshop-builder)" \
@@ -483,13 +484,24 @@ Resources:
                       # touched; apt-owned packages are left alone.
                       LOCK="$APP_DIR/requirements.lock.txt"
                       if [ -f "$LOCK" ]; then
+                          # Read the location into a variable: `pip3 show | grep -q`
+                          # fails under pipefail (grep exits early, pip gets
+                          # SIGPIPE). Loop, as repeated installs can leave more
+                          # than one /usr/local copy of a package.
                           for pkg in $(sed -n 's/^\([A-Za-z0-9._-]*\)==.*/\1/p' "$LOCK"); do
-                              if pip3 show "$pkg" 2>/dev/null | grep -q '^Location: /usr/local/'; then
-                                  pip3 uninstall -y --break-system-packages "$pkg" >/dev/null 2>&1 \
-                                      && echo "      removed system-wide $pkg (now in the venv)"
-                              fi
+                              for _ in 1 2 3; do
+                                  loc=$(pip3 show "$pkg" 2>/dev/null | sed -n 's/^Location: //p')
+                                  case "$loc" in
+                                      /usr/local/*)
+                                          pip3 uninstall -y --break-system-packages "$pkg" >/dev/null 2>&1 \
+                                              && echo "      removed system-wide $pkg (now in the venv)" \
+                                              || break ;;
+                                      *) break ;;
+                                  esac
+                              done
                           done
                       fi
+                  else
                       echo "      [ERROR] pqc-builder-gui failed to start:"
                       journalctl -u pqc-builder-gui --no-pager -n 30 || true
                       rc=1
