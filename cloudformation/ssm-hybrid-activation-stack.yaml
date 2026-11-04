@@ -303,10 +303,21 @@ Resources:
                   fi
 
                   echo "[2/3] Python deps + workshop-builder CLI..."
-                  pip3 install --no-cache-dir --break-system-packages \
-                      flask==3.1.* boto3 pyserial requests esptool 2>&1 | tail -3 || rc=1
+                  # Install EXACTLY the locked, hash-verified dependency set
+                  # (requirements.lock.txt is exported from uv.lock in the app
+                  # tree), so the Pi runs what was CVE-scanned. The CLI itself
+                  # is then installed with --no-deps so pip cannot pull in
+                  # anything unpinned.
+                  LOCK="$APP_DIR/requirements.lock.txt"
+                  if [ -f "$LOCK" ]; then
+                      pip3 install --no-cache-dir --break-system-packages \
+                          --require-hashes -r "$LOCK" 2>&1 | tail -3 || rc=1
+                  else
+                      echo "      ERROR: $LOCK missing from app.tgz"
+                      rc=1
+                  fi
                   if [ -f "$APP_DIR/pyproject.toml" ]; then
-                      pip3 install --no-cache-dir --break-system-packages "$APP_DIR" 2>&1 | tail -3 || rc=1
+                      pip3 install --no-cache-dir --break-system-packages --no-deps "$APP_DIR" 2>&1 | tail -3 || rc=1
                       command -v workshop-builder >/dev/null 2>&1 \
                           && echo "      workshop-builder: $(command -v workshop-builder)" \
                           || echo "      [WARN] workshop-builder not on PATH"
