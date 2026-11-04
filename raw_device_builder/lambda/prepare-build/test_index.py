@@ -7,17 +7,15 @@ Unit tests for the prepare-build Lambda.
 prepare-build is the first work step of the PQC migration state machine. Given a
 thingName (and optional variant) it:
   - looks up the device in the registry (keyed by serialNumber),
-  - resolves the firmware variant → version (classical / pqc / pqc-mldsa),
-  - checks whether that variant's firmware already exists in S3,
-  - resolves the per-device build env (WiFi/broker/IoT) for WaitForBuild,
-  - returns routing info for the state machine: buildNeeded, buildEnv, s3Key,
-    thingName, serialNumber, variant, version.
-  It does NOT start a build itself (the state machine's WaitForBuild does), so
-  there is no CodeBuild to mock — this Lambda is pure orchestration.
-
-Certificate issuance moved INTO the firmware CodeBuild (shared cert-issuer), so
-this Lambda touches no crypto. Runs against moto to stay fast/offline.
+  - resolves the firmware variant → version from variants.json,
+  - checks the SHARED image shared/<version>/firmware.bin exists,
+  - returns routing info for the state machine: thingName, serialNumber,
+    variant, buildVariant, version, signerEra, sigAlg, s3Key.
+It never builds: every variant is built once per deployment into
+shared/<version>/ (build-shared-firmware.sh). A missing shared image fails the
+migration with an actionable error. Runs against moto to stay fast/offline.
 """
+import json
 import os
 import sys
 
@@ -32,29 +30,16 @@ from conftest import load_handler_module  # noqa: E402
 
 REGISTRY_TABLE = "pqc-workshop-device-registry"
 FIRMWARE_BUCKET = "pqc-workshop-firmware-087195661091"
-BUILD_PROJECT = "pqc-workshop-firmware-build"
 
-# Keep in sync with prepare-build/index.py VARIANT_CONFIG.
-PQC_VERSION = "2.0.0-pqc"
-MLDSA_VERSION = "3.0.0-mldsa"
-CLASSICAL_VERSION = "1.0.0-classical"
+with open(os.path.join(HERE, "variants.json"), encoding="utf-8") as _f:
+    VARIANTS = json.load(_f)["variants"]
 
 
 def _env():
-    os.environ.update(
-        {
-            "REGISTRY_TABLE": REGISTRY_TABLE,
-            "FIRMWARE_BUCKET": FIRMWARE_BUCKET,
-            "BUILD_PROJECT": BUILD_PROJECT,
-            "IOT_ENDPOINT": "example-ats.iot.us-east-1.amazonaws.com",
-            "DEFAULT_WIFI_SSID": "test-ssid",
-            "DEFAULT_WIFI_PASSWORD": "test-pass",
-            "DEFAULT_BROKER_ENDPOINT": "broker.example.com",
-        }
-    )
+    os.environ.update({"REGISTRY_TABLE": REGISTRY_TABLE, "FIRMWARE_BUCKET": FIRMWARE_BUCKET})
 
 
-def _seed_registry():
+def _seed(shared_versions=tuple(v["version"] for v in VARIANTS.values())):
     ddb = boto3.resource("dynamodb", region_name="us-east-1")
     ddb.create_table(
         TableName=REGISTRY_TABLE,
@@ -62,111 +47,74 @@ def _seed_registry():
         AttributeDefinitions=[{"AttributeName": "serialNumber", "AttributeType": "S"}],
         BillingMode="PAY_PER_REQUEST",
     )
-    ddb.Table(REGISTRY_TABLE).put_item(
-        Item={"serialNumber": "FC22E0", "brokerEndpoint": "broker.example.com"}
-    )
+    ddb.Table(REGISTRY_TABLE).put_item(Item={"serialNumber": "FC22E0"})
+    s3 = boto3.client("s3", region_name="us-east-1")
+    s3.create_bucket(Bucket=FIRMWARE_BUCKET)
+    for version in shared_versions:
+        s3.put_object(Bucket=FIRMWARE_BUCKET, Key=f"shared/{version}/firmware.bin", Body=b"x")
 
 
-def _load():
+def _load(name="prepare_build_index"):
     _env()
-    return load_handler_module(os.path.join(HERE, "index.py"), "prepare_build_index")
+    return load_handler_module(os.path.join(HERE, "index.py"), name)
 
 
 @mock_aws
-def test_default_variant_is_pqc(monkeypatch):
-    """No variant in event → defaults to pqc (backward compatible with the
-    original migrate-to-PQC flow). prepare-build does NOT start a build itself
-    (the state machine's WaitForBuild does); it resolves the build env + variant."""
-    _seed_registry()
+def test_default_variant_is_pqc_and_uses_shared_image():
+    _seed()
     mod = _load()
-
     result = mod.handler({"thingName": "esp32-FC22E0"}, None)
-
     assert result["variant"] == "pqc"
-    assert result["version"] == PQC_VERSION
-    assert result["buildNeeded"] is True
-    assert result["s3Key"] == f"FC22E0/{PQC_VERSION}/firmware.bin"
-    # 2.0.0-pqc is in the classical signer era (OTA-delivered, ECDSA-signed).
+    assert result["version"] == "2.0.0-pqc"
+    assert result["s3Key"] == "shared/2.0.0-pqc/firmware.bin"
+    assert result["serialNumber"] == "FC22E0"
     assert result["signerEra"] == "classical"
     assert result["sigAlg"] == "ecdsa-p256"
-    # Resolved per-device build env is returned for WaitForBuild to use.
-    assert "buildEnv" in result
-    assert result["buildEnv"]["brokerEndpoint"] == "broker.example.com"
-    # No cert material and no buildId (no build is started here).
-    assert "buildId" not in result
-    for cert_key in ("caCert", "cert", "key"):
-        assert cert_key not in result["buildEnv"]
+    # No build routing any more: migrations only publish the shared image.
+    for gone in ("buildNeeded", "buildEnv", "buildId"):
+        assert gone not in result
 
 
 @mock_aws
-def test_mldsa_variant_uses_mldsa_version(monkeypatch):
-    """variant=pqc-mldsa → distinct version/S3 key returned for the build."""
-    _seed_registry()
-    mod = _load()
-
-    result = mod.handler({"thingName": "esp32-FC22E0", "variant": "pqc-mldsa"}, None)
-
-    assert result["variant"] == "pqc-mldsa"
-    assert result["version"] == MLDSA_VERSION
-    assert result["s3Key"] == f"FC22E0/{MLDSA_VERSION}/firmware.bin"
-    assert result["buildNeeded"] is True
-    assert "buildEnv" in result
-    # 3.0.0-mldsa is still signed by the CLASSICAL signer (the 4.0.0+ era, not
-    # this one, cuts over to the ML-DSA signer).
-    assert result["signerEra"] == "classical"
-    assert result["sigAlg"] == "ecdsa-p256"
-
-
-@mock_aws
-def test_classical_variant(monkeypatch):
-    _seed_registry()
-    mod = _load()
-    result = mod.handler({"thingName": "esp32-FC22E0", "variant": "classical"}, None)
-    assert result["variant"] == "classical"
-    assert result["version"] == CLASSICAL_VERSION
-    assert result["buildNeeded"] is True
-    # classical 1.0.0 is USB/trusted-flash only (never OTA) → UNSIGNED. Empty
-    # strings (not None) so the state machine env-override never sees a null.
-    assert result["signerEra"] == ""
-    assert result["sigAlg"] == ""
-
-
-@mock_aws
-@pytest.mark.parametrize(
-    "variant,version",
-    [("signer", "4.0.0-signer"), ("verified", "5.0.0-verified")],
-)
-def test_mldsa_signer_era_variants(monkeypatch, variant, version):
-    """Workstream 4: the ML-DSA-signer-era variants build the SAME pqc-mldsa
-    firmware (buildVariant='pqc-mldsa') but are signed by the ML-DSA signer
-    (signerEra='mldsa', sigAlg='mldsa44') and get their own version namespace."""
-    _seed_registry()
-    mod = _load()
+@pytest.mark.parametrize("variant", sorted(VARIANTS))
+def test_every_variant_maps_to_its_shared_image(variant):
+    _seed()
+    mod = _load(f"prepare_build_index_{variant.replace('-', '_')}")
+    cfg = VARIANTS[variant]
     result = mod.handler({"thingName": "esp32-FC22E0", "variant": variant}, None)
-    assert result["variant"] == variant
-    assert result["version"] == version
-    # Builds the pqc-mldsa sketch (ML-KEM + ML-DSA cert, 8884) — only the OTA
-    # signer era differs from 3.0.0-mldsa.
-    assert result["buildVariant"] == "pqc-mldsa"
-    assert result["signerEra"] == "mldsa"
-    assert result["sigAlg"] == "mldsa44"
-    assert result["s3Key"] == f"FC22E0/{version}/firmware.bin"
+    assert result["version"] == cfg["version"]
+    assert result["buildVariant"] == cfg["build_variant"]
+    assert result["s3Key"] == f"shared/{cfg['version']}/firmware.bin"
+    # Empty string, not None, so the state machine never sees a null path.
+    assert result["signerEra"] == (cfg["signer_era"] or "")
+    assert result["sigAlg"] == (cfg["sig_alg"] or "")
+
+
+def test_variant_table_matches_the_known_firmware():
+    """The table is shared with build-shared-firmware.sh; pin its contract."""
+    assert {k: v["version"] for k, v in VARIANTS.items()} == {
+        "classical": "1.0.0-classical", "pqc": "2.0.0-pqc", "pqc-mldsa": "3.0.0-mldsa",
+        "signer": "4.0.0-signer", "verified": "5.0.0-verified"}
+    # ML-DSA signer era builds the same pqc-mldsa sketch; only the signer differs.
+    assert VARIANTS["signer"]["build_variant"] == VARIANTS["verified"]["build_variant"] == "pqc-mldsa"
+    assert VARIANTS["classical"]["signer_era"] is None
 
 
 @mock_aws
-def test_build_variant_defaults_to_key_for_base_variants(monkeypatch):
-    """For the original variants the picker key IS the build variant."""
-    _seed_registry()
+def test_missing_shared_image_fails_with_actionable_error():
+    """No per-device fallback build (concurrent builds of one version could
+    pair a firmware.bin with another build's signature)."""
+    _seed(shared_versions=("2.0.0-pqc",))
     mod = _load()
-    r = mod.handler({"thingName": "esp32-FC22E0", "variant": "pqc-mldsa"}, None)
-    assert r["buildVariant"] == "pqc-mldsa"
-    r = mod.handler({"thingName": "esp32-FC22E0", "variant": "classical"}, None)
-    assert r["buildVariant"] == "classical"
+    with pytest.raises(mod.SharedFirmwareMissing) as exc:
+        mod.handler({"thingName": "esp32-FC22E0", "variant": "pqc-mldsa"}, None)
+    assert "3.0.0-mldsa" in str(exc.value)
+    assert "build-shared-firmware.sh" in str(exc.value)
 
 
 @mock_aws
-def test_unknown_variant_raises(monkeypatch):
-    _seed_registry()
+def test_unknown_variant_raises():
+    _seed()
     mod = _load()
     with pytest.raises(ValueError) as exc:
         mod.handler({"thingName": "esp32-FC22E0", "variant": "bogus"}, None)
@@ -174,34 +122,17 @@ def test_unknown_variant_raises(monkeypatch):
 
 
 @mock_aws
-def test_build_skipped_when_firmware_exists(monkeypatch):
-    """If the variant's firmware already exists in S3, buildNeeded is False."""
-    _seed_registry()
-    s3 = boto3.client("s3", region_name="us-east-1")
-    s3.create_bucket(Bucket=FIRMWARE_BUCKET)
-    s3.put_object(Bucket=FIRMWARE_BUCKET, Key=f"FC22E0/{MLDSA_VERSION}/firmware.bin", Body=b"x")
-
+def test_unregistered_device_raises():
+    _seed()
     mod = _load()
-    result = mod.handler({"thingName": "esp32-FC22E0", "variant": "pqc-mldsa"}, None)
-    assert result["buildNeeded"] is False
-    assert result["version"] == MLDSA_VERSION
-    # buildEnv is always present (empty) so the state machine ResultSelector
-    # never references a missing path.
-    assert "buildEnv" in result
-
-
-@mock_aws
-def test_missing_device_raises(monkeypatch):
-    _seed_registry()
-    mod = _load()
-    with pytest.raises(Exception) as exc:
+    with pytest.raises(ValueError) as exc:
         mod.handler({"thingName": "esp32-UNKNOWN"}, None)
     assert "not found" in str(exc.value).lower()
 
 
 @mock_aws
-def test_missing_thingname_raises(monkeypatch):
-    _seed_registry()
+def test_missing_thingname_raises():
+    _seed()
     mod = _load()
     with pytest.raises(Exception):
         mod.handler({}, None)

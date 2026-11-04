@@ -25,35 +25,68 @@ the broker is fully created before the device-builder stack runs.
 
 ---
 
+> **The workshop is the source of truth for installation and teardown.** The
+> steps below follow the Workshop Studio operator chapter (section **99**, pages
+> 99.1–99.8) and its **Cleanup** page, in the same order and with the same
+> commands; this file adds reference detail for self-hosted deploys and for
+> maintainers. If they ever disagree, the workshop wins and this file is wrong.
+> A deploy has passed only when those steps were followed as written **and**
+> worked.
+
 ## Deployment sequence
 
-Run these steps in order. Steps 1–3 stand up the cloud infrastructure; steps 4–6
-are the pieces CloudFormation cannot do (build a container image, build a
-frontend, register software on physical hardware). Replace `<region>` throughout
-(e.g. `us-east-1`), and add `--profile <name>` if you use a named AWS CLI profile.
+Run these steps in order; each heading names the matching workshop page. The
+workshop runs everything from a browser-based **Code Editor** IDE in the
+workshop account, in `us-east-1`. For a self-hosted deploy, run the same
+commands from any machine with the prerequisites below, and add
+`--profile <name>` if you use a named AWS CLI profile.
 
-### 1. Prerequisites
+Plan about **30 minutes** end to end. Most of it is unattended, and the firmware
+builder image (step 4) can build while you provision the Builder-Pi (step 6).
 
-- AWS CLI v2, configured with credentials for the target account (Admin or
-  equivalent — the stacks create IAM roles, ECS, NLB, Private CA, VPC, etc.).
-- Node.js + npm on the deploy host (the dashboard is built locally in step 3).
-- Docker is **not** required locally — container images are built in CodeBuild.
+### 1. Operator environment (workshop 99.1)
 
-### 2. (Self-hosted only) package the templates — SKIP for Workshop Studio
+In Workshop Studio the Code Editor IDE is already provisioned with everything
+the deploy needs: AWS CLI v2, Node.js LTS, an instance role that can deploy the
+stack, and the region set to `us-east-1`. Confirm with:
 
-Self-hosted deploys use `deploy-workshop.sh`, which packages the templates for
-you, so you can skip straight to step 3. Run `package.sh` only when staging
-assets for **Workshop Studio** (see "Workshop Studio" below).
+```bash
+aws --version
+node --version
+aws sts get-caller-identity
+```
 
-### 3. Deploy the stack + build the broker image + build the dashboard
+Self-hosted: AWS CLI v2 with credentials for the target account (Admin or
+equivalent — the stacks create IAM roles, ECS, NLB, Private CA, VPC, etc.).
+Docker and Node.js are **not** required locally — the container images and the
+dashboard are built in CodeBuild.
 
-> ⚠️ **The workshop WiFi credentials are supplied at deploy time** — the device
-> firmware (both the initial flash and the classical→PQC migration) is built
-> with them, and the builder-Pi WiFi AP (brought up automatically by the
-> `configure-wifi-ap` SSM document) broadcasts the same SSID. They are
-> **never committed** to the repo (the template defaults are the harmless
-> placeholder `changeme`). Provide them by **one of three methods**, resolved in
-> this precedence (per value, first match wins):
+### 2. Get the source (workshop 99.2)
+
+In Workshop Studio the IDE is pre-loaded with the source in
+`~/environment/Sample-aws-iot-pqc`, from the `pqc-workshop-src.zip` in the event
+assets bucket. That zip is built from this repository with
+`cloudformation/package-workshop-src.sh` (it archives the committed HEAD) and
+uploaded before the event, so rebuild and re-upload it whenever the shipped
+source changes. Self-hosted: clone this repository.
+
+Every command below runs from the repository root or from `cloudformation/`:
+
+```bash
+cd ~/environment/Sample-aws-iot-pqc/cloudformation
+```
+
+### 3. Deploy the central stack (workshop 99.3)
+
+> ⚠️ **The workshop WiFi credentials are supplied at deploy time.** The script
+> stores them in SSM Parameter Store (`/pqc-workshop/wifi/ssid`, and
+> `/pqc-workshop/wifi/password` as a SecureString). The device-identity job
+> writes them into each device's `certs` partition at registration, and the
+> Builder-Pi WiFi AP (brought up automatically by the `configure-wifi-ap` SSM
+> document) broadcasts the same SSID. They are **never committed** to the repo,
+> never passed to CloudFormation, and never compiled into firmware. Provide them
+> by **one of three methods**, resolved in this precedence (per value, first
+> match wins):
 >
 > 1. **CLI flags:** `--wifi-ssid <ssid> --wifi-password <pw>`
 > 2. **Env vars:** `WORKSHOP_WIFI_SSID` / `WORKSHOP_WIFI_PASSWORD`
@@ -64,10 +97,8 @@ assets for **Workshop Studio** (see "Workshop Studio" below).
 > Non-interactive with nothing supplied: the SSID falls back to the workshop
 > default (`reinvent-pqc-iot-wifi`, not a secret) and the password falls back to
 > `changeme` (the deploy still succeeds but devices won't join a real network —
-> the script prints a WARN). The resolved values are threaded to the firmware
-> build and published to SSM (`/pqc-workshop/wifi/ssid` as String,
-> `/pqc-workshop/wifi/password` as SecureString) as the single source of truth
-> the registrar/migration Lambdas and the builder-Pi AP setup consume.
+> the script prints a WARN). SSM is the single source of truth: the
+> device-identity job and the Builder-Pi AP setup both read it.
 >
 > **Security:** a `--wifi-password` flag is visible in shell history and `ps`.
 > Prefer the env var or the interactive prompt for the real password.
@@ -105,15 +136,22 @@ one is rejected. The script confirms the target account before any writes (set
    templates bucket;
 2. deploy the master stack (with `BrokerTriggerBuild=false`, so the broker's
    in-stack image build is skipped and its ECS service stays at `DesiredCount:
-   0`). The stack creates **both** ACM Private CAs here: the classical EC CA
-   (8883 path) and the **ML-DSA-44 CA** (8884 path, Step 2);
+   0`). The stack creates the four ACM Private CAs here: the classical EC CA
+   (8883 path), the **ML-DSA-44 CA** (8884 path, Step 2), and the two
+   **firmware-signing roots** (ECDSA P-256 and ML-DSA-44) that issue only the
+   OTA signer certificates;
 3. stage the broker + firmware Docker build contexts to S3, build the broker
    container image in CodeBuild, then build the **shared cert-issuer image**
    (`pqc-workshop-cert-issuer-image-build`, OpenSSL 3.5) and run the **broker
    cert provisioner** (`pqc-workshop-broker-cert-provisioner`) in it — this mints
    **both** broker server certs (classical + ML-DSA-44) into Secrets Manager
    **before** scaling the broker ECS service to 1 task (the broker's entrypoint
-   fetches those secrets on start, so the order matters);
+   fetches those secrets on start, so the order matters). It then runs the
+   **firmware signer provisioner** (`pqc-workshop-firmware-signer-provisioner`)
+   in the same image, under its own IAM role, to mint the two OTA firmware
+   signer certs from the dedicated firmware-signing roots. That role is the only
+   one allowed to issue from those roots, and only with the code-signing
+   template;
 4. build + sync the v2 dashboard and invalidate CloudFront;
 5. print the outputs (dashboard URL, broker endpoint) and the remaining steps.
 
@@ -121,7 +159,8 @@ Approximate duration: ~13–15 minutes (CloudFormation create ~6 min + broker
 image build ~3–4 min + cert-issuer image build + broker cert provisioning
 ~3–4 min).
 
-When it finishes, the cloud side is fully up: broker running behind the NLB with
+It prints the stack outputs, including the **dashboard URL** and the
+**broker endpoint** — leave them on screen. When it finishes, the cloud side is fully up: broker running behind the NLB with
 **both** the classical (8883) and ML-DSA-44 (8884) listeners, and the dashboard
 served from CloudFront.
 
@@ -130,34 +169,40 @@ served from CloudFront.
 > stack; the cert-issuer image build + broker cert provisioner (which the script
 > runs automatically) produce the ML-DSA-44 broker cert for the 8884 listener;
 > and the `pqc-mldsa` device variant is built on demand by the migration Step
-> Function when an operator picks it in the dashboard (see §7). Verify both CAs
-> and the 8884 listener with `check_setup_status.sh` (§6).
+> Function when an operator picks it in the dashboard (see the ML-DSA reference
+> section). Verify both CAs and the 8884 listener with `check_setup_status.sh` (§5).
 
-### 4. Build the firmware builder image (ONE-TIME, MANDATORY BEFORE ANY FLASH)
+### 4. Build the firmware builder image and the shared firmware (workshop 99.4 — MANDATORY BEFORE ANY FLASH)
 
-> ⚠️ **You MUST run this before registering/flashing the first device.** The
-> per-device firmware compile (`pqc-workshop-firmware-build`) runs *inside* a
-> custom CodeBuild container image that lives in the `pqc-workshop-firmware-builder`
-> ECR repo. A fresh deploy leaves that repo EMPTY, so if you flash before running
-> this step the device build fails at PROVISIONING with:
->
-> ```
-> CannotPullImageManifestError: Requested image not found
-> ```
->
-> The device Thing/cert still get created, but no firmware is produced. After this
-> image build succeeds, just re-run register/flash — no need to re-register.
+The firmware is compiled inside a custom CodeBuild container image (arduino-cli,
+the ESP32 core, wolfSSL with PQC) in the `pqc-workshop-firmware-builder` ECR
+repo, which a fresh deploy leaves **empty**. One build of the
+`pqc-workshop-build-image` project (the `ImageBuilderProjectName` output) does
+two things:
 
-`deploy-workshop.sh` has already staged the build source, so start the build (the
-project name is the `ImageBuilderProjectName` stack output —
-`pqc-workshop-build-image`):
+1. builds and pushes that image;
+2. then runs `raw_device_builder/codebuild/build-shared-firmware.sh --wait`,
+   which compiles and signs **every firmware variant once** into
+   `s3://pqc-workshop-firmware-<acct>/shared/<version>/` (`firmware.bin`, the
+   flash pieces, `firmware.bin.sig` + `signer.crt` for signed versions,
+   `metadata.json`). The variants come from
+   `raw_device_builder/lambda/prepare-build/variants.json`, the same table the
+   migration uses.
+
+The images contain no device identity, so one per variant serves every device:
+**Register & Flash** uses `shared/1.0.0-classical/`, and every dashboard
+migration publishes `shared/<version>/` without compiling anything. Until the
+build has succeeded, Register & Flash returns "shared firmware is not built
+yet" (HTTP 503) and does nothing, and a migration fails with the same message.
+
+`deploy-workshop.sh` has already staged the build source, so start the build:
 
 ```bash
 aws codebuild start-build --project-name pqc-workshop-build-image [--profile <name>]
 ```
 
-Wait for it to reach `SUCCEEDED` before flashing any device (~10–15 min). To
-watch it to completion:
+It takes about 15 minutes (image ~10–15 min, then the variants ~3 min in
+parallel) and can run while you provision the Builder-Pi (step 6). Watch it:
 
 ```bash
 aws codebuild batch-get-builds [--profile <name>] \
@@ -166,20 +211,73 @@ aws codebuild batch-get-builds [--profile <name>] \
   --query 'builds[0].buildStatus' --output text
 ```
 
-Confirm the image landed: `aws ecr describe-images --repository-name pqc-workshop-firmware-builder`
-should list at least one image.
+`SUCCEEDED` means both the image and every shared variant are ready (the build
+fails if any variant fails). Confirm:
 
-### 5. Provision the Builder-Pi (two steps: register on the Pi, provision from the host)
+```bash
+aws ecr describe-images --repository-name pqc-workshop-firmware-builder \
+  --query 'imageDetails[].imageTags' --output table
+aws s3 ls "s3://pqc-workshop-firmware-$(aws sts get-caller-identity --query Account --output text)/shared/"
+```
+
+You should see an image tagged `latest`, and `1.0.0-classical/`, `2.0.0-pqc/`,
+`3.0.0-mldsa/`, `4.0.0-signer/` and `5.0.0-verified/`.
+
+**Rebuilding just the firmware** (after changing a sketch, `buildspec.yml` or
+`variants.json` and running `deploy-workshop.sh --stage-only`) does not need a
+new image:
+
+```bash
+./raw_device_builder/codebuild/build-shared-firmware.sh --region us-east-1 [--profile <name>] --wait
+# or one variant:  ... --variant pqc-mldsa --wait
+```
+
+Rebuilding a version replaces `shared/<version>/` in place; devices already
+running that version keep running it until they are migrated or reflashed.
+
+### 5. Verify the environment (workshop 99.5)
+
+Before touching hardware, from the repository root:
+
+```bash
+./check_setup_status.sh --region us-east-1 [--profile <name>]
+```
+
+It prints a pass/warn/fail line per check and a summary. A healthy deploy is
+almost entirely passes; the Builder-Pi shows offline until step 6, and
+device-dependent checks warn until step 8. The check also validates the ML-DSA
+resources: the ACTIVE device CAs (an `EC_prime256v1` classical CA and an
+`ML_DSA_44` CA), both firmware-signing root CAs (checked by their stack outputs)
+and the broker NLB's **8884** listener + `pqc-broker-mldsa-tg`
+target group, alongside the classical 8883 path.
+
+Open the dashboard (no devices yet) and keep the tab open:
+
+```bash
+aws cloudformation describe-stacks --stack-name pqc-workshop \
+  --query "Stacks[0].Outputs[?OutputKey=='DashboardURL'].OutputValue | [0]" \
+  --output text
+```
+
+Optionally confirm the broker task is running (`1`):
+
+```bash
+aws ecs list-tasks --cluster pqc-workshop-broker --desired-status RUNNING \
+  --query 'length(taskArns)' --output text
+```
+
+### 6. Provision the Builder-Pi (workshop 99.6)
 
 The Builder-Pi is provisioned in two phases. The **bundle only registers the
-SSM agent**; everything else (arduino-cli, the ESP32 core, the GUI app, the
-systemd service) is installed *remotely* by SSM documents run from the deploy
-host. This is deliberate: running the provisioning via SSM (as root, with a
+SSM agent**; everything else (a few system packages, the GUI app with
+`esptool`, the systemd service) is installed *remotely* by SSM documents run
+from the deploy host. The Pi never compiles firmware (the cloud builds every
+image), so it needs no Arduino toolchain. This is deliberate: running the provisioning via SSM (as root, with a
 consistent environment, output captured to SSM + CloudWatch, each step
 independently re-runnable) is far more reliable and debuggable than a big
 self-contained script run under `sudo` on the Pi.
 
-**Step 5.1 — register the Pi as an SSM managed instance.** From this repo,
+**Step 6.1 — register the Pi as an SSM managed instance.** From this repo,
 generate the (now tiny) bundle and copy it to the Pi:
 
 ```bash
@@ -195,12 +293,24 @@ cd builder-pi-bundle
 sudo ./setup-ssm.sh
 ```
 
-After ~30s the Pi appears Online in `aws ssm describe-instance-information`.
+After ~30s the Pi appears as an online managed instance:
 
-**Step 5.2 — provision the Pi from the deploy host.** Back on the machine with
+```bash
+aws ssm describe-instance-information \
+  --query "InstanceInformationList[?Name=='pqc-workshop-builder-pi'].{id:InstanceId,ping:PingStatus,ip:IPAddress}" \
+  --output table
+```
+
+> **Rebuilding an environment always includes reimaging the Pi.** The reimaged
+> Pi registers with a **new** instance ID. Run the orchestrator below against
+> it (`--instance-id <new-mi-id>` if more than one instance shows), then
+> deregister the old one once it shows `ConnectionLost`:
+> `aws ssm deregister-managed-instance --instance-id <old-mi-id>`.
+
+**Step 6.2 — provision the Pi from the deploy host.** Back on the machine with
 AWS credentials, run the orchestrator. It waits for the Pi to be Online, then
-runs the SSM documents in order (install-awscli → install-toolchain →
-deploy-app → configure-service → configure-wifi-ap):
+runs the SSM documents in order (install-base → deploy-app →
+configure-service → configure-wifi-ap):
 
 ```bash
 ./raw_device_builder/setup-builder-pi-remote.sh            # add --region / --profile if needed
@@ -209,13 +319,13 @@ deploy-app → configure-service → configure-wifi-ap):
 The GUI **auto-starts** at the end (systemd `enable`d + started), reachable at
 `http://<pi-ip>:8080`, **and the workshop 2.4 GHz WiFi AP is brought up on the
 Pi's USB radio** by the final `configure-wifi-ap` document — so the Pi ends fully
-networked with no manual step (see §5a). The toolchain step is slow (~10-15 min:
-the ~5 GB ESP32 core). Every step's output is captured by SSM and shipped to the
+networked with no manual step (see §7). No step is slow: on a freshly imaged Pi
+the longest is the first `apt` and `pip` install. Every step's output is
+captured by SSM and shipped to the
 `/pqc-workshop/builder-pi` CloudWatch log group.
 
 **If a step fails**, the orchestrator prints the failing document's output and a
-console link, then stops. Fix the cause and re-run just that document without
-repeating the slow toolchain install, e.g.:
+console link, then stops. Fix the cause and re-run just that document, e.g.:
 
 ```bash
 ./raw_device_builder/setup-builder-pi-remote.sh --only deploy-app
@@ -227,20 +337,19 @@ an updated GUI to an already-provisioned Pi: re-run `deploy-workshop.sh` (or jus
 re-stage `builder-pi/app.tgz`), then `setup-builder-pi-remote.sh --only deploy-app`.
 
 > **Plug-and-flash — no GUI configuration.** The Builder-Pi GUI takes no WiFi,
-> broker, or firmware-version input. Every device value is resolved server-side
-> by the registrar Lambda from the workshop **single source of truth in SSM**:
-> WiFi from `/pqc-workshop/wifi/{ssid,password}` and the broker endpoint from
-> `/pqc-workshop/broker/endpoint` (published from the broker stack output at
-> deploy time). The operator just plugs in an ESP32 and clicks **Register &
-> Flash** — the only per-device input is the auto-detected serial number. The
-> GUI shows the resolved broker endpoint read-only for reference. To change the
-> WiFi or broker later, update the SSM parameter — the next build picks it up,
-> no redeploy.
+> broker, or firmware-version input. Every device value comes from the workshop
+> **single source of truth in SSM**: the device-identity job reads the WiFi from
+> `/pqc-workshop/wifi/{ssid,password}`, and the shared firmware builds take the
+> broker endpoint from `/pqc-workshop/broker/endpoint`. The operator just plugs in
+> an ESP32 and clicks **Register & Flash** — the only per-device input is the
+> auto-detected serial number. To change the WiFi later, update the SSM parameter
+> and **Reflash**; to change the broker, update it and rebuild the shared
+> firmware (`build-shared-firmware.sh --wait`).
 
-### 5a. The Builder-Pi as the workshop WiFi AP (automated)
+### 7. The Builder-Pi as the workshop WiFi AP (workshop 99.7)
 
 The ESP32 devices are **2.4 GHz only** and must join the workshop SSID (e.g.
-`reinvent-pqc-iot-wifi`) — the SSID baked into their firmware. The Builder-Pi
+`reinvent-pqc-iot-wifi`) — the SSID written into their identity partition. The Builder-Pi
 itself hosts that network: it becomes a high-density WiFi access point for the
 devices on its USB radio and bridges their traffic up to the venue backbone via
 its onboard uplink. It is sized for a full workshop room (up to ~150 devices
@@ -248,9 +357,9 @@ across one or two Pis; the deploy default is 100).
 
 > **This is now AUTOMATED — no manual steps.** The AP is brought up by the
 > `configure-wifi-ap` SSM document, which runs as the final step (5/5) of the Pi
-> provisioning chain in `setup-builder-pi-remote.sh` (Step 5.2). It pulls the
+> provisioning chain in `setup-builder-pi-remote.sh` (Step 6.2). It pulls the
 > SSID/PSK from SSM (`/pqc-workshop/wifi/{ssid,password}` — the same source the
-> firmware is built from, so the AP PSK always matches the devices), sets the
+> device identities are built from, so the AP PSK always matches the devices), sets the
 > WiFi regulatory domain, detects the AP-capable USB radio by its `mt76*` driver
 > (not by interface name), and builds the NetworkManager `shared`-mode AP. So on
 > a normally-provisioned Pi there is **nothing to do here** — this section is
@@ -270,7 +379,7 @@ Pi's onboard radio is a weak AP, so a capable USB radio hosts the workshop AP
 
 | Component | Specification | Notes | Where to buy (The Pi Hut) |
 |---|---|---|---|
-| Single-board computer | Raspberry Pi 5 Model B (Rev 1.1), 16 GB RAM | 64-bit quad-core Arm Cortex-A76 @ 2.4 GHz; 16 GB gives ample headroom for the ESP32 toolchain + concurrent flashing | [Raspberry Pi 5 (16GB variant)](https://thepihut.com/products/raspberry-pi-5) |
+| Single-board computer | Raspberry Pi 5 Model B (Rev 1.1), 16 GB RAM | 64-bit quad-core Arm Cortex-A76 @ 2.4 GHz; 16 GB gives ample headroom for concurrent flashing | [Raspberry Pi 5 (16GB variant)](https://thepihut.com/products/raspberry-pi-5) |
 | Operating system | Raspberry Pi OS (Debian 13 "Trixie", 64-bit), kernel `6.18.50+rpt-rpi-2712` | NetworkManager-based network stack (used for the AP); check yours with `cat /etc/os-release` | (ships on Raspberry Pi OS media) |
 | USB WiFi adapter | AC1300 Dual-Band USB WiFi Adapter — MediaTek **MT7612U** (`0e8d:7612`), 802.11a/b/g/n/ac, USB 3.0 | 2.4 GHz + 5 GHz; the `mt76x2u` driver ships with Raspberry Pi OS and has strong AP-mode support. Hosts the workshop 2.4 GHz AP. | [AC1300 Dual-Band USB WiFi Adapter (MT7612U)](https://thepihut.com/collections/raspberry-pi-store/products/dual-band-usb-wifi-adapter-for-raspberry-pi-5ghz-2-4ghz-mt7612u) |
 
@@ -306,7 +415,7 @@ DHCP (NM's own `dnsmasq`), the interface IP, and NAT/masquerade to the uplink. I
 order it:
 
 1. **Resolves SSID/PSK from SSM** (`/pqc-workshop/wifi/{ssid,password}`) — the
-   single source of truth the firmware is built against, so the AP PSK always
+   single source of truth the device identities are built from, so the AP PSK always
    matches the devices. (This eliminates the hand-typed-PSK mistake that once
    caused a `4WAY_HANDSHAKE_TIMEOUT`.)
 2. **Sets the WiFi regulatory domain** so the self-managed MediaTek radio will
@@ -372,24 +481,101 @@ ip -s link show wlan1
 > KeepAlive to 15–30 s** so each client pings often enough to keep its conntrack
 > slot alive.
 
-### 6. Validate readiness
+### 8. Register and flash the first device (workshop 99.8)
+
+The smoke test that proves the whole environment works end to end. The step 4
+build must have reached `SUCCEEDED` first (the shared firmware must exist).
+
+1. Open the Builder-Pi GUI at `http://<pi-ip>:8080` (the IP from step 6.1).
+2. Plug an ESP32 into a USB port on the Pi. The GUI auto-detects it and shows
+   its serial number.
+3. Click **Register & Flash**.
+
+On the cloud side that one click:
+
+- **registers** the device: the IoT Thing (`esp32-<serial>`), a per-device
+  policy and the registry entry;
+- **issues the device identity**: the `pqc-workshop-device-identity` CodeBuild
+  job generates the keys, gets a classical (ECDSA P-256) and an ML-DSA-44 device
+  certificate from the two device CAs, and packs them, both device CA roots,
+  both firmware-signing roots and the WiFi into a 64 KB image for the device's `certs` partition
+  (`identity/<serial>/certs.bin`, expired by an S3 lifecycle rule after a day);
+- **uses the shared classical firmware** from step 4 (`shared/1.0.0-classical/`)
+  — nothing is compiled per device. The image holds no keys or WiFi, only the
+  broker endpoint, so it is the same for every device and OTA updates carry no
+  secrets.
+
+The Pi then downloads the firmware pieces and the identity image, flashes them
+in one `esptool` call (`0x0` bootloader, `0x8000` partitions, `0xe000`
+boot_app0, `0x10000` app, `0x721000` certs — never the 8 MB
+`firmware.merged.bin`, which would overwrite `certs`), deletes the identity
+image from S3, and verifies the boot. A registration takes well under a minute
+(identity job ~15 s, flash ~10 s).
+
+Confirm the device connected: on the dashboard it appears **online** with its
+firmware version and the classical TLS algorithm, and in the broker log:
 
 ```bash
-./check_setup_status.sh --region <region> [--profile <name>]
+aws logs filter-log-events \
+  --log-group-name /pqc-workshop/broker-container \
+  --start-time $(( ($(date +%s) - 600) * 1000 )) \
+  --filter-pattern '"esp32"' \
+  --query 'events[*].message' --output text
 ```
 
-Before steps 4 and 5 are complete, expect warnings for the firmware image and the
-Builder-Pi — that is normal. Once both are done and at least one device has
-connected, the check should pass clean.
+you should see the client connect (`CONNACK`), publish its lifecycle "birth"
+message, subscribe to `cmd/esp32-<serial>/+`, then publish telemetry.
 
-The check also validates the **Step 2** resources: it confirms **two** ACTIVE
-Private CAs (an `EC_prime256v1` classical CA and an `ML_DSA_44` CA) and the
-broker NLB's **8884** listener + `pqc-broker-mldsa-tg` target group, alongside
-the classical 8883 path.
+> **Reflash** re-issues a fresh identity and flashes it with the firmware already
+> in S3. A device whose serial console shows `[Setup] FATAL: no valid device
+> identity` has a missing, out-of-date or wrong-board `certs` partition and
+> deliberately refuses to start WiFi; Reflash fixes it. After rebuilding the
+> shared firmware, Reflash also picks up the new `shared/1.0.0-classical/` image.
 
 ---
 
-## 7. Migrating a device's certificate to ML-DSA-44 (Step 2)
+## Cleanup (workshop Cleanup page)
+
+Workshop Studio reclaims and cleans its accounts when the event ends. For a
+self-hosted or test deployment, from `cloudformation/`:
+
+```bash
+./teardown-workshop.sh us-east-1 --wait [--profile <name>]
+```
+
+It confirms the target account (type `y`, or set `CONFIRM_TEARDOWN=yes`), then,
+in order: deletes every `esp32-*` Thing (detaching certificates and policies)
+and deprecates the `esp32-pqc-device` Thing Type; scales the broker service to 0;
+deletes all images in the `pqc-workshop-firmware-builder`,
+`pqc-workshop-mosquitto-broker` and `pqc-workshop-cert-issuer` repositories;
+empties every object version and delete-marker from the workshop S3 buckets
+(never the Workshop Studio assets bucket); deletes the `pqc-workshop` master
+stack (10–15 min with `--wait`); and finally empties and deletes the
+CloudFormation artifacts bucket. It is safe to re-run.
+
+Options: `--prune-ssm` deregisters Builder-Pi instances already showing
+`ConnectionLost`; `--delete-thing-type` also deletes the deprecated Thing Type
+after the required ~5-minute wait (otherwise the next deploy reuses it).
+
+Left in place on purpose (a redeploy reuses or overwrites them): the
+`/pqc-workshop/*` SSM parameters, the Builder-Pi's SSM registration unless
+pruned, and the devices' `certs` partitions (useless against a new deployment —
+their CAs are gone; re-register each device). To delete the SSM parameters when
+you are finished with the account:
+
+```bash
+aws ssm get-parameters-by-path --path /pqc-workshop --recursive \
+  --query 'Parameters[].Name' --output text | tr '\t' '\n' | \
+  xargs -n 10 aws ssm delete-parameters --names
+```
+
+If you cannot run the script, empty the versioned buckets (all versions and
+delete-markers) and the three ECR repositories, delete the `esp32-*` Things,
+then `aws cloudformation delete-stack --stack-name pqc-workshop`.
+
+---
+
+## Reference: migrating a device's certificate to ML-DSA-44
 
 Step 2 lets a device move its **certificate** from classical ECDSA to a
 post-quantum **ML-DSA-44** signature (FIPS 204), on top of the Step 1 ML-KEM key
@@ -415,8 +601,8 @@ There are three firmware variants, each built on demand and delivered over OTA:
    The picker pre-selects the next logical step for the device.
 3. Click **🚀 Flash**. This calls the `migrateFirmware` AppSync mutation with the
    chosen `variant`, which starts the `pqc-workshop-pqc-migration` Step Function:
-   it builds the selected variant (if not already built), issues the device's
-   ML-DSA-44 cert (for `pqc-mldsa`) via the shared cert-issuer, pushes the image
+   it resolves the chosen variant to its shared prebuilt image
+   (`shared/<version>/`, built in step 4), pushes it
    over OTA, and the device reboots into it. Live progress appears on the card
    (Building… → Pushing OTA… → Rebooting…).
 4. When the device reconnects, its telemetry reports the new state. For
@@ -439,6 +625,50 @@ The broker server certificate on 8884 should show an ML-DSA-44 signature
 (OID `2.16.840.1.101.3.4.3.17`), whereas 8883 shows a classical ECDSA cert.
 
 ---
+
+## Updating a running environment (`--stage-only`)
+
+A full `deploy-workshop.sh` run rebuilds the broker and cert-issuer images,
+re-provisions the broker certs and rebuilds the dashboard every time, about
+20 minutes even when only one sketch changed. When the stack already exists and
+you changed only shipped **source**, use the fast path instead:
+
+```bash
+cd cloudformation
+./deploy-workshop.sh us-east-1 --stage-only [--profile <name>]
+```
+
+It needs an existing `pqc-workshop` stack in a stable state, takes about
+2–3 minutes, and asks for no WiFi (set `CONFIRM_DEPLOY=yes` to skip the account
+prompt in automation). It rejects `--vpc-id`, `--subnets` and `--wifi-*`.
+
+**What it does**
+
+1. Re-stages everything the full deploy uploads to S3: the broker and
+   cert-issuer build contexts, the firmware `source/` prefix (both buildspecs,
+   the firmware sketch folder, the wolfSSL config, the partition table, with the same
+   completeness check), and the Builder-Pi `app.tgz` and assets.
+2. Rebuilds the dashboard in CodeBuild, syncs it and invalidates CloudFront.
+3. Prints, for each kind of change, what to run next.
+
+**What it skips:** template packaging, the stack update, the broker and
+cert-issuer image builds, broker cert provisioning, the broker scale-up, and
+the SSM config and WiFi publish.
+
+**Which change needs which follow-up**
+
+| You changed | After `--stage-only` |
+|---|---|
+| Dashboard (`raw_device_builder/dashboard-v2/frontend/`) | Nothing — it is live. Hard-refresh the browser. |
+| Firmware sketches, `buildspec.yml`, `variants.json`, wolfSSL config (`wolfssl_user_settings_arduino.h`), partition table | Rebuild the shared images: `./raw_device_builder/codebuild/build-shared-firmware.sh --region us-east-1 --wait` (or `--variant <key>`). Registration and migrations then use them. The wolfSSL config and partition table are overlaid by `buildspec.yml` at compile time, so they need no image rebuild. A partition-table change only reaches a device by a USB reflash at the Builder-Pi, never by OTA. |
+| Firmware-builder toolchain (`Dockerfile`, `buildspec-image.yml`: ESP32 core, pinned wolfSSL / MQTT library versions, OpenSSL) | `aws codebuild start-build --project-name pqc-workshop-build-image` — it rebuilds the image and then every shared image. |
+| Builder-Pi app (`raw_device_builder/builder-pi/`) | `./raw_device_builder/setup-builder-pi-remote.sh --region us-east-1 --only deploy-app` |
+| CloudFormation, Lambda code, broker or cert-issuer image, SSM config, WiFi | Not covered — run the full `./deploy-workshop.sh us-east-1`. |
+
+> **`--stage-only` is for iterating, not for acceptance.** It updates a running
+> environment in place. A change is only done when it survives a destroy + a
+> from-scratch deploy that follows the workshop instructions (see the project
+> steering).
 
 ## VPC: create one, or bring your own
 
@@ -478,64 +708,20 @@ is why the image build lives in the deploy script, not in the stack.
 
 ## Workshop Studio
 
-Workshop Studio deploys the master template directly (it does not run
-`deploy-workshop.sh`), so the operator must perform the deploy script's post-stack
-steps by hand.
+Workshop Studio provisions only the operator **Code Editor** IDE
+(`static/infrastructure/code-editor.yaml` in the workshop content repository)
+and loads `pqc-workshop-src.zip` from the event assets bucket into it (it is the
+only template in the workshop's `contentspec.yaml`). The operator then runs this
+whole sequence — `deploy-workshop.sh` and steps 4–8 — from that IDE.
 
-1. Stage the assets (packages the network + workshop children and uploads them):
-   ```bash
-   ./package.sh <region> <ws-assets-bucket> pqc-workshop
-   ```
-2. Point Workshop Studio content provisioning at
-   `cloudformation/pqc-workshop-main.yaml` with parameters:
-   - `TemplateBucketName` = `<ws-assets-bucket>`
-   - `TemplateBucketPrefix` = `pqc-workshop`
-   - `CreateVpc` = `true` (default; no VPC prep needed in the account)
-   - `VpcId` / `SubnetIds` = leave empty unless `CreateVpc=false`
-   - `DeviceCount` (optional, default 100)
-   - `DefaultWifiSsid` = the workshop WiFi SSID (e.g. `reinvent-pqc-iot-wifi`) —
-     WS bypasses `deploy-workshop.sh`, so set the real value **here** (the
-     template default is the placeholder `changeme`).
-   - `DefaultWifiPassword` = the workshop WiFi password (WPA2 PSK, 8–63 chars) —
-     `NoEcho`; likewise set here, do not leave as `changeme`.
-3. **After the stack completes**, do the steps `deploy-workshop.sh` would have
-   done, in this order (the cert steps 3.ii–3.iii are **Step 2** — they must run
-   **before** you scale the broker up, because the broker entrypoint fetches the
-   broker cert secrets on start):
-   1. stage the broker Docker build context to the broker source bucket and start
-      the broker image build (CodeBuild `pqc-workshop-broker-image-build`); wait
-      for `SUCCEEDED`;
-   2. stage the shared cert-issuer build context
-      (`shared/cert-issuer/` → `s3://<broker-source-bucket>/cert-issuer/`) and
-      start the cert-issuer image build; wait for `SUCCEEDED`:
-      ```bash
-      aws codebuild start-build --project-name pqc-workshop-cert-issuer-image-build
-      ```
-   3. run the broker cert provisioner (runs *inside* the cert-issuer image; mints
-      **both** broker server certs — classical + ML-DSA-44 — into Secrets
-      Manager); wait for `SUCCEEDED`:
-      ```bash
-      aws codebuild start-build --project-name pqc-workshop-broker-cert-provisioner
-      ```
-   4. scale the broker service up (now that an image exists AND the broker certs
-      are in Secrets Manager):
-      ```bash
-      aws ecs update-service --cluster pqc-workshop-broker \
-        --service pqc-workshop-broker --desired-count 1
-      ```
-   5. build the v2 dashboard, sync it to the dashboard S3 bucket, and invalidate
-      CloudFront.
-   6. publish the workshop WiFi to SSM as the single source of truth for the
-      builder-Pi AP setup (the script does this; WS must do it by hand). Use the
-      SAME values as the `DefaultWifiSsid`/`DefaultWifiPassword` params above:
-      ```bash
-      aws ssm put-parameter --name /pqc-workshop/wifi/ssid \
-        --type String --overwrite --value 'reinvent-pqc-iot-wifi'
-      aws ssm put-parameter --name /pqc-workshop/wifi/password \
-        --type SecureString --overwrite --value '@reinvent2026'
-      ```
-4. Then continue with the shared steps 4–6 above (firmware image build,
-   Builder-Pi registration, validate).
+The zip ships with the workshop content as `assets/pqc-workshop-src.zip`, which
+Workshop Studio publishes to the assets bucket. Rebuild it from the committed
+source whenever the shipped source changes, and commit it to the workshop
+content repository:
 
-> The simplest way to get the exact commands for 3.i–3.iii is to read the
-> corresponding sections of `deploy-workshop.sh`.
+```bash
+./package-workshop-src.sh            # writes pqc-workshop-src.zip from HEAD
+```
+
+`package.sh` (packaging the nested templates into a provided bucket for a
+platform-driven stack deploy) is not used by the current Workshop Studio flow.

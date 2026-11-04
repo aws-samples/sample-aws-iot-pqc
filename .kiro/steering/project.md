@@ -32,6 +32,54 @@ Practical implications for any change:
 - Validate changes by reasoning about (and ultimately performing) a clean
   destroy + redeploy, not just an in-place update.
 
+## THE WORKSHOP INSTRUCTIONS ARE THE TEST (applies to every deploy and feature branch)
+
+The Workshop Studio content repo is the **golden source** for how the workshop is
+installed and torn down:
+`/Volumes/workplace/studio.us-east-1.prod.workshops.aws/pqc-migration-for-iot`
+— install = `content/99-deployment/*` (99.1 IDE … 99.8 first device), deletion =
+`content/cleanup/index.en.md`.
+
+A deploy only counts as passing if it was done **by following those workshop
+instructions step by step, AND they worked as written**. Improvising, running the
+repo's own runbook instead, or quietly working around a step that failed is NOT a
+pass — a step that does not work as written is a defect in the code or the
+instructions, and must be fixed in the deployable source and/or the workshop
+content, then re-run.
+
+Rules:
+- **Every environment deploy/rebuild** (pqc-a, pqc-b, Workshop Studio): read and
+  follow the workshop pages in order (deploy → firmware image → verify →
+  Builder-Pi → WiFi AP → first device), and the cleanup page for teardown. Note
+  any deviation explicitly and treat it as something to fix.
+- **A full rebuild includes rebuilding the Builder-Pi** (the user reimages it).
+  Do not provision the old Pi install in place after a rebuild: confirm with the
+  user, then follow 99.6 (fresh bundle → `sudo ./setup-ssm.sh` on the Pi → new
+  `mi-` id → `setup-builder-pi-remote.sh` against it), and deregister the old
+  ConnectionLost instance.
+- **Every feature branch** that changes install, teardown, or operator/attendee
+  behaviour must update the workshop content to match, in the same piece of
+  work, and its definition of done is a from-scratch deploy that follows the
+  (updated) workshop instructions and works.
+- **Repo docs follow the workshop.** `cloudformation/DEPLOYMENT.md` and the
+  README install/cleanup sections must match the workshop steps (same order,
+  same commands); the repo may add reference detail but must never contradict
+  it. When the code changes what an install/teardown step does, update the
+  workshop page first, then mirror it into the repo docs.
+- **Rebuild the source zip** (`cloudformation/package-workshop-src.sh`) for the
+  workshop assets bucket whenever the shipped source changes, since 99.2 loads
+  the IDE from that zip.
+- **Iterating on a running environment: use `deploy-workshop.sh --stage-only`**
+  (about 2–3 min) when only shipped source changed — firmware sketches/buildspecs,
+  the Builder-Pi app, or the dashboard. It re-stages sources and rebuilds the
+  dashboard, but skips the stack update, image builds, broker certs, SSM and
+  WiFi; follow the "what to run next" summary it prints (e.g. `--only deploy-app`
+  for the Pi, Deregister + Register for a firmware rebuild). Do NOT re-run the
+  full deploy just to ship source. Use the full deploy for CloudFormation,
+  Lambda, broker/cert-issuer image, SSM or WiFi changes. `--stage-only` never
+  counts as the acceptance test — that remains the from-scratch rebuild above.
+  Details: cloudformation/DEPLOYMENT.md, "Updating a running environment".
+
 ## VPC Block Public Access (BPA) — CRITICAL for device connectivity
 
 `pqc-b` has account-level VPC Block Public Access = `block-ingress` (set by
@@ -121,6 +169,83 @@ the teardown/rebuild. Handle these to keep a from-scratch deploy clean:
   is reused across rebuilds (fine, just don't expect the stack to own it).
 
 Backlog candidates surfaced during rebuilds (not yet fixed):
+- **[TOP PRIORITY — own change, do on its own] OTA S3 download TLS: classical
+  key exchange and NO server authentication.** Found Sep 29. Two gaps in every
+  sketch's OTA path (`otaCtx` + `otaHttpsGetToBuffer`):
+  1. **No peer verification.** The sketches embed `S3_ROOT_CA` (Amazon Root CA 1)
+     but set `wolfSSL_CTX_set_verify(otaCtx, WOLFSSL_VERIFY_NONE)` because the
+     chain failed with `ASN_NO_SIGNER_E (-188)`. Integrity today rests only on the
+     SHA-256 + signed-image check; the TLS session to S3 is unauthenticated.
+     Likely root cause (hypothesis, verify on device): S3 sends a 3-cert chain
+     whose top cert is a CROSS-SIGNED Amazon Root CA 1 issued by Starfield
+     Services Root CA G2 (`openssl s_client -showcerts` against
+     `pqc-workshop-firmware-<acct>.s3.amazonaws.com`: leaf CN=s3.amazonaws.com
+     <- Amazon RSA 2048 M01 <- Amazon Root CA 1 <- Starfield G2). Without
+     `WOLFSSL_ALT_CERT_CHAINS`, wolfSSL tries to verify the top cert against
+     Starfield (not loaded) and fails. RSA is already enabled in
+     `wolfssl_user_settings_arduino.h`, so the RSA leaf is not the problem.
+     Fix: add `#define WOLFSSL_ALT_CERT_CHAINS` and switch the OTA ctx to
+     `WOLFSSL_VERIFY_PEER` (optionally also enforce the S3 hostname).
+  2. **Classical key exchange.** Only the broker client calls
+     `wolfSSL_UseKeyShare(WOLFSSL_SECP256R1MLKEM768)`; the OTA ctx does not, so
+     the S3 download likely negotiates classical ECDHE even on the PQC variants
+     (not verified on device). S3 supports hybrid PQ-TLS on TLS 1.3 at all public
+     endpoints; probed with OpenSSL 3.6: SecP256r1MLKEM768 and X25519MLKEM768
+     both negotiate (S3 default pick X25519MLKEM768), SecP384r1MLKEM1024 is NOT
+     offered. Fix: add `wolfSSL_UseKeyShare(..., WOLFSSL_SECP256R1MLKEM768)` on
+     the OTA connection in the PQC variants (v2-v4) and log the negotiated group
+     (`wolfSSL_get_curve_name`).
+  Retest: full chain fw1 -> 2 -> 3 -> 4 over OTA; log must show verify OK + the
+  hybrid group. Needs a shared-image rebuild (full deploy). Risk is low (image is
+  not secret, integrity checked separately) but it is an embarrassing gap in a
+  PQC workshop, hence top priority.
+- **[DONE Nov 1 — branch feature/modular-firmware] Builder-Pi provisioning
+  no longer installs a compile toolchain.** The Pi only lists USB ports, reads
+  the chip MAC and flashes prebuilt images, so: InstallToolchainDocument (and
+  its stack outputs) is DELETED — no arduino-cli, ESP32 core (~7 GB on the SD
+  card), wolfSSL/PubSubClient libraries, arduino-cli.yaml or ARDUINO_CLI_CONFIG;
+  deploy-app no longer copies the wolfSSL header / partition CSV into a core and
+  REMOVES the old toolchain dirs + /usr/local/bin/arduino-cli from an already
+  provisioned Pi; deploy-workshop.sh no longer stages builder-pi/ copies of
+  those two files (and deletes the stale ones). InstallAwscliDocument became
+  "install-base" (awscli, python3, pip, curl, ca-certificates, udev) — logical
+  id/output name kept. The chain is now 4 steps: install-base → deploy-app →
+  configure-service → configure-wifi-ap (`--only install-base`, alias awscli).
+  Port detection moved from `arduino-cli board list` to pyserial
+  `list_ports.comports()` filtered on the ESP32 USB VIDs (303a/10c4/1a86/0403),
+  ttyACM/ttyUSB glob fallback. Found while doing it: the arduino-cli path had
+  been failing on EVERY scan (35,668 times on pqc-a — arduino-cli 1.x returns
+  `{"detected_ports": [...]}`, which the code iterated as a list), so the glob
+  fallback was what actually worked. `esptool.py` (deprecated in esptool v5)
+  replaced by `esptool`. Measure the new provisioning time on the WS5.5 reimage.
+- **[DONE Nov 1 — branch feature/modular-firmware] Modular firmware: one
+  sketch, `.h/.cpp` modules, variant chosen at build time.** The three
+  ~2,400-line near-identical sketches are replaced by ONE sketch folder
+  `aws_iot_pqc_esp32/` (a slim `.ino` + classes `DeviceIdentity`, `WifiManager`,
+  `WolfSSLClient` (pqc_tls_client), `MqttManager`, `OtaUpdater`, `Diagnostics`,
+  `StatusLed`, plus `json_util`, `app_config.h`, `variant_config.h`). The build
+  selects the variant with `#define FIRMWARE_VARIANT FW_VARIANT_{CLASSICAL,PQC,
+  PQC_MLDSA}` in the generated `secrets.h`; `variant_config.h` holds every
+  difference (key share via `VARIANT_PQC_KEX`, `ID_TLS_*`, cert alg, banner,
+  blink rate) and `#error`s if the variant is unset/unknown. buildspec downloads
+  the whole folder from `source/firmware/aws_iot_pqc_esp32/`; deploy-workshop.sh
+  stages it with `aws s3 sync --delete` (only *.ino/*.h/*.cpp, never secrets.h)
+  and removes the legacy `source/*.ino` keys. Function bodies were moved
+  verbatim (only global→accessor renames), so log strings — which the Pi boot
+  check matches — are unchanged. The `migrate-*` partition-swap commands are
+  REMOVED (they keyed on the image project name = sketch name, now identical
+  for every variant); the firmware logs a warning and ignores them. Hardware-
+  verified on pqc-a: USB flash + OTA 1→2→3→4→5 on modular images, old
+  monolithic images OTA onto modular ones, diag/LED/refused-swap commands.
+  Still open: host unit tests for backoff/topics/payloads (now possible).
+- **[Cleanup] Retire the pre-Builder-Pi local flash scripts in `esp32-flash/`.**
+  `bundle-for-esp32.sh`, `check_esp32_bundle.sh`, `flash-dual-boot.sh` and
+  `generate-secrets.sh` (+ its README sections) still assume the old per-sketch
+  folders, secrets compiled into `secrets.h`, and the retired `migrate-*`
+  partition swap; nothing in the deploy or the workshop references them. Delete
+  them (keep `partitions_pqc_workshop.csv/.bin`, `ota_data_initial.bin`, the
+  attendee serial-monitor doc and `spikes/`), or rewrite one script as a "local
+  build of the modular sketch" helper if a non-Pi path is wanted.
 - **[MEMORY — explore only IF we hit severe RAM/heap constraints] Keep the
   growing cert/signature material in memory-mapped FLASH, not SRAM.** As the
   firmware now carries more X.509 material (device cert + CA + the baked-in
@@ -435,7 +560,7 @@ Backlog candidates surfaced during rebuilds (not yet fixed):
     firmware re-bake entirely). Document it in the deploy runbook.
   - Bonus hardening: once SANs exist, tighten the firmware to actually ENFORCE
     hostname/SAN matching (wolfSSL domain-name check / `DOMAIN_NAME_CHECK`) — today
-    verification is chain-only (`WOLFSSL_VERIFY_PEER` in aws_iot_pqc_esp32.ino
+    verification is chain-only (`WOLFSSL_VERIFY_PEER` in pqc_tls_client.cpp
     ~line 595, no explicit domain-name check), so a hostname mismatch is NOT
     currently caught. For a PQC security workshop, enforcing SAN match is the
     correct end state.
@@ -624,42 +749,24 @@ Backlog candidates surfaced during rebuilds (not yet fixed):
   - Net: root README = architecture + links (DEPLOYMENT.md, attendee_experience.md,
     docs/); DEPLOYMENT.md remains the single deployment source of truth. Do this
     before packaging WS artifacts.
-- **[Workshop Studio — FUTURE attendee experience, DESIGN ONLY, not built]
-  Let attendees edit the ESP32 `.ino` and OTA-update ONLY their own device via a
-  scoped submission to the central pipeline.** The compelling stretch experience:
-  an attendee tweaks the firmware source in their own account's Cloud IDE,
-  submits it, and the central account builds + pushes it OTA to *their* labelled
-  device. Design decisions already reasoned through (do NOT re-litigate without a
-  reason):
-  - **Invert the trust direction.** Do NOT give the attendee account broad
-    cross-account read into the central account. Instead the attendee performs
-    ONE tightly-scoped action against a single central entry point; the central
-    account holds all privilege + identity (cert/thing/policy, Private CA, IoT).
-  - **Entry point = S3 for now** (decided): the attendee drops their `.ino` into a
-    central S3 bucket under a key bound to THEIR device serial (a per-attendee
-    prefix / naming convention). A central trigger (S3 event → the existing
-    firmware pipeline) builds it. CodeCommit-as-source is a STRETCH only —
-    explicitly deferred because it means reworking the pipeline's source stage;
-    not doing that.
-  - **Enforce "only their device" server-side, not by label.** The label just
-    tells the human which device is theirs; it does not stop attendee A submitting
-    for attendee B's serial. Bind the submission to the caller's identity (e.g.
-    assumed-role session tag = their serial) and have the central build REJECT any
-    other serial. Required for a real room; a controlled demo can rely on
-    convention.
-  - **Attendee never sees secrets/keys.** The build already injects the device
-    cert + private key + WiFi inside the central pipeline (see buildspec.yml); the
-    attendee only supplies the sketch. This is an argument FOR the central-pipeline
-    model — the attendee account holds no identity material.
-  - Cross-account topology caveat: a persistent "central" account that all
-    ephemeral WS attendee accounts trust is NON-standard for Workshop Studio (WS
-    vends per-event accounts). Validate how WS supports a shared central account
-    before designing around it — likely the biggest feasibility risk.
-  - Scope: this is the weight-2 slot intentionally left open in the WS content
-    nav (introduction=0, deployment=1, [2 = future attendee-submit], attendee
-    plug-in=3, attendee migrate=4). Today's WS content ships the operator track +
-    a narrative-only attendee track (plug in → migrate via dashboard button); the
-    edit-and-submit flow is future work.
+- **[DECISION Sep 29 — SINGLE ACCOUNT, no attendee/admin account split.]** The
+  workshop runs in ONE AWS account. Do NOT design or propose separate
+  attendee/central/admin accounts, cross-account roles, per-attendee firmware
+  accounts, or attendee-submitted `.ino` pipelines — that idea is ABANDONED
+  (it replaced an earlier "central account + attendee accounts" design note).
+  Instead, the attendee experience grows through the **cloud dashboard**:
+  - Add more TABS to the dashboard (`dashboard-v2/frontend`) that show attendees
+    how AWS is configured for the workshop — e.g. the two Private CAs and the
+    certs they issued, the IoT Things/policies per device, the broker
+    (NLB listeners 8883/8884, Fargate task), the firmware bucket + shared images,
+    the migration Step Function and its executions, the OTA jobs.
+  - Optionally let attendees CHANGE a few safe things from those tabs (scoped
+    read-mostly actions through the existing AppSync/Lambda path, never broad
+    console access). Design which settings are safe to expose before building.
+  - Any read access these tabs need is added to the dashboard's own backend
+    (AppSync resolvers / Lambdas) in the same account — least privilege, read
+    by default.
+  Not yet designed; future work after the current feature branch.
 - **[Repeat-deploy hardening] Remove the remaining hardcoded resource names that
   block re-deploys into a shared account.** Root cause of the entire pqc-a
   rebuild saga: nearly every resource in the templates uses a fixed name, and
@@ -856,6 +963,20 @@ Backlog candidates surfaced during rebuilds (not yet fixed):
   orchestrator, not in an on-Pi `setup-all.sh` — the on-Pi provisioning was moved
   to SSM documents; the outcome is the same: no manual `nmcli`.)
 - **[BLOCKER for pqc-b push] Dashboard LED on/off button not working.**
+  ROOT CAUSE FOUND (Nov 1, code reading, not yet fixed): the frontend's LED
+  toggle calls the AppSync `sendCommand` mutation, but dashboard-stack.yaml
+  attaches NO resolver to `sendCommand` (resolvers exist only for listDevices,
+  getDevice, updateDevice, migrateFirmware, getDeviceLog, getBrokerLog), so the
+  call resolves nowhere. Second bug behind it: the command-publisher Lambda
+  ignores action/topicSuffix and always publishes `{"action":"migrate-pqc"}` to
+  `cmd/<thing>/ota`, and its IAM only allows `cmd/*/ota`. Fix = add a
+  sendCommand resolver on CommandPublisherSource AND rewrite command-publisher
+  to publish `{"action": <action>}` to `cmd/<thing>/<topicSuffix>` (allowlist
+  actions led-on/led-off/diag; IAM `cmd/*/control` + `cmd/*/diag`). The
+  firmware side is verified working: publishing `{"action":"led-off"}` to
+  `cmd/esp32-<serial>/control` directly blinks off/on (pqc-a, FC22E0). The
+  migrate-* swap is now refused by the firmware, so the old Lambda behaviour is
+  harmless but useless.
   Re-confirmed on pqc-a (Sep 25) during the full migration test: the LED on/off
   control on the device card does not actuate the device. On the device
   dashboard, the LED (command) button does not actuate the device. Likely the
@@ -1128,9 +1249,8 @@ Backlog candidates surfaced during rebuilds (not yet fixed):
   the ONLY per-event config is the built-in WiFi credentials.** Today standing up
   a builder-Pi is a multi-step live-provisioning dance: `bundle-for-builder-pi.sh`
   mints an SSM activation + zip, the operator unzips and runs `setup-ssm.sh` on
-  the Pi, then `setup-builder-pi-remote.sh` runs 5 SSM documents (install-awscli,
-  install-toolchain [the slow ~5GB arduino-cli + ESP32 core], deploy-app,
-  configure-service, configure-wifi-ap) against the running Pi. That is slow,
+  the Pi, then `setup-builder-pi-remote.sh` runs 4 SSM documents (install-base,
+  deploy-app, configure-service, configure-wifi-ap) against the running Pi. That is slow,
   online-dependent, and a known source of flakiness (the `set -e`/`$HOME`-unset
   abort that drove the "bundle = SSM bootstrap only" refactor; the AP PSK-typo
   4-way-handshake timeout that drove the SSM-document AP automation). A baked
@@ -1145,13 +1265,14 @@ Backlog candidates surfaced during rebuilds (not yet fixed):
   build, then publishes the artifact. Use it as the reference for a
   `pqc-workshop-builder-pi-image` pipeline in THIS repo.
 
-  What the baked image must contain (i.e. everything the 5 SSM documents install
+  What the baked image must contain (i.e. everything the 4 SSM documents install
   today — audit `setup-builder-pi-remote.sh` + the `*Document` resources in
   `cloudformation/ssm-hybrid-activation-stack.yaml` for the authoritative list):
   - AWS CLI + the SSM agent (still register as a managed instance for OTA/logs)
-  - arduino-cli + the pinned ESP32 Arduino core + the wolfSSL PQC user_settings
-    header + `partitions_pqc_workshop.csv` (the slow install-toolchain step —
-    baking this in is the single biggest time saver)
+  - python3 + pip and the GUI's pip deps (flask, boto3, pyserial, requests,
+    esptool). NOTE (Nov 1): the Pi no longer needs arduino-cli / the ESP32 core
+    / wolfSSL / the partition CSV — that slow step was deleted, which removes
+    most of the time a baked image would have saved; re-weigh this item.
   - the builder-Pi Flask GUI app (`raw_device_builder/builder-pi/`) + its
     `pqc-builder-gui.service` systemd unit, enabled
   - the CloudWatch agent config
@@ -1207,7 +1328,7 @@ This is an Arduino sample project demonstrating how to connect an ESP32 microcon
 
 ## Conventions
 
-- Single `.ino` sketch file for Arduino Cloud IDE compatibility
+- One sketch folder (`aws_iot_pqc_esp32/`): a slim `.ino` plus `.h/.cpp` module classes (Arduino IDE / Cloud IDE tabs); the variant is chosen by `FIRMWARE_VARIANT` in `secrets.h`, and everything variant-specific lives in `variant_config.h`
 - Configuration and credentials isolated in `secrets.h` (never commit real values)
 - wolfSSL compile-time configuration documented in `wolfssl_user_settings.h` (reference only, not included directly)
 - FreeRTOS tasks use `xTaskCreatePinnedToCore` with explicit stack sizes

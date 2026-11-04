@@ -85,3 +85,85 @@ def test_exception_exits_nonzero(monkeypatch):
     monkeypatch.setattr(cli.operations, "deregister_device", boom)
     rc = cli.main(["deregister", "--serial", "FC22E0"])
     assert rc == 1
+
+
+class FakeDM:
+    """Records the download/flash calls the CLI makes."""
+
+    def __init__(self):
+        self.calls = []
+        self.devices = {}
+
+    def detect_device(self, port):
+        from device_manager import DeviceSlot
+        self.devices[port] = DeviceSlot(port=port, serial_number="C69DE0")
+
+    def download_firmware(self, slot, identity_key=None, firmware_prefix=None):
+        self.calls.append(("download", identity_key, firmware_prefix))
+        return "/tmp/fw"  # nosec B108 — test fixture, never written
+
+    def flash_device(self, port, firmware_dir):
+        self.calls.append(("flash", port, firmware_dir))
+        return True
+
+
+def test_reflash_reissues_identity_then_flashes(monkeypatch):
+    dm = FakeDM()
+    monkeypatch.setattr(cli, "_device_manager", lambda config: dm)
+    called = {}
+
+    def fake_register(config, serial, identity_only=False, logger=None):
+        called.update(serial=serial, identity_only=identity_only)
+        return {"success": True, "buildId": None, "identityBuildId": "i-1",
+                "identityKey": "identity/C69DE0/certs.bin",
+                "firmwarePrefix": "shared/1.0.0-classical"}
+
+    def fake_wait(config, ids, logger=None):
+        called["ids"] = ids
+        return {"success": True}
+
+    monkeypatch.setattr(cli.operations, "register_device", fake_register)
+    monkeypatch.setattr(cli.operations, "wait_for_builds", fake_wait)
+
+    rc = cli.main(["reflash", "--port", "/dev/ttyACM0"])
+
+    assert rc == 0
+    assert called == {"serial": "C69DE0", "identity_only": True, "ids": ["i-1"]}
+    assert dm.calls == [("download", "identity/C69DE0/certs.bin", "shared/1.0.0-classical"),
+                        ("flash", "/dev/ttyACM0", "/tmp/fw")]  # nosec B108
+
+
+def test_register_waits_for_identity_then_flashes_shared_image(monkeypatch):
+    dm = FakeDM()
+    monkeypatch.setattr(cli, "_device_manager", lambda config: dm)
+    monkeypatch.setattr(cli.operations, "register_device",
+                        lambda config, serial, logger=None: {
+                            "success": True, "buildId": None, "identityBuildId": "i-1",
+                            "identityKey": "identity/C69DE0/certs.bin",
+                            "firmwarePrefix": "shared/1.0.0-classical"})
+    waited = {}
+    monkeypatch.setattr(cli.operations, "wait_for_builds",
+                        lambda config, ids, logger=None: waited.update(ids=ids) or {"success": True})
+
+    rc = cli.main(["register", "--serial", "C69DE0", "--port", "/dev/ttyACM0"])
+
+    assert rc == 0
+    # Only the identity job: the firmware is the shared prebuilt image.
+    assert waited["ids"] == ["i-1"]
+    assert [c[0] for c in dm.calls] == ["download", "flash"]
+
+
+def test_register_does_not_flash_when_a_build_fails(monkeypatch):
+    dm = FakeDM()
+    monkeypatch.setattr(cli, "_device_manager", lambda config: dm)
+    monkeypatch.setattr(cli.operations, "register_device",
+                        lambda config, serial, logger=None: {
+                            "success": True, "buildId": "b-1", "identityBuildId": "i-1",
+                            "identityKey": "identity/C69DE0/certs.bin"})
+    monkeypatch.setattr(cli.operations, "wait_for_builds",
+                        lambda config, ids, logger=None: {"success": False, "message": "Build i-1 FAILED"})
+
+    rc = cli.main(["register", "--serial", "C69DE0", "--port", "/dev/ttyACM0"])
+
+    assert rc == 1
+    assert dm.calls == []

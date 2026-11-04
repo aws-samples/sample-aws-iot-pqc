@@ -3,11 +3,12 @@
 # bundle-for-builder-pi.sh
 #
 # Creates a MINIMAL zip bundle whose ONLY job is to register the builder
-# Raspberry Pi as an SSM managed instance. Everything else (arduino-cli, the
-# ESP32 core, the builder GUI app, systemd service, CloudWatch agent) is
+# Raspberry Pi as an SSM managed instance. Everything else (base packages, the
+# builder GUI app + esptool, systemd service, CloudWatch agent, WiFi AP) is
 # installed AFTER registration by SSM documents run from the deploy host — see
-# setup-builder-pi-remote.sh and the install-awscli / install-toolchain /
-# deploy-app / configure-service documents created by the SSM activation stack.
+# setup-builder-pi-remote.sh and the install-base / deploy-app /
+# configure-service / configure-wifi-ap documents created by the SSM activation
+# stack. The Pi never compiles firmware, so there is no ESP32 toolchain.
 #
 # WHY SO SMALL: the old bundle carried the whole app + a heavy on-Pi setup
 # script that the operator ran under sudo. A mid-script failure under `set -e`
@@ -257,7 +258,7 @@ PQC Workshop — Builder-Pi bundle (SSM bootstrap only)
 =====================================================
 
 This bundle only registers the Pi as an SSM managed instance. All software
-(arduino-cli, ESP32 core, the builder GUI, systemd service) is installed
+(base packages, the builder GUI + esptool, systemd service) is installed
 afterwards from the deploy host via SSM documents — nothing else runs here.
 
 On the Pi:
@@ -269,10 +270,10 @@ Then, from the deploy host (the machine with AWS credentials for this account):
   ./raw_device_builder/setup-builder-pi-remote.sh --region $REGION
 
 That orchestrator waits for the Pi to come Online, then runs, in order:
-  1. install-awscli       (the AWS CLI — prerequisite for the S3/SSM steps)
-  2. install-toolchain    (arduino-cli, ESP32 core — slow, ~5GB)
-  3. deploy-app           (GUI app + assets from S3, config.json)
-  4. configure-service    (udev, systemd; the GUI auto-starts)
+  1. install-base         (AWS CLI, python3 + pip, curl, udev)
+  2. deploy-app           (GUI app from S3 + esptool/pyserial, config.json)
+  3. configure-service    (udev, systemd; the GUI auto-starts)
+  4. configure-wifi-ap    (the workshop 2.4 GHz WiFi AP)
 
 When it finishes, the GUI is running at http://<pi-ip>:8080
 

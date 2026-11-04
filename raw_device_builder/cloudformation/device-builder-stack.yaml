@@ -11,25 +11,6 @@ Parameters:
     Description: S3 bucket name prefix for compiled firmware artifacts
     Default: pqc-workshop-firmware
 
-  DefaultWifiSsid:
-    Type: String
-    Description: >-
-      Workshop WiFi SSID for devices. In the master deploy this is passed down
-      from the master DefaultWifiSsid (operator-supplied via WORKSHOP_WIFI_SSID).
-      Do not commit a real value.
-    Default: changeme
-
-  DefaultWifiPassword:
-    Type: String
-    Description: >-
-      Workshop WiFi password for devices. Persisted in the registry by the
-      registrar and used by the PQC migration (prepare-build) as a fallback when
-      the registry entry lacks wifiPassword. In the master deploy this is passed
-      down from the master DefaultWifiPassword (operator-supplied via
-      WORKSHOP_WIFI_PASSWORD). Do not commit a real value.
-    NoEcho: true
-    Default: changeme
-
   DefaultBrokerEndpoint:
     Type: String
     Description: >-
@@ -60,11 +41,23 @@ Parameters:
       ARN of the ML-DSA-44 Private CA (from broker-container stack) used to issue
       post-quantum device certs for the pqc-mldsa firmware variant.
 
+  FirmwareSignerCAArn:
+    Type: String
+    Description: >-
+      ARN of the ECDSA P-256 firmware-signing root CA (broker-container stack).
+      The device-identity job only READS its root certificate into each
+      device's certs partition (OTA signer trust); it never issues from it.
+  MlDsaFirmwareSignerCAArn:
+    Type: String
+    Description: >-
+      ARN of the ML-DSA-44 firmware-signing root CA (broker-container stack),
+      read-only like FirmwareSignerCAArn.
+
   # ─── OTA firmware signer secret ARNs (from broker-container stack) ──────────
   # The firmware build reads the era-appropriate signer KEY to sign firmware.bin
   # and the signer CERT to ship alongside the OTA. Scoped to these four secrets
-  # (classical key+cert, ML-DSA key+cert); the CA-cert secrets are not read by
-  # the build (the CA root is baked into firmware, Workstream 3).
+  # (classical key+cert, ML-DSA key+cert). The device's OTA trust roots are the
+  # two Private CA roots in its "certs" NVS partition, so no CA secret is read.
   SignerClassicalKeySecretArn:
     Type: String
     Default: ''
@@ -81,19 +74,6 @@ Parameters:
     Type: String
     Default: ''
     Description: ARN of the ML-DSA-44 firmware-signer leaf cert secret
-  SignerClassicalCACertSecretArn:
-    Type: String
-    Default: ''
-    Description: >-
-      ARN of the classical firmware-signer CA root secret. Baked into the
-      firmware image as the OTA verifier's trust anchor (device-side chain check).
-  SignerMlDsaCACertSecretArn:
-    Type: String
-    Default: ''
-    Description: >-
-      ARN of the ML-DSA-44 firmware-signer CA root secret. Baked into the
-      firmware image (from the signed variants onward) so a device trusts the
-      ML-DSA root before the 4.0.0 ML-DSA-signed OTA cutover.
 
   BuilderPiInstanceId:
     Type: String
@@ -193,6 +173,17 @@ Resources:
                 Resource:
                   - !GetAtt FirmwareBucket.Arn
                   - !Sub '${FirmwareBucket.Arn}/*'
+              # After pushing the image, the build chains build-shared-firmware.sh:
+              # one firmware build per variant into shared/<version>/.
+              - Effect: Allow
+                Action:
+                  - codebuild:StartBuild
+                  - codebuild:BatchGetBuilds
+                Resource: !GetAtt FirmwareBuildProject.Arn
+              - Effect: Allow
+                Action:
+                  - ssm:GetParameter
+                Resource: !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/pqc-workshop/broker/endpoint'
 
   ImageBuilderProject:
     Type: AWS::CodeBuild::Project
@@ -203,7 +194,7 @@ Resources:
             reason: "default AWS-managed CodeBuild encryption key"
     Properties:
       Name: pqc-workshop-build-image
-      Description: Builds Docker image with ESP32 arduino-cli toolchain (run once)
+      Description: Builds the ESP32 arduino-cli toolchain image, then builds every firmware variant once into shared/<version>/
       ServiceRole: !GetAtt ImageBuilderRole.Arn
       Source:
         Type: S3
@@ -223,7 +214,10 @@ Resources:
             Value: !Sub '${FirmwareBucketName}-${AWS::AccountId}'
           - Name: AWS_DEFAULT_REGION
             Value: !Ref AWS::Region
-      TimeoutInMinutes: 30
+          - Name: FIRMWARE_BUILD_PROJECT
+            Value: !Ref FirmwareBuildProject
+      # Image (~10-15 min) + the chained shared firmware builds (~3 min, parallel).
+      TimeoutInMinutes: 45
 
   # ═══════════════════════════════════════════════════════════════════════════
   # S3 — Firmware Artifact Bucket
@@ -261,6 +255,16 @@ Resources:
             Status: Enabled
             NoncurrentVersionExpiration:
               NoncurrentDays: 90
+          # Device identity images (identity/<serial>/certs.bin) hold device
+          # private keys. The Builder-Pi deletes each one after flashing; this
+          # is the backstop for any left behind (failed flash, unplugged
+          # device), including old versions in this versioned bucket.
+          - Id: ExpireDeviceIdentity
+            Status: Enabled
+            Prefix: identity/
+            ExpirationInDays: 1
+            NoncurrentVersionExpiration:
+              NoncurrentDays: 1
 
   # ═══════════════════════════════════════════════════════════════════════════
   # DynamoDB — Device Registry
@@ -301,15 +305,15 @@ Resources:
       cfn_nag:
         rules_to_suppress:
           - id: W11
-            reason: "registrar provisions per-device IoT things/certs/policies with dynamic names; iot:CreateKeysAndCertificate does not support resource-level scoping, and kms:Decrypt is constrained by a kms:ViaService condition to SSM"
+            reason: "registrar provisions per-device IoT things/certs/policies with dynamic names; iot:CreateKeysAndCertificate does not support resource-level scoping"
           - id: W28
             reason: "workshop depends on fixed resource names referenced across stacks/scripts"
       checkov:
         skip:
           - id: CKV_AWS_111
-            comment: "registrar provisions per-device IoT things/certs/policies with dynamic names; iot:CreateKeysAndCertificate does not support resource-level scoping, and kms:Decrypt is constrained by a kms:ViaService condition to SSM"
+            comment: "registrar provisions per-device IoT things/certs/policies with dynamic names; iot:CreateKeysAndCertificate does not support resource-level scoping"
           - id: CKV_AWS_109
-            comment: "registrar provisions per-device IoT things/certs/policies with dynamic names; iot:CreateKeysAndCertificate does not support resource-level scoping, and kms:Decrypt is constrained by a kms:ViaService condition to SSM"
+            comment: "registrar provisions per-device IoT things/certs/policies with dynamic names; iot:CreateKeysAndCertificate does not support resource-level scoping"
     Properties:
       RoleName: pqc-workshop-device-registrar
       AssumeRolePolicyDocument:
@@ -334,9 +338,8 @@ Resources:
                   - iot:AttachPolicy
                   - iot:CreatePolicy
                 Resource: '*'
-              # NOTE: acm-pca permissions moved to the CodeBuild role
-              # (pqc-workshop-codebuild-firmware) — the firmware build now issues
-              # the device cert itself (buildspec.yml), not these Lambdas.
+              # No acm-pca here: device certs are issued only by the
+              # device-identity job (DeviceIdentityRole).
               - Effect: Allow
                 Action:
                   - dynamodb:PutItem
@@ -361,7 +364,11 @@ Resources:
                 Action:
                   - codebuild:StartBuild
                   - codebuild:BatchGetBuilds
-                Resource: !GetAtt FirmwareBuildProject.Arn
+                Resource:
+                  # The registrar starts only the device-identity job (both
+                  # device certs + WiFi -> certs NVS image). Firmware is built
+                  # once per deployment into shared/<version>/, not here.
+                  - !GetAtt DeviceIdentityProject.Arn
               - Effect: Allow
                 Action:
                   - s3:PutObject
@@ -375,22 +382,6 @@ Resources:
                 Action:
                   - iot:Publish
                 Resource: !Sub 'arn:aws:iot:${AWS::Region}:${AWS::AccountId}:topic/cmd/*'
-              # Read workshop config from SSM as the authoritative live source:
-              # the WiFi (registrar bakes into initial flash; prepare-build into
-              # the PQC migration) and the broker NLB endpoint. The WiFi password
-              # is a SecureString, so allow kms:Decrypt scoped to the SSM service.
-              - Effect: Allow
-                Action:
-                  - ssm:GetParameter
-                  - ssm:GetParameters
-                Resource: !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/pqc-workshop/*'
-              - Effect: Allow
-                Action:
-                  - kms:Decrypt
-                Resource: !Sub 'arn:aws:kms:${AWS::Region}:${AWS::AccountId}:key/*'
-                Condition:
-                  StringEquals:
-                    kms:ViaService: !Sub 'ssm.${AWS::Region}.amazonaws.com'
 
   # ═══════════════════════════════════════════════════════════════════════════
   # Lambda — Device Registrar
@@ -427,30 +418,24 @@ Resources:
           # registered-only guard (attribute_exists(serialNumber)).
           DEVICE_TABLE: pqc-workshop-devices
           FIRMWARE_BUCKET: !Sub '${FirmwareBucketName}-${AWS::AccountId}'
-          BUILD_PROJECT: !Ref FirmwareBuildProject
-          IOT_ENDPOINT: !Ref IoTEndpoint
-          DEFAULT_WIFI_SSID: !Ref DefaultWifiSsid
-          DEFAULT_WIFI_PASSWORD: !Ref DefaultWifiPassword
-          # SSM is the authoritative live source; the DEFAULT_* envs are fallbacks.
-          WIFI_SSM_PREFIX: /pqc-workshop/wifi
-          BROKER_SSM_PARAM: /pqc-workshop/broker/endpoint
-          DEFAULT_BROKER_ENDPOINT: !Ref DefaultBrokerEndpoint
+          IDENTITY_PROJECT: !Ref DeviceIdentityProject
       Code: ../lambda/device-registrar
 
   # ═══════════════════════════════════════════════════════════════════════════
   # PQC Migration — Step Functions workflow (replaces the synchronous
   # pqc-upgrader Lambda). The dashboard "Migrate to PQC" button invokes the
   # StartMigration Lambda (via AppSync), which starts this state machine:
-  #   SetStatusBuilding -> PrepareBuild -> (WaitForBuild) -> SetStatusPushing
-  #   -> PublishOta -> SetStatusRebooting, with a Catch -> SetStatusFailed.
-  # The long build wait uses the CodeBuild .sync integration, so no Lambda
-  # blocks on the build and AppSync never times out. Live progress is written to
+  #   SetStatusBuilding -> PrepareBuild -> SetStatusPushing -> PublishOta
+  #   -> SetStatusRebooting, with a Catch -> SetStatusFailed.
+  # No firmware is built here: every variant is built and signed once per
+  # deployment into shared/<version>/ (build-shared-firmware.sh, chained off the
+  # firmware-builder image build), so a migration only publishes it. Live progress is written to
   # the dashboard device table (migrationStatus), surfaced by the dashboard poll.
   # Lambda code is packaged from lambda/* by `aws cloudformation package`.
   # ═══════════════════════════════════════════════════════════════════════════
 
-  # Work step 1: registry lookup, issue cert, start CodeBuild. Shares the
-  # device-registrar role (acm-pca, codebuild, dynamodb, s3).
+  # Work step 1: registry lookup + resolve the variant to its shared image.
+  # Shares the device-registrar role (dynamodb, s3).
   PrepareBuildFunction:
     Type: AWS::Lambda::Function
     Metadata:
@@ -477,14 +462,6 @@ Resources:
         Variables:
           REGISTRY_TABLE: !Ref DeviceRegistryTable
           FIRMWARE_BUCKET: !Sub '${FirmwareBucketName}-${AWS::AccountId}'
-          BUILD_PROJECT: !Ref FirmwareBuildProject
-          IOT_ENDPOINT: !Ref IoTEndpoint
-          DEFAULT_WIFI_SSID: !Ref DefaultWifiSsid
-          DEFAULT_WIFI_PASSWORD: !Ref DefaultWifiPassword
-          # SSM is the authoritative live source; the DEFAULT_* envs are fallbacks.
-          WIFI_SSM_PREFIX: /pqc-workshop/wifi
-          BROKER_SSM_PARAM: /pqc-workshop/broker/endpoint
-          DEFAULT_BROKER_ENDPOINT: !Ref DefaultBrokerEndpoint
       Code: ../lambda/prepare-build
 
   # Work step 2: presign regional S3 URL, publish cmd/<thing>/ota, mark registry.
@@ -608,22 +585,8 @@ Resources:
           PolicyDocument:
             Version: '2012-10-17'
             Statement:
-              - Effect: Allow
-                Action:
-                  - codebuild:StartBuild
-                  - codebuild:BatchGetBuilds
-                  - codebuild:StopBuild
-                Resource: !GetAtt FirmwareBuildProject.Arn
-              # CodeBuild .sync uses an EventBridge managed rule to get build
-              # completion. The rule name AWS creates is (singular) "Event":
-              # StepFunctionsGetEventForCodeBuildStartBuildRule — grant with a
-              # wildcard so it matches regardless of minor AWS naming variants.
-              - Effect: Allow
-                Action:
-                  - events:PutTargets
-                  - events:PutRule
-                  - events:DescribeRule
-                Resource: !Sub 'arn:aws:events:${AWS::Region}:${AWS::AccountId}:rule/StepFunctionsGetEvent*ForCodeBuildStartBuildRule'
+              # No CodeBuild: migrations publish the shared prebuilt image
+              # (built once per deployment by build-shared-firmware.sh).
               - Effect: Allow
                 Action:
                   - dynamodb:UpdateItem
@@ -646,12 +609,11 @@ Resources:
       # because they are not of the ${..} form Fn::Sub interprets.
       DefinitionSubstitutions:
         DeviceTableName: pqc-workshop-devices
-        BuildProjectName: !Ref FirmwareBuildProject
         PrepareBuildFunctionArn: !GetAtt PrepareBuildFunction.Arn
         PublishOtaFunctionArn: !GetAtt PublishOtaFunction.Arn
       DefinitionString: |
         {
-          "Comment": "PQC migration workflow: build PQC firmware, push OTA, report live migrationStatus.",
+          "Comment": "PQC migration workflow: push the shared prebuilt signed image OTA, report live migrationStatus. No per-device build.",
           "StartAt": "SetStatusBuilding",
           "States": {
             "SetStatusBuilding": {
@@ -670,7 +632,7 @@ Resources:
             "PrepareBuild": {
               "Type": "Task",
               "Resource": "arn:aws:states:::lambda:invoke",
-              "Comment": "Pass the requested firmware variant through. prepare-build defaults it to 'pqc' when absent (backward compatible) and echoes the resolved variant + version + per-device build env back. It does NOT start a build (WaitForBuild is the sole builder).",
+              "Comment": "Pass the requested firmware variant through. prepare-build defaults it to 'pqc' when absent (backward compatible), checks the shared image exists, and echoes the resolved variant, version and shared s3Key back.",
               "Parameters": {
                 "FunctionName": "${PrepareBuildFunctionArn}",
                 "Payload": {
@@ -686,36 +648,9 @@ Resources:
                 "version.$": "$.Payload.version",
                 "signerEra.$": "$.Payload.signerEra",
                 "sigAlg.$": "$.Payload.sigAlg",
-                "s3Key.$": "$.Payload.s3Key",
-                "buildNeeded.$": "$.Payload.buildNeeded",
-                "buildEnv.$": "$.Payload.buildEnv"
+                "s3Key.$": "$.Payload.s3Key"
               },
               "ResultPath": "$.prepare",
-              "Next": "BuildNeeded?",
-              "Catch": [ { "ErrorEquals": ["States.ALL"], "ResultPath": "$.error", "Next": "SetStatusFailed" } ]
-            },
-            "BuildNeeded?": {
-              "Type": "Choice",
-              "Choices": [ { "Variable": "$.prepare.buildNeeded", "BooleanEquals": true, "Next": "WaitForBuild" } ],
-              "Default": "SetStatusPushing"
-            },
-            "WaitForBuild": {
-              "Type": "Task",
-              "Resource": "arn:aws:states:::codebuild:startBuild.sync",
-              "Parameters": {
-                "ProjectName": "${BuildProjectName}",
-                "EnvironmentVariablesOverride": [
-                  { "Name": "DEVICE_SERIAL", "Value.$": "$.prepare.serialNumber", "Type": "PLAINTEXT" },
-                  { "Name": "FIRMWARE_VERSION", "Value.$": "$.prepare.version", "Type": "PLAINTEXT" },
-                  { "Name": "FIRMWARE_VARIANT", "Value.$": "$.prepare.buildVariant", "Type": "PLAINTEXT" },
-                  { "Name": "SIGNER_ERA", "Value.$": "$.prepare.signerEra", "Type": "PLAINTEXT" },
-                  { "Name": "WIFI_SSID", "Value.$": "$.prepare.buildEnv.wifiSsid", "Type": "PLAINTEXT" },
-                  { "Name": "WIFI_PASSWORD", "Value.$": "$.prepare.buildEnv.wifiPassword", "Type": "PLAINTEXT" },
-                  { "Name": "BROKER_ENDPOINT", "Value.$": "$.prepare.buildEnv.brokerEndpoint", "Type": "PLAINTEXT" },
-                  { "Name": "IOT_ENDPOINT", "Value.$": "$.prepare.buildEnv.iotEndpoint", "Type": "PLAINTEXT" }
-                ]
-              },
-              "ResultPath": null,
               "Next": "SetStatusPushing",
               "Catch": [ { "ErrorEquals": ["States.ALL"], "ResultPath": "$.error", "Next": "SetStatusFailed" } ]
             },
@@ -837,6 +772,11 @@ Resources:
                   - dynamodb:DeleteItem
                   - dynamodb:GetItem
                 Resource: !GetAtt DeviceRegistryTable.Arn
+              # Remove the device's dashboard card (table owned by the dashboard stack).
+              - Effect: Allow
+                Action:
+                  - dynamodb:DeleteItem
+                Resource: !Sub 'arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/pqc-workshop-devices'
               - Effect: Allow
                 Action:
                   - s3:DeleteObject
@@ -870,6 +810,7 @@ Resources:
       Environment:
         Variables:
           REGISTRY_TABLE: !Ref DeviceRegistryTable
+          DEVICE_TABLE: pqc-workshop-devices
           FIRMWARE_BUCKET: !Sub '${FirmwareBucketName}-${AWS::AccountId}'
       Code: ../lambda/device-deregistrar
 
@@ -1323,18 +1264,10 @@ Resources:
                   - ecr:GetDownloadUrlForLayer
                   - ecr:BatchGetImage
                 Resource: !GetAtt BuildImageRepository.Arn
-              # The firmware build now issues the device certificate itself
-              # (buildspec.yml), from the classical CA (classical/pqc variants)
-              # or the ML-DSA-44 CA (pqc-mldsa variant). Scoped to both CA ARNs.
-              - Effect: Allow
-                Action:
-                  - acm-pca:IssueCertificate
-                  - acm-pca:GetCertificate
-                  - acm-pca:GetCertificateAuthorityCertificate
-                Resource:
-                  - !Ref PrivateCAArn
-                  - !Ref MlDsaPrivateCAArn
-              # Read the stable per-era OTA firmware SIGNER secrets to sign
+              # No acm-pca: the firmware image carries no device identity. Certs
+              # are issued by the device-identity job and flashed into the
+              # "certs" NVS partition by the Builder-Pi.
+              # Read the stable per-era OTA firmware SIGNER key + leaf cert to sign
               # firmware.bin in post_build (buildspec.yml). Scoped to the signer
               # secret name pattern (provisioned in broker-container-stack.yaml as
               # pqc-broker/signer-*). Name-pattern scoping (rather than the ARN
@@ -1356,7 +1289,7 @@ Resources:
             reason: "default AWS-managed CodeBuild encryption key"
     Properties:
       Name: pqc-workshop-firmware-build
-      Description: Compiles classical ESP32 firmware with device-specific credentials
+      Description: Compiles and signs ESP32 firmware (no device identity; that is in the certs NVS partition)
       ServiceRole: !GetAtt CodeBuildRole.Arn
       Source:
         Type: S3
@@ -1370,33 +1303,17 @@ Resources:
         Image: !Sub '${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/pqc-workshop-firmware-builder:latest'
         ImagePullCredentialsType: SERVICE_ROLE
         EnvironmentVariables:
-          - Name: DEVICE_SERIAL
-            Value: placeholder
           - Name: FIRMWARE_VERSION
-            # Canonical classical version — matches VARIANT_CONFIG["classical"]
-            # (prepare-build) and the device-registrar default. Overridden per
-            # build by the migration state machine / registrar.
+            # Canonical classical version (variants.json). Every build is started
+            # by build-shared-firmware.sh with the variant's version, variant and
+            # signer era; the output is shared/<version>/ — no per-device input.
             Value: '1.0.0-classical'
           - Name: FIRMWARE_BUCKET
             Value: !Sub '${FirmwareBucketName}-${AWS::AccountId}'
-          - Name: WIFI_SSID
-            Value: !Ref DefaultWifiSsid
-          - Name: WIFI_PASSWORD
-            Value: !Ref DefaultWifiPassword
           - Name: BROKER_ENDPOINT
             Value: !Ref DefaultBrokerEndpoint
           - Name: BROKER_PORT
             Value: !Ref DefaultBrokerPort
-          - Name: IOT_ENDPOINT
-            Value: !Ref IoTEndpoint
-          # The build issues the device cert itself (see buildspec.yml), so it
-          # needs both CA ARNs rather than pre-minted cert/key material. The
-          # classical CA signs classical/pqc device certs; the ML-DSA-44 CA
-          # signs pqc-mldsa device certs. Selected per FIRMWARE_VARIANT.
-          - Name: CA_ARN
-            Value: !Ref PrivateCAArn
-          - Name: MLDSA_CA_ARN
-            Value: !Ref MlDsaPrivateCAArn
           # OTA firmware signer secret ids (ARNs). The build reads the
           # era-appropriate signer key to sign firmware.bin and the signer cert
           # to ship with the OTA (buildspec.yml post_build). Secrets Manager
@@ -1409,13 +1326,152 @@ Resources:
             Value: !Ref SignerMlDsaKeySecretArn
           - Name: SIGNER_MLDSA_CERT_SECRET
             Value: !Ref SignerMlDsaCertSecretArn
-          # Signer CA ROOT secrets — baked into the firmware image as the OTA
-          # verifier's trust anchor (OTA_SIGNER_CA_ROOT in secrets.h).
-          - Name: SIGNER_CLASSICAL_CA_SECRET
-            Value: !Ref SignerClassicalCACertSecretArn
-          - Name: SIGNER_MLDSA_CA_SECRET
-            Value: !Ref SignerMlDsaCACertSecretArn
       TimeoutInMinutes: 15
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # CodeBuild — Device identity (certs NVS partition image)
+  # ═══════════════════════════════════════════════════════════════════════════
+  # Started by the registrar when a device is plugged into the Builder-Pi. Runs
+  # issue_device_identity.py in the shared cert-issuer image (built by the
+  # broker stack): issues the classical and ML-DSA-44 device certs, adds both CA
+  # roots and the workshop WiFi, and uploads the 64 KB "certs" NVS partition
+  # image to identity/<serial>/certs.bin for the Pi to flash at 0x721000.
+  # No firmware is compiled. See .kiro/specs/nvs-device-identity/design.md.
+
+  DeviceIdentityRole:
+    Type: AWS::IAM::Role
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W11
+            reason: "ecr:GetAuthorizationToken does not support resource-level scoping and requires Resource:'*'; kms:Decrypt is constrained by a kms:ViaService condition to SSM"
+      checkov:
+        skip:
+          - id: CKV_AWS_111
+            comment: "ecr:GetAuthorizationToken does not support resource-level scoping and requires Resource:'*'; kms:Decrypt is constrained by a kms:ViaService condition to SSM"
+          - id: CKV_AWS_109
+            comment: "ecr:GetAuthorizationToken does not support resource-level scoping and requires Resource:'*'; kms:Decrypt is constrained by a kms:ViaService condition to SSM"
+    Properties:
+      # No RoleName: auto-named, referenced only via !GetAtt (avoids name
+      # collisions on repeat deploys into a shared test account).
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codebuild.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: DeviceIdentityPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource:
+                  - !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/pqc-workshop-device-identity'
+                  - !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/pqc-workshop-device-identity:*'
+              - Effect: Allow
+                Action:
+                  - ecr:GetAuthorizationToken
+                Resource: '*'
+              # The shared cert-issuer image lives in the broker stack's repo.
+              - Effect: Allow
+                Action:
+                  - ecr:BatchCheckLayerAvailability
+                  - ecr:GetDownloadUrlForLayer
+                  - ecr:BatchGetImage
+                Resource: !Sub 'arn:aws:ecr:${AWS::Region}:${AWS::AccountId}:repository/pqc-workshop-cert-issuer'
+              - Effect: Allow
+                Action:
+                  - acm-pca:IssueCertificate
+                  - acm-pca:GetCertificate
+                  - acm-pca:GetCertificateAuthorityCertificate
+                Resource:
+                  - !Ref PrivateCAArn
+                  - !Ref MlDsaPrivateCAArn
+              # Firmware-signing roots: read the root certificate only. Never
+              # IssueCertificate, so a device identity can never be a signer.
+              - Effect: Allow
+                Action:
+                  - acm-pca:GetCertificateAuthorityCertificate
+                Resource:
+                  - !Ref FirmwareSignerCAArn
+                  - !Ref MlDsaFirmwareSignerCAArn
+              # WiFi SSID/password, resolved by CodeBuild as PARAMETER_STORE
+              # environment variables (never plaintext in the project or build).
+              - Effect: Allow
+                Action:
+                  - ssm:GetParameters
+                Resource:
+                  - !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/pqc-workshop/wifi/ssid'
+                  - !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/pqc-workshop/wifi/password'
+              - Effect: Allow
+                Action:
+                  - kms:Decrypt
+                Resource: !Sub 'arn:aws:kms:${AWS::Region}:${AWS::AccountId}:key/*'
+                Condition:
+                  StringEquals:
+                    kms:ViaService: !Sub 'ssm.${AWS::Region}.amazonaws.com'
+              - Effect: Allow
+                Action:
+                  - s3:PutObject
+                Resource: !Sub '${FirmwareBucket.Arn}/identity/*'
+
+  DeviceIdentityProject:
+    Type: AWS::CodeBuild::Project
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W32
+            reason: "default AWS-managed CodeBuild encryption key"
+    Properties:
+      Name: pqc-workshop-device-identity
+      Description: Issues a device's classical + ML-DSA-44 certs and builds its certs NVS partition image
+      ServiceRole: !GetAtt DeviceIdentityRole.Arn
+      TimeoutInMinutes: 10
+      Source:
+        Type: NO_SOURCE
+        # The issuer script is baked into the cert-issuer image; nothing to fetch.
+        BuildSpec: |
+          version: 0.2
+          phases:
+            build:
+              commands:
+                - python3 /var/task/issue_device_identity.py
+      Artifacts:
+        Type: NO_ARTIFACTS
+      Environment:
+        Type: LINUX_CONTAINER
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: !Sub '${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/pqc-workshop-cert-issuer:latest'
+        ImagePullCredentialsType: SERVICE_ROLE
+        EnvironmentVariables:
+          - Name: DEVICE_SERIAL
+            Value: placeholder
+          - Name: CA_ARN
+            Value: !Ref PrivateCAArn
+          - Name: MLDSA_CA_ARN
+            Value: !Ref MlDsaPrivateCAArn
+          - Name: SIGNER_CLASSICAL_CA_ARN
+            Value: !Ref FirmwareSignerCAArn
+          - Name: SIGNER_MLDSA_CA_ARN
+            Value: !Ref MlDsaFirmwareSignerCAArn
+          - Name: FIRMWARE_BUCKET
+            Value: !Sub '${FirmwareBucketName}-${AWS::AccountId}'
+          - Name: WIFI_SSID
+            Type: PARAMETER_STORE
+            Value: /pqc-workshop/wifi/ssid
+          - Name: WIFI_PASSWORD
+            Type: PARAMETER_STORE
+            Value: /pqc-workshop/wifi/password
+      LogsConfig:
+        CloudWatchLogs:
+          Status: ENABLED
+          GroupName: /aws/codebuild/pqc-workshop-device-identity
 
   # ═══════════════════════════════════════════════════════════════════════════
   # SSM — Builder-Pi Access Role
@@ -1467,7 +1523,25 @@ Resources:
               - Effect: Allow
                 Action:
                   - codebuild:BatchGetBuilds
-                Resource: !GetAtt FirmwareBuildProject.Arn
+                Resource:
+                  - !GetAtt FirmwareBuildProject.Arn
+                  - !GetAtt DeviceIdentityProject.Arn
+              # After flashing a device's identity image the Pi deletes it
+              # (identity/<serial>/certs.bin holds the device private keys) —
+              # every version, so an issued-but-never-flashed identity does not
+              # linger as a noncurrent version.
+              - Effect: Allow
+                Action:
+                  - s3:DeleteObject
+                  - s3:DeleteObjectVersion
+                Resource: !Sub '${FirmwareBucket.Arn}/identity/*'
+              - Effect: Allow
+                Action:
+                  - s3:ListBucketVersions
+                Resource: !GetAtt FirmwareBucket.Arn
+                Condition:
+                  StringLike:
+                    s3:prefix: 'identity/*'
               # Read the workshop config params, incl. the WiFi SSID/password
               # the builder-Pi hostapd AP setup broadcasts. The password is a
               # SecureString, so allow kms:Decrypt scoped to the SSM service.
@@ -1532,6 +1606,10 @@ Outputs:
   CodeBuildProjectName:
     Description: CodeBuild project for firmware compilation
     Value: !Ref FirmwareBuildProject
+
+  DeviceIdentityProjectName:
+    Description: CodeBuild project that builds a device's certs NVS partition image at registration
+    Value: !Ref DeviceIdentityProject
 
   ECRRepositoryUri:
     Description: ECR repository for the build image

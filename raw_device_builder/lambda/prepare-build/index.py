@@ -6,35 +6,25 @@ Prepare Build Lambda — first work step of the PQC migration state machine.
 
 Given a thingName (and optional variant), this:
   1. Looks up the device in the DynamoDB registry (keyed by serialNumber).
-  2. Checks whether the target firmware for that variant already exists in S3.
-  3. If it does not, resolves the per-device build env (WiFi/broker/IoT) so the
-     state machine's WaitForBuild step can start the single CodeBuild.
+  2. Resolves the variant to its firmware version (variants.json).
+  3. Checks that the SHARED image for that version exists in S3 at
+     shared/<version>/firmware.bin.
   4. Returns routing data for the state machine:
-       { thingName, serialNumber, variant, version, s3Key, buildNeeded, buildEnv }
+       { thingName, serialNumber, variant, buildVariant, version, signerEra,
+         sigAlg, s3Key }
 
-This Lambda does NOT start a build itself — the state machine's WaitForBuild
-(codebuild:startBuild.sync) is the single authoritative build. Starting one here
-too previously caused a redundant second build for the same S3 key.
-
-Certificate issuance moved INTO the CodeBuild firmware build (see
-raw_device_builder/codebuild/buildspec.yml): the build generates the device
-keypair + CSR and issues the cert from the correct AWS Private CA
-(classical ECDSA CA for classical/pqc, ML-DSA-44 CA for pqc-mldsa) — so this
-Lambda no longer needs OpenSSL and the private key never flows through Lambda
-env or Step Function state. This Lambda is now pure orchestration.
-
-The state machine (not this Lambda) waits for the build to finish, via the
-CodeBuild .sync integration — so this Lambda returns quickly and never blocks on
-the build.
+Firmware images carry no device identity (keys, certs and WiFi live in each
+device's "certs" NVS partition), so every variant is built and signed ONCE per
+deployment, into shared/<version>/, by build-shared-firmware.sh (chained off
+the firmware-builder image build). A migration therefore never builds: it only
+publishes the prebuilt signed image. If the shared image is missing the
+deployment is incomplete, and this Lambda fails the migration with an
+actionable message rather than starting a build (concurrent builds of one
+version could pair a firmware.bin with another build's signature).
 
 Environment variables:
-  REGISTRY_TABLE          — DynamoDB device registry table
-  FIRMWARE_BUCKET         — S3 bucket for firmware
-  BUILD_PROJECT           — CodeBuild project name
-  IOT_ENDPOINT            — IoT Core data endpoint (passed to the build)
-  DEFAULT_WIFI_SSID       — fallback WiFi SSID for the build
-  DEFAULT_WIFI_PASSWORD   — fallback WiFi password for the build
-  DEFAULT_BROKER_ENDPOINT — fallback broker endpoint for the build
+  REGISTRY_TABLE   — DynamoDB device registry table
+  FIRMWARE_BUCKET  — S3 bucket for firmware
 """
 import json
 import os
@@ -42,105 +32,42 @@ import os
 import boto3
 
 dynamodb = boto3.resource("dynamodb")
-ssm = boto3.client("ssm")
 
-# Firmware variant → (FIRMWARE_VARIANT build value, firmware version / S3 key
-# segment). The version is what distinguishes the S3 artifact and the OTA job,
-# so each variant gets its own version namespace and can coexist on a device's
-# history (enabling one-step rollback under the Option A OTA-slot strategy).
-#   classical  → the initial flash variant (rarely re-built via migration)
-#   pqc        → hybrid ML-KEM key exchange, classical (ECDSA) device cert
-#   pqc-mldsa  → hybrid ML-KEM key exchange + ML-DSA-44 device cert (Step 2)
-#
-# OTA firmware signing (Workstream 1): each variant also declares which signer
-# ERA signs its firmware image and the signature algorithm, so the build fetches
-# the right signer key and the device knows how to verify.
-#   signer_era: None       → unsigned (classical 1.0.0 is USB/trusted-flash only,
-#                            never delivered OTA, so it carries no signature)
-#   signer_era: "classical"→ ECDSA-P256 signer (classical CA); sig_alg ecdsa-p256
-#   signer_era: "mldsa"    → ML-DSA-44 signer (ML-DSA CA);     sig_alg mldsa44
-# The 2.0.0/3.0.0 OTA era uses the classical signer; the 4.0.0+ era (added in
-# Workstream 4: 4.0.0-signer, 5.0.0-verified) uses the ML-DSA-44 signer.
-VARIANT_CONFIG = {
-    "classical": {
-        "build_variant": "classical",
-        "version": "1.0.0-classical",
-        "signer_era": None,
-        "sig_alg": None,
-    },
-    "pqc": {
-        "build_variant": "pqc",
-        "version": "2.0.0-pqc",
-        "signer_era": "classical",
-        "sig_alg": "ecdsa-p256",
-    },
-    "pqc-mldsa": {
-        "build_variant": "pqc-mldsa",
-        "version": "3.0.0-mldsa",
-        "signer_era": "classical",
-        "sig_alg": "ecdsa-p256",
-    },
-    # ML-DSA signer era (Workstream 4). Same firmware as pqc-mldsa (ML-KEM key
-    # exchange + ML-DSA-44 device cert, 8884 listener) — what changes is the OTA
-    # SIGNER: these images are signed by the ML-DSA-44 signer, so the device
-    # verifies a post-quantum signature against the ML-DSA signer leaf (chaining
-    # to the ML-DSA CA root baked in from 3.0.0 onward).
-    #   4.0.0-signer   → first ML-DSA-signed OTA (the signer-era cutover)
-    #   5.0.0-verified → the acceptance-proof variant (ML-DSA-signed, verified)
-    "signer": {
-        "build_variant": "pqc-mldsa",
-        "version": "4.0.0-signer",
-        "signer_era": "mldsa",
-        "sig_alg": "mldsa44",
-    },
-    "verified": {
-        "build_variant": "pqc-mldsa",
-        "version": "5.0.0-verified",
-        "signer_era": "mldsa",
-        "sig_alg": "mldsa44",
-    },
-}
+SHARED_PREFIX = "shared"
+_HERE = os.path.dirname(os.path.abspath(__file__))
+
+
+def _load_variants():
+    """Variant table, shared with build-shared-firmware.sh (one source of truth)."""
+    with open(os.path.join(_HERE, "variants.json"), encoding="utf-8") as f:
+        return json.load(f)["variants"]
+
+
+# Picker variant key → {build_variant, version, signer_era, sig_alg}. The version
+# names the shared S3 dir and the OTA job, so each variant has its own version
+# namespace and a device can roll back one step. build_variant selects the
+# FIRMWARE_VARIANT define/port in buildspec.yml: "signer"/"verified" build the same pqc-mldsa
+# firmware as 3.0.0 and differ only in their OTA signer (ML-DSA-44).
+VARIANT_CONFIG = _load_variants()
 DEFAULT_VARIANT = "pqc"  # backward-compatible with the original migrate-to-PQC flow
 
-# SSM is the authoritative live source of truth for the workshop WiFi. The
-# deploy publishes /pqc-workshop/wifi/ssid (String) + /password (SecureString);
-# reading them at migration time means a WiFi change is picked up by the next
-# build with a single put-parameter, no redeploy.
-WIFI_SSM_PREFIX = os.environ.get("WIFI_SSM_PREFIX", "/pqc-workshop/wifi")
-BROKER_SSM_PARAM = os.environ.get("BROKER_SSM_PARAM", "/pqc-workshop/broker/endpoint")
+
+class SharedFirmwareMissing(Exception):
+    """The shared image for a variant is not in S3 (deployment incomplete)."""
+
+
+def shared_key(version, name="firmware.bin"):
+    return f"{SHARED_PREFIX}/{version}/{name}"
 
 
 def _table():
     return dynamodb.Table(os.environ["REGISTRY_TABLE"])
 
 
-def _get_ssm(name):
-    """Read one SSM param (decrypted); return None if missing/unreadable so the
-    caller can fall back. Never raises — a WiFi lookup must not fail a build."""
-    try:
-        return ssm.get_parameter(Name=name, WithDecryption=True)["Parameter"]["Value"]
-    except Exception as e:  # ParameterNotFound, AccessDenied, throttling, etc.
-        print(f"SSM read {name} failed ({e}); falling back")
-        return None
-
-
-def wifi_from_ssm():
-    """Return (ssid, password) from SSM, each None if unavailable."""
-    return (
-        _get_ssm(f"{WIFI_SSM_PREFIX}/ssid"),
-        _get_ssm(f"{WIFI_SSM_PREFIX}/password"),
-    )
-
-
-def broker_from_ssm():
-    """Return the broker endpoint from SSM, or None if unavailable."""
-    return _get_ssm(BROKER_SSM_PARAM)
-
-
 def resolve_variant(event):
     """Pick the firmware variant from the event, defaulting to pqc. Raises on an
     unknown variant so a bad dashboard/picker value fails loudly instead of
-    silently building the wrong firmware."""
+    silently pushing the wrong firmware."""
     variant = (event.get("variant") or DEFAULT_VARIANT).strip()
     if variant not in VARIANT_CONFIG:
         raise ValueError(
@@ -151,7 +78,7 @@ def resolve_variant(event):
 
 
 def handler(event, context):
-    """Look up the device, ensure the requested variant's firmware is (being) built."""
+    """Look up the device and point the migration at the shared signed image."""
     print(f"Event: {json.dumps(event)}")
 
     thing_name = event.get("thingName")
@@ -163,61 +90,37 @@ def handler(event, context):
     version = cfg["version"]
     signer_era = cfg.get("signer_era")
     sig_alg = cfg.get("sig_alg")
-    # The BUILD variant selects the sketch/CA/port in buildspec.yml. It can
-    # differ from the picker's variant KEY: e.g. "signer"/"verified" (ML-DSA
-    # signer era) build the SAME firmware as "pqc-mldsa" and only change the OTA
-    # signer, so their build_variant is "pqc-mldsa". Falls back to the key for
-    # the original variants where key == build_variant.
     build_variant = cfg.get("build_variant", variant)
 
     serial_number = (
         thing_name.replace("esp32-", "") if thing_name.startswith("esp32-") else thing_name
     )
 
-    # 1. Registry lookup.
+    # 1. Registry lookup: only registered devices can be migrated.
     response = _table().get_item(Key={"serialNumber": serial_number})
     if "Item" not in response:
         raise ValueError(f"Device {thing_name} not found in registry")
-    device = response["Item"]
 
-    # 2. Does this variant's firmware already exist?
-    s3_key = f"{serial_number}/{version}/firmware.bin"
-    if _firmware_exists(s3_key):
-        return {
-            "thingName": thing_name,
-            "serialNumber": serial_number,
-            "variant": variant,
-            "buildVariant": build_variant,
-            "version": version,
-            # Signer era + algorithm so publish-ota/device know how the image is
-            # signed. Empty string (not None) so the state machine's
-            # EnvironmentVariablesOverride never dereferences a missing/null path.
-            "signerEra": signer_era or "",
-            "sigAlg": sig_alg or "",
-            "s3Key": s3_key,
-            "buildNeeded": False,
-            # buildEnv is unused when buildNeeded is False, but always present so
-            # the state machine's ResultSelector never references a missing path.
-            "buildEnv": {"wifiSsid": "", "wifiPassword": "", "brokerEndpoint": "", "iotEndpoint": ""},
-        }
+    # 2. The shared image must already exist (built once per deployment).
+    s3_key = shared_key(version)
+    if not _firmware_exists(s3_key):
+        raise SharedFirmwareMissing(
+            f"Shared firmware {version} is not built yet "
+            f"(s3://{os.environ['FIRMWARE_BUCKET']}/{s3_key} missing). It is built "
+            f"automatically after the firmware-builder image build; to rebuild it, "
+            f"run raw_device_builder/codebuild/build-shared-firmware.sh."
+        )
 
-    # 3. Build needed. The state machine's WaitForBuild step starts + waits for
-    #    the single CodeBuild (codebuild:startBuild.sync); this Lambda does NOT
-    #    start a build itself (that previously caused a redundant second build).
-    #    We resolve the per-device build env (WiFi/broker/IoT) here and return it
-    #    so WaitForBuild builds with the CORRECT per-device WiFi.
-    build_env = resolve_build_env(device)
     return {
         "thingName": thing_name,
         "serialNumber": serial_number,
         "variant": variant,
         "buildVariant": build_variant,
         "version": version,
+        # Empty string (not None) so the state machine never sees a null path.
         "signerEra": signer_era or "",
         "sigAlg": sig_alg or "",
         "s3Key": s3_key,
-        "buildNeeded": True,
-        "buildEnv": build_env,
     }
 
 
@@ -228,34 +131,3 @@ def _firmware_exists(s3_key):
         return True
     except Exception:
         return False
-
-
-def resolve_build_env(device):
-    """Resolve the per-device build environment for the requested firmware variant.
-
-    Returns the fully-resolved build environment (WiFi, broker endpoint) so the
-    state machine's WaitForBuild step can start the single authoritative build
-    with the CORRECT per-device WiFi. Resolving here (SSM -> registry -> env) and
-    passing it through the state machine avoids both (a) a redundant second build
-    and (b) the build silently using the deploy-default WiFi, which would strand
-    a device whose WiFi differs from the default.
-    """
-    # Broker resolution: SSM (live source of truth) -> registry value -> env.
-    broker_endpoint = (
-        broker_from_ssm()
-        or device.get("brokerEndpoint")
-        or os.environ.get("DEFAULT_BROKER_ENDPOINT", "")
-    )
-    # WiFi resolution: SSM (live source of truth) -> registry value (what the
-    # device was flashed with) -> env fallback.
-    ssm_ssid, ssm_password = wifi_from_ssm()
-    wifi_ssid = ssm_ssid or device.get("wifiSsid") or os.environ.get("DEFAULT_WIFI_SSID", "")
-    wifi_password = (
-        ssm_password or device.get("wifiPassword") or os.environ.get("DEFAULT_WIFI_PASSWORD", "")
-    )
-    return {
-        "wifiSsid": wifi_ssid,
-        "wifiPassword": wifi_password,
-        "brokerEndpoint": broker_endpoint,
-        "iotEndpoint": os.environ.get("IOT_ENDPOINT", ""),
-    }

@@ -19,6 +19,18 @@
 #
 # Usage:
 #   ./deploy-workshop.sh <aws-region> [--vpc-id <vpc-xxxx> --subnets <a,b>] [--profile NAME] [--device-count N] [--wifi-ssid SSID] [--wifi-password PW]
+#   ./deploy-workshop.sh <aws-region> --stage-only [--profile NAME]
+#
+# --stage-only: fast update of an EXISTING deployment. Re-stages the source the
+# deploy uploads to S3 (broker + cert-issuer build contexts, firmware source/
+# incl. buildspecs + sketches, builder-Pi app.tgz) and rebuilds + publishes the
+# dashboard (its CodeBuild is quick and self-contained). It skips template
+# packaging, the stack update, the broker/cert-issuer image builds, broker cert
+# provisioning, the broker scale-up, and the SSM config + WiFi publish. Use it to
+# ship a firmware/buildspec, Builder-Pi app or dashboard change in minutes; the
+# summary it prints says what to run next for each kind of change.
+# It is NOT a substitute for the from-scratch deploy that acceptance requires
+# (see cloudformation/DEPLOYMENT.md, "Updating a running environment").
 #
 # Workshop WiFi: supply via --wifi-ssid/--wifi-password flags, the
 # WORKSHOP_WIFI_SSID/WORKSHOP_WIFI_PASSWORD env vars, or the interactive prompt
@@ -60,18 +72,21 @@ SUBNETS=""
 PROFILE=""
 
 # ─── Workshop WiFi (operator-supplied, NEVER committed) ──────────────────────
-# The device firmware (initial flash AND the classical->PQC migration) is built
-# with these WiFi credentials, and the builder-Pi hostapd AP broadcasts the same
-# SSID. Supply the real workshop values at deploy time by ONE of three methods,
+# Published to SSM (/pqc-workshop/wifi/*) in step 4, and nowhere else: the
+# device-identity job writes them into each device's "certs" NVS partition at
+# registration, and the builder-Pi hostapd AP broadcasts the same SSID. They
+# are not passed to CloudFormation and not compiled into firmware. Supply the real workshop values at deploy time by ONE of three methods,
 # resolved in this precedence (first match wins), per value independently:
 #   1. CLI flags:  --wifi-ssid <ssid>  --wifi-password <pw>
 #   2. Env vars:   WORKSHOP_WIFI_SSID=... WORKSHOP_WIFI_PASSWORD=...
 #   3. Interactive prompt (only when run from a terminal): the SSID prompt
 #      defaults to 'reinvent-pqc-iot-wifi'; the password is read hidden and is
 #      required (re-prompts until non-empty). No password default ever exists.
-# Non-interactive with nothing supplied: SSID falls back to the workshop default
-# (not a secret), the password falls back to the harmless 'changeme' placeholder
-# (devices won't join a real network, but the deploy still succeeds + WARNs).
+# Non-interactive with nothing supplied: a REDEPLOY keeps the values already in
+# SSM (registered devices hold that PSK, and the Pi AP is rebuilt from it). Only
+# a first deploy with nothing in SSM falls back to the workshop SSID default (not
+# a secret) and the harmless 'changeme' password placeholder (devices won't join
+# a real network, but the deploy still succeeds + WARNs).
 # The resolved values are threaded to the master stack as parameter overrides
 # and published to SSM (password as a SecureString) as the single source of
 # truth the registrar/migration Lambdas and the builder-Pi AP setup consume.
@@ -82,8 +97,10 @@ PROFILE=""
 WORKSHOP_WIFI_SSID_DEFAULT="reinvent-pqc-iot-wifi"
 WIFI_SSID_CLI=""       # from --wifi-ssid (highest precedence)
 WIFI_PASSWORD_CLI=""   # from --wifi-password
+STAGE_ONLY="false"     # --stage-only: re-stage sources into an existing stack, nothing else
 while [[ $# -gt 0 ]]; do
     case "$1" in
+        --stage-only) STAGE_ONLY="true"; shift ;;
         --vpc-id) VPC_ID="$2"; shift 2 ;;
         --subnets) SUBNETS="$2"; shift 2 ;;
         --profile) PROFILE="$2"; shift 2 ;;
@@ -94,9 +111,19 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+if [[ "$STAGE_ONLY" == "true" ]]; then
+    if [[ -n "$VPC_ID$SUBNETS$WIFI_SSID_CLI$WIFI_PASSWORD_CLI" ]]; then
+        echo "[ERROR] --stage-only changes no stack parameters, VPC or WiFi; drop --vpc-id/--subnets/--wifi-*."
+        exit 1
+    fi
+fi
+
 # Resolve WiFi SSID: CLI flag -> env var -> interactive prompt (default the
 # workshop SSID) -> non-interactive default (SSID is not a secret).
-if [[ -n "$WIFI_SSID_CLI" ]]; then
+# (Skipped with --stage-only: it publishes nothing to SSM.)
+if [[ "$STAGE_ONLY" == "true" ]]; then
+    :
+elif [[ -n "$WIFI_SSID_CLI" ]]; then
     WORKSHOP_WIFI_SSID="$WIFI_SSID_CLI"
 elif [[ -n "${WORKSHOP_WIFI_SSID:-}" ]]; then
     WORKSHOP_WIFI_SSID="$WORKSHOP_WIFI_SSID"
@@ -105,11 +132,14 @@ elif [[ -t 0 ]]; then
     WORKSHOP_WIFI_SSID="${_ssid_in:-$WORKSHOP_WIFI_SSID_DEFAULT}"
 else
     WORKSHOP_WIFI_SSID="$WORKSHOP_WIFI_SSID_DEFAULT"
+    WIFI_SSID_DEFAULTED="true"   # not supplied: keep an existing SSM value (see publish)
 fi
 
 # Resolve WiFi password: CLI flag -> env var -> interactive hidden prompt
 # (required, no default) -> non-interactive 'changeme' placeholder + later WARN.
-if [[ -n "$WIFI_PASSWORD_CLI" ]]; then
+if [[ "$STAGE_ONLY" == "true" ]]; then
+    :
+elif [[ -n "$WIFI_PASSWORD_CLI" ]]; then
     WORKSHOP_WIFI_PASSWORD="$WIFI_PASSWORD_CLI"
 elif [[ -n "${WORKSHOP_WIFI_PASSWORD:-}" ]]; then
     WORKSHOP_WIFI_PASSWORD="$WORKSHOP_WIFI_PASSWORD"
@@ -121,12 +151,13 @@ elif [[ -t 0 ]]; then
     done
 else
     WORKSHOP_WIFI_PASSWORD="changeme"
+    WIFI_PASSWORD_DEFAULTED="true"   # not supplied: keep an existing SSM value (see publish)
 fi
 
 # VPC mode: if neither --vpc-id nor --subnets is given, the stack creates its
 # own VPC (CreateVpc=true). If both are given, we use that existing VPC. Giving
 # only one is an error.
-if [[ -z "$VPC_ID" && -z "$SUBNETS" ]]; then
+if [[ "$STAGE_ONLY" == "true" || ( -z "$VPC_ID" && -z "$SUBNETS" ) ]]; then
     CREATE_VPC="true"
 elif [[ -n "$VPC_ID" && -n "$SUBNETS" ]]; then
     CREATE_VPC="false"
@@ -155,13 +186,19 @@ ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
 ARTIFACTS_BUCKET="pqc-workshop-cfn-${ACCOUNT_ID}-${AWS_REGION}"
 
 echo "═══════════════════════════════════════════════════════════════"
+if [[ "$STAGE_ONLY" == "true" ]]; then
+echo "  PQC Workshop — STAGE-ONLY update (existing stack, no rebuilds)"
+else
 echo "  PQC Workshop — Full Stack Deployment (single master)"
+fi
 echo "═══════════════════════════════════════════════════════════════"
 echo "  Profile:          ${PROFILE:-<ambient/default credentials>}"
 echo "  Target account:   $ACCOUNT_ID"
 echo "  Caller identity:  $CALLER_ARN"
 echo "  Region:           $AWS_REGION"
-if [[ "$CREATE_VPC" == "true" ]]; then
+if [[ "$STAGE_ONLY" == "true" ]]; then
+    echo "  Mode:             --stage-only (stack, images, SSM, WiFi untouched)"
+elif [[ "$CREATE_VPC" == "true" ]]; then
     echo "  VPC:              <the stack will create its own VPC>"
 else
     echo "  VPC / subnets:    $VPC_ID / $SUBNETS"
@@ -172,11 +209,28 @@ echo ""
 # Safety guard: confirm the target account before any writes. Skip with
 # CONFIRM_DEPLOY=yes for non-interactive/CI use.
 if [[ "${CONFIRM_DEPLOY:-}" != "yes" && -t 0 ]]; then
-    read -r -p "  Deploy to account $ACCOUNT_ID? [y/N] " reply
+    _verb="Deploy"; [[ "$STAGE_ONLY" == "true" ]] && _verb="Stage-only update"
+    read -r -p "  $_verb to account $ACCOUNT_ID? [y/N] " reply
     [[ "$reply" == "y" || "$reply" == "Y" ]] || { echo "Aborted."; exit 1; }
     echo ""
 fi
 
+get_out() { aws cloudformation describe-stacks --stack-name pqc-workshop \
+    --query "Stacks[0].Outputs[?OutputKey=='$1'].OutputValue | [0]" --output text; }
+
+if [[ "$STAGE_ONLY" == "true" ]]; then
+    # Stage-only needs a healthy existing stack: its buckets are the targets.
+    STACK_STATUS=$(aws cloudformation describe-stacks --stack-name pqc-workshop \
+        --query 'Stacks[0].StackStatus' --output text 2>/dev/null || echo "MISSING")
+    case "$STACK_STATUS" in
+        CREATE_COMPLETE|UPDATE_COMPLETE|UPDATE_ROLLBACK_COMPLETE)
+            echo "  Stack pqc-workshop: $STACK_STATUS"; echo "" ;;
+        *)
+            echo "[ERROR] --stage-only needs an existing, stable pqc-workshop stack (found: $STACK_STATUS)."
+            echo "        Run a full deploy first: $0 $AWS_REGION${PROFILE:+ --profile $PROFILE}"
+            exit 1 ;;
+    esac
+else
 # ─── Ensure the artifacts bucket exists ──────────────────────────────────────
 if ! aws s3 ls "s3://$ARTIFACTS_BUCKET" >/dev/null 2>&1; then
     if [[ "$AWS_REGION" == "us-east-1" ]]; then
@@ -267,19 +321,19 @@ aws cloudformation deploy \
         IoTEndpoint="$IOT_ENDPOINT" \
         BrokerTriggerBuild=false \
         BrokerCreateVpcEndpoints=false \
-        DefaultWifiSsid="$WORKSHOP_WIFI_SSID" \
-        DefaultWifiPassword="$WORKSHOP_WIFI_PASSWORD" \
         $VPC_PARAMS \
     --capabilities CAPABILITY_NAMED_IAM CAPABILITY_AUTO_EXPAND \
     --tags Workshop=pqc-reinvent
-
-get_out() { aws cloudformation describe-stacks --stack-name pqc-workshop \
-    --query "Stacks[0].Outputs[?OutputKey=='$1'].OutputValue | [0]" --output text; }
+fi  # end of full-deploy-only steps 1-2 (skipped by --stage-only)
 
 # ─── Step 3: stage container build contexts + build the broker image ─────────
 # CloudFormation cannot upload a Docker build context, so we do it here now that
 # the source buckets exist.
-echo "[3/5] Staging build contexts + building the broker container image..."
+if [[ "$STAGE_ONLY" == "true" ]]; then
+    echo "[stage-only] Staging build contexts + builder-Pi app (no builds)..."
+else
+    echo "[3/5] Staging build contexts + building the broker container image..."
+fi
 BROKER_SOURCE_BUCKET="pqc-workshop-broker-source-${ACCOUNT_ID}"
 FIRMWARE_BUCKET="pqc-workshop-firmware-${ACCOUNT_ID}"
 
@@ -289,9 +343,11 @@ aws s3 cp "$PROJECT_ROOT/broker-container/docker/" \
     "s3://${BROKER_SOURCE_BUCKET}/broker-image/" --recursive >/dev/null
 
 # Shared cert-issuer build context (Dockerfile + issue_cert.py +
-# issue_broker_certs.py + buildspec-broker-certs.yml). Feeds TWO CodeBuild jobs:
-#   - CertIssuerBuildProject         -> builds the shared cert-issuer image
-#   - BrokerCertProvisionerProject   -> runs in that image to mint broker certs
+# issue_broker_certs.py + issue_signer_certs.py + their buildspecs). Feeds
+# THREE CodeBuild jobs:
+#   - CertIssuerBuildProject           -> builds the shared cert-issuer image
+#   - BrokerCertProvisionerProject     -> runs in that image to mint broker certs
+#   - FirmwareSignerProvisionerProject -> runs in that image to mint OTA signers
 echo "        - cert-issuer source -> s3://${BROKER_SOURCE_BUCKET}/cert-issuer/"
 aws s3 cp "$PROJECT_ROOT/shared/cert-issuer/" \
     "s3://${BROKER_SOURCE_BUCKET}/cert-issuer/" --recursive \
@@ -314,15 +370,23 @@ aws s3 cp "$PROJECT_ROOT/raw_device_builder/codebuild/buildspec-image.yml" \
 # Per-device firmware build spec (FirmwareBuildProject BuildSpec: buildspec.yml).
 aws s3 cp "$PROJECT_ROOT/raw_device_builder/codebuild/buildspec.yml" \
     "s3://${FIRMWARE_BUCKET}/source/buildspec.yml" >/dev/null
-# The two sketch variants the per-device build downloads from source/ by name:
-#   classical -> aws_iot_pqc_esp32_v1_classical.ino ; pqc -> aws_iot_pqc_esp32.ino
-aws s3 cp "$PROJECT_ROOT/aws_iot_pqc_esp32_v1_classical/aws_iot_pqc_esp32_v1_classical.ino" \
-    "s3://${FIRMWARE_BUCKET}/source/aws_iot_pqc_esp32_v1_classical.ino" >/dev/null
-aws s3 cp "$PROJECT_ROOT/aws_iot_pqc_esp32/aws_iot_pqc_esp32.ino" \
-    "s3://${FIRMWARE_BUCKET}/source/aws_iot_pqc_esp32.ino" >/dev/null
-# pqc-mldsa variant (Step 2): ML-KEM key exchange + ML-DSA-44 device cert, 8884.
-aws s3 cp "$PROJECT_ROOT/aws_iot_pqc_esp32_v3_mldsa/aws_iot_pqc_esp32_v3_mldsa.ino" \
-    "s3://${FIRMWARE_BUCKET}/source/aws_iot_pqc_esp32_v3_mldsa.ino" >/dev/null
+# The firmware sketch: ONE folder (aws_iot_pqc_esp32.ino + .h/.cpp modules)
+# builds every variant; buildspec.yml downloads the whole folder and selects the
+# variant through the generated secrets.h. Sync with --delete so a removed or
+# renamed module cannot linger and be compiled from a stale copy. Only source
+# files are staged: never a local secrets.h, nor the reference copy of the
+# wolfSSL settings (the real one is staged separately below).
+SKETCH_NAME="aws_iot_pqc_esp32"
+SKETCH_SRC="$PROJECT_ROOT/$SKETCH_NAME"
+aws s3 sync "$SKETCH_SRC/" "s3://${FIRMWARE_BUCKET}/source/firmware/$SKETCH_NAME/" --delete \
+    --exclude '*' --include '*.ino' --include '*.h' --include '*.cpp' \
+    --exclude 'secrets.h' --exclude 'wolfssl_user_settings.h' >/dev/null
+# The pre-modular layout staged three single-file sketches at the top of
+# source/. Nothing reads them any more; remove them so nobody mistakes them
+# for the current firmware (the bucket is versioned, so this is recoverable).
+for _legacy in aws_iot_pqc_esp32_v1_classical.ino aws_iot_pqc_esp32.ino aws_iot_pqc_esp32_v3_mldsa.ino; do
+    aws s3 rm "s3://${FIRMWARE_BUCKET}/source/$_legacy" >/dev/null 2>&1 || true
+done
 # The two extra firmware-image context files live in known repo locations. Use a
 # plain function (no associative array, whose dotted keys break under zsh) with
 # a fallback repo search that only skips the arduino-cli/data/ board cache.
@@ -338,10 +402,11 @@ stage_extra() {
 }
 stage_extra wolfssl_user_settings_arduino.h "$PROJECT_ROOT/raw_device_builder/codebuild/wolfssl_user_settings_arduino.h"
 stage_extra partitions_pqc_workshop.csv     "$PROJECT_ROOT/esp32-flash/partitions_pqc_workshop.csv"
-# Shared cert-issuer script — baked into the firmware-builder image (Dockerfile
-# COPYs it) so the per-device firmware build mints its device cert via the SAME
-# issuance code path as the broker cert-issuer container.
-stage_extra issue_cert.py "$PROJECT_ROOT/shared/cert-issuer/issue_cert.py"
+# Shared-firmware chain: the firmware-builder image build runs this script after
+# pushing the image, building every variant (from variants.json — the same file
+# prepare-build uses) once into shared/<version>/.
+stage_extra build-shared-firmware.sh        "$PROJECT_ROOT/raw_device_builder/codebuild/build-shared-firmware.sh"
+stage_extra variants.json                   "$PROJECT_ROOT/raw_device_builder/lambda/prepare-build/variants.json"
 
 # ─── Verify the firmware source/ prefix is complete (fail fast) ──────────────
 # The per-device firmware build (FirmwareBuildProject) and the one-time image
@@ -355,12 +420,10 @@ REQUIRED_FW_SOURCE=(
     buildspec.yml                          # per-device firmware build spec
     buildspec-image.yml                    # one-time builder-image spec
     Dockerfile                             # builder image
-    aws_iot_pqc_esp32_v1_classical.ino     # classical sketch variant
-    aws_iot_pqc_esp32.ino                  # pqc sketch variant
-    aws_iot_pqc_esp32_v3_mldsa.ino         # pqc-mldsa sketch variant (Step 2)
     wolfssl_user_settings_arduino.h        # wolfSSL PQC config
     partitions_pqc_workshop.csv            # partition table
-    issue_cert.py                          # shared cert-issuer (baked into image)
+    build-shared-firmware.sh               # builds every variant into shared/<version>/
+    variants.json                          # variant -> version/sketch/signer table
 )
 _missing_fw=0
 for obj in "${REQUIRED_FW_SOURCE[@]}"; do
@@ -369,33 +432,48 @@ for obj in "${REQUIRED_FW_SOURCE[@]}"; do
         _missing_fw=1
     fi
 done
+# Every sketch module in the repo must be in source/firmware/<sketch>/ (a
+# missing .cpp is a link error deep in CodeBuild otherwise).
+_sketch_files=0
+for f in "$SKETCH_SRC"/*.ino "$SKETCH_SRC"/*.h "$SKETCH_SRC"/*.cpp; do
+    [[ -f "$f" ]] || continue
+    b="$(basename "$f")"
+    [[ "$b" == secrets.h || "$b" == wolfssl_user_settings.h ]] && continue
+    _sketch_files=$((_sketch_files + 1))
+    if ! aws s3api head-object --bucket "$FIRMWARE_BUCKET" --key "source/firmware/$SKETCH_NAME/$b" >/dev/null 2>&1; then
+        echo "          ! MISSING: s3://${FIRMWARE_BUCKET}/source/firmware/$SKETCH_NAME/$b"
+        _missing_fw=1
+    fi
+done
+if [[ "$_sketch_files" -eq 0 ]]; then
+    echo "          ! MISSING: no sketch files found in $SKETCH_SRC"
+    _missing_fw=1
+fi
 if [[ "$_missing_fw" -ne 0 ]]; then
     echo "[ERROR] Firmware source/ prefix is incomplete (see MISSING above)."
     echo "        Device firmware builds WILL fail. Aborting so this is not shipped."
     exit 1
 fi
-echo "          firmware source/ complete (${#REQUIRED_FW_SOURCE[@]} files)"
+echo "          firmware source/ complete (${#REQUIRED_FW_SOURCE[@]} files + ${_sketch_files} sketch files)"
 
 # ─── Stage the builder-Pi app + assets for the SSM deploy-app document ────────
 # The builder-Pi is no longer provisioned from a self-contained bundle; the SSM
 # documents (pqc-workshop-deploy-app) fetch the app + assets from the firmware
 # bucket instead of the bundle shipping them. So stage them here, next to the
 # firmware source, under the builder-pi/ prefix:
-#   - app.tgz                          the Flask GUI + workshop-builder CLI tree
-#   - partitions_pqc_workshop.csv      custom ESP32 partition table
-#   - wolfssl_user_settings_arduino.h  wolfSSL PQC config applied to the lib
-# The deploy-app document unpacks app.tgz into /opt/pqc-workshop/builder-app and
-# applies the two asset files. config.json is written by the document from SSM
-# (not from the tarball), so the tarball's config.json is just a harmless
-# template. setup-builder-pi.sh is deliberately excluded — it is retired.
-echo "        - staging builder-Pi app + assets -> s3://${FIRMWARE_BUCKET}/builder-pi/"
+#   - app.tgz    the Flask GUI + workshop-builder CLI tree
+# The deploy-app document unpacks app.tgz into /opt/pqc-workshop/builder-app.
+# config.json is written by the document from SSM (not from the tarball), so the
+# tarball's config.json is just a harmless template. The Pi never compiles
+# firmware, so it needs no wolfSSL config or partition CSV (those are firmware
+# SOURCE, staged to source/ above for CodeBuild).
+echo "        - staging builder-Pi app -> s3://${FIRMWARE_BUCKET}/builder-pi/"
 BUILDER_PI_SRC="$PROJECT_ROOT/raw_device_builder/builder-pi"
 APP_TGZ="$(mktemp -t builder-pi-app.XXXX.tgz)"
-# Pack the app tree, excluding: the retired on-Pi setup script, python caches,
-# and the tests dir (not needed on the Pi). Paths inside the tarball are
-# relative to builder-pi/ so they unpack directly into $APP_DIR.
+# Pack the app tree, excluding python caches and the tests dir (not needed on
+# the Pi). Paths inside the tarball are relative to builder-pi/ so they unpack
+# directly into $APP_DIR.
 tar -czf "$APP_TGZ" -C "$BUILDER_PI_SRC" \
-    --exclude 'setup-builder-pi.sh' \
     --exclude '__pycache__' \
     --exclude '*.pyc' \
     --exclude 'tests' \
@@ -403,21 +481,11 @@ tar -czf "$APP_TGZ" -C "$BUILDER_PI_SRC" \
 aws s3 cp "$APP_TGZ" "s3://${FIRMWARE_BUCKET}/builder-pi/app.tgz" >/dev/null
 rm -f "$APP_TGZ"
 
-# Partition table (canonical copy under esp32-flash/) and the wolfSSL PQC header
-# (with the firmware-builder codebuild sources). Reuse stage_extra's fallback
-# search so a moved file still resolves.
-_stage_builder_asset() {
-    local name="$1" f="$2"
-    [[ -f "$f" ]] || f=$(find "$PROJECT_ROOT" -name "$name" -not -path '*/arduino-cli/data/*' 2>/dev/null | head -1)
-    if [[ -n "$f" && -f "$f" ]]; then
-        echo "          - $name"
-        aws s3 cp "$f" "s3://${FIRMWARE_BUCKET}/builder-pi/$name" >/dev/null
-    else
-        echo "          ! WARN: $name not found; builder-Pi deploy-app doc will warn"
-    fi
-}
-_stage_builder_asset partitions_pqc_workshop.csv     "$PROJECT_ROOT/esp32-flash/partitions_pqc_workshop.csv"
-_stage_builder_asset wolfssl_user_settings_arduino.h "$PROJECT_ROOT/raw_device_builder/codebuild/wolfssl_user_settings_arduino.h"
+# Older deploys also staged the wolfSSL header and partition CSV here for the
+# Pi's (now removed) compile toolchain. Remove those stale copies.
+for _legacy in partitions_pqc_workshop.csv wolfssl_user_settings_arduino.h; do
+    aws s3 rm "s3://${FIRMWARE_BUCKET}/builder-pi/$_legacy" >/dev/null 2>&1 || true
+done
 
 # Fail fast if the app tarball didn't land — the deploy-app SSM doc hard-depends
 # on it, and a missing object only surfaces as a confusing SSM failure later.
@@ -426,8 +494,11 @@ if ! aws s3api head-object --bucket "$FIRMWARE_BUCKET" --key "builder-pi/app.tgz
     echo "        The builder-Pi deploy-app SSM document would fail. Aborting."
     exit 1
 fi
-echo "          builder-Pi app + assets staged"
+echo "          builder-Pi app staged"
 
+if [[ "$STAGE_ONLY" != "true" ]]; then
+# ─── Full deploy only: images, broker certs, broker scale-up, SSM + WiFi ─────
+# (--stage-only skips this whole block and goes straight to the dashboard.)
 # Trigger the broker image build now that its source is in place, and wait.
 BROKER_BUILD_PROJECT=$(get_out CodeBuildProjectName 2>/dev/null || true)
 [[ -z "$BROKER_BUILD_PROJECT" || "$BROKER_BUILD_PROJECT" == "None" ]] && BROKER_BUILD_PROJECT="pqc-workshop-broker-image-build"
@@ -451,6 +522,8 @@ done
 # it. Both CAs are already ACTIVE (created by the stack in step 2). Ordering:
 #   1. build cert-issuer image        (CertIssuerImageBuildProject)
 #   2. run broker cert provisioner    (BrokerCertProvisionerProject, in that image)
+#   3. run firmware signer provisioner (FirmwareSignerProvisionerProject, same
+#      image, separate role that alone can issue from the signing roots)
 # This mirrors the broker image flow and keeps the whole deploy one-shot.
 run_build() {
     # $1 = human label, $2 = CodeBuild project name
@@ -477,6 +550,12 @@ run_build "cert-issuer image build" "$CERT_ISSUER_BUILD_PROJECT"
 BROKER_CERT_PROJECT=$(get_out BrokerCertProvisionerProjectName 2>/dev/null || true)
 [[ -z "$BROKER_CERT_PROJECT" || "$BROKER_CERT_PROJECT" == "None" ]] && BROKER_CERT_PROJECT="pqc-workshop-broker-cert-provisioner"
 run_build "broker cert provisioning (classical + ML-DSA-44)" "$BROKER_CERT_PROJECT"
+
+# OTA firmware signers come from the dedicated firmware-signing roots, via a
+# separate job and role (T024). Must finish before any firmware build signs.
+SIGNER_CERT_PROJECT=$(get_out FirmwareSignerProvisionerProjectName 2>/dev/null || true)
+[[ -z "$SIGNER_CERT_PROJECT" || "$SIGNER_CERT_PROJECT" == "None" ]] && SIGNER_CERT_PROJECT="pqc-workshop-firmware-signer-provisioner"
+run_build "firmware signer provisioning (classical + ML-DSA-44)" "$SIGNER_CERT_PROJECT"
 
 # Scale the broker ECS service up (it ships at DesiredCount 0). Now that an image
 # exists, one task can start and register with the NLB. The cluster and service
@@ -529,9 +608,34 @@ put_param /pqc-workshop/iotEndpoint               "$IOT_ENDPOINT"
 put_param /pqc-workshop/broker/endpoint           "$(get_out BrokerEndpoint)"
 
 # Workshop WiFi: the single source of truth consumed by the builder-Pi hostapd
-# AP setup (broadcasts this SSID/PSK) and mirrored into firmware at build time.
+# AP setup (broadcasts this SSID/PSK) and by the device-identity job, which
+# writes it into each device's "certs" NVS partition at registration.
 # SSID is a plain String; the password is a SecureString (put_param hardcodes
 # --type String, so publish the password with a dedicated call).
+# A redeploy run without the WiFi flags/env (non-interactive) must NOT replace a
+# real value already in SSM with the default/placeholder: the registered
+# devices hold the existing PSK in their identity partition, and the Builder-Pi
+# AP is rebuilt from SSM, so overwriting it locks every device off the network
+# (seen on pqc-a: 4WAY_HANDSHAKE_TIMEOUT on all devices after a redeploy).
+_ssm_value() {
+    aws ssm get-parameter --name "$1" --with-decryption --query Parameter.Value \
+        --output text --region "$AWS_REGION" 2>/dev/null || true
+}
+if [[ "${WIFI_SSID_DEFAULTED:-}" == "true" ]]; then
+    _existing=$(_ssm_value /pqc-workshop/wifi/ssid)
+    if [[ -n "$_existing" && "$_existing" != "None" && "$_existing" != "changeme" ]]; then
+        WORKSHOP_WIFI_SSID="$_existing"
+        echo "    WiFi SSID not supplied: keeping the existing /pqc-workshop/wifi/ssid"
+    fi
+fi
+if [[ "${WIFI_PASSWORD_DEFAULTED:-}" == "true" ]]; then
+    _existing=$(_ssm_value /pqc-workshop/wifi/password)
+    if [[ -n "$_existing" && "$_existing" != "None" && "$_existing" != "changeme" ]]; then
+        WORKSHOP_WIFI_PASSWORD="$_existing"
+        echo "    WiFi password not supplied: keeping the existing /pqc-workshop/wifi/password"
+    fi
+fi
+unset _existing
 put_param /pqc-workshop/wifi/ssid "$WORKSHOP_WIFI_SSID"
 aws ssm put-parameter --name /pqc-workshop/wifi/password --type SecureString \
     --overwrite --value "$WORKSHOP_WIFI_PASSWORD" --region "$AWS_REGION" >/dev/null \
@@ -542,6 +646,9 @@ if [[ "$WORKSHOP_WIFI_SSID" == "changeme" || "$WORKSHOP_WIFI_PASSWORD" == "chang
     echo "          WORKSHOP_WIFI_PASSWORD set to the real workshop credentials."
 fi
 
+fi  # end of full-deploy-only block (skipped by --stage-only)
+
+[[ "$STAGE_ONLY" == "true" ]] && echo "[stage-only] Staging + building the v2 dashboard (CodeBuild; reads config from SSM)..."
 # ─── Build + deploy the dashboard via CodeBuild (not on this host) ───────────
 # The Vite/React build used to run here (npm ci && npm run build) and sync from
 # the operator's laptop, making the deploy laptop-dependent and slow. It now
@@ -579,6 +686,36 @@ while true; do
     esac
 done
 
+if [[ "$STAGE_ONLY" == "true" ]]; then
+    PROFILE_ARG=""
+    [[ -n "$PROFILE" ]] && PROFILE_ARG=" --profile $PROFILE"
+    echo ""
+    echo "═══════════════════════════════════════════════════════════════"
+    echo "  Stage-only update complete (account $ACCOUNT_ID)."
+    echo "═══════════════════════════════════════════════════════════════"
+    echo "  Applied now:"
+    echo "    Dashboard   rebuilt + synced + CloudFront invalidated: $(get_out DashboardURL)"
+    echo "                (hard-refresh the browser to pick it up)"
+    echo "  Staged, takes effect when you run the step below:"
+    echo "    Firmware sketches / buildspec.yml / variants.json / wolfSSL config /"
+    echo "    partition table (overlaid at compile time, no image rebuild):"
+    echo "      rebuild the shared images (s3://${FIRMWARE_BUCKET}/shared/<version>/):"
+    echo "      ./raw_device_builder/codebuild/build-shared-firmware.sh --region $AWS_REGION${PROFILE_ARG} --wait"
+    echo "      (add --variant <key> for just one). Registration and migrations"
+    echo "      then use them; devices already on a version keep running it."
+    echo "    Firmware-builder toolchain (Dockerfile / buildspec-image.yml: core and"
+    echo "      pinned library versions): rebuild the image; it then rebuilds all shared images:"
+    echo "      aws codebuild start-build --project-name pqc-workshop-build-image${PROFILE_ARG}"
+    echo "    Builder-Pi app (raw_device_builder/builder-pi/):"
+    echo "      ./raw_device_builder/setup-builder-pi-remote.sh --region $AWS_REGION${PROFILE_ARG} --only deploy-app"
+    echo "  NOT applied by --stage-only (run the full deploy instead):"
+    echo "    CloudFormation templates, Lambda code, broker / cert-issuer images,"
+    echo "    broker certs, SSM config, workshop WiFi:"
+    echo "      ./cloudformation/deploy-workshop.sh $AWS_REGION${PROFILE_ARG}"
+    echo ""
+    exit 0
+fi
+
 echo ""
 echo "═══════════════════════════════════════════════════════════════"
 echo "  Deployment complete!"
@@ -591,10 +728,11 @@ PROFILE_ARG=""
 [[ -n "$PROFILE" ]] && PROFILE_ARG=" --profile $PROFILE"
 echo ""
 echo "REMAINING MANUAL STEPS:"
-echo "  1. Build the firmware image once (source already staged by this script;"
-echo "     needed before any device firmware build):"
-echo "       aws codebuild start-build --project-name $(get_out FirmwareImageBuilderProject)${PROFILE_ARG}"
-echo "  2. Provision the Builder-Pi (two steps — see DEPLOYMENT.md §5):"
+echo "  1. Build the firmware builder image once (source already staged). When it"
+echo "     finishes it builds every firmware variant into shared/<version>/; it can"
+echo "     run while you provision the Builder-Pi, but must SUCCEED before step 8:"
+echo "       aws codebuild start-build --project-name pqc-workshop-build-image${PROFILE_ARG}"
+echo "  2. Provision the Builder-Pi (two steps — see DEPLOYMENT.md §6, workshop 99.6):"
 echo "       a. Register the Pi:  raw_device_builder/bundle-for-builder-pi.sh --region $AWS_REGION"
 echo "          then on the Pi:   unzip builder-pi-bundle.zip && cd builder-pi-bundle && sudo ./setup-ssm.sh"
 echo "       b. Provision via SSM: ./raw_device_builder/setup-builder-pi-remote.sh --region $AWS_REGION${PROFILE_ARG}"

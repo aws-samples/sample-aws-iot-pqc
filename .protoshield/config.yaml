@@ -1,0 +1,31 @@
+protoshield_version: v0.18.0
+model_id: global.anthropic.claude-haiku-4-5-20251001-v1:0
+enabled_plugins:
+    - cfnnag
+    - checkov
+    - iam-least-privilege
+    - cve
+    - license-headers
+    - secrets
+    - semgrep
+    - bandit
+    - markdown-report
+plugins:
+    bandit:
+        timeout: "300"
+    cdknag:
+        timeout: "300"
+    cfnnag:
+        timeout: "300"
+    checkov:
+        timeout: "300"
+    cve:
+        timeout: "600"
+    license-headers:
+        copyright_text: Amazon.com, Inc. or its affiliates
+        license_text: MIT-0
+        timeout: "120"
+    secrets:
+        timeout: "300"
+    semgrep:
+        timeout: "300"

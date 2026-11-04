@@ -440,6 +440,79 @@ Resources:
       Certificate: !GetAtt MlDsaPrivateCACertificate.Certificate
       Status: ACTIVE
 
+  # ═══════════════════════════════════════════════════════════════════════════
+  # AWS Private CA — dedicated FIRMWARE SIGNING roots (one per signer era)
+  # ═══════════════════════════════════════════════════════════════════════════
+  # The OTA signer certificates are issued ONLY by these two roots, never by
+  # the device/broker CAs above. Devices trust these roots for OTA signatures
+  # and nothing else, and the device CAs for TLS and nothing else, so a device
+  # key (extractable from any board) can never sign firmware (threat T024).
+  # The signer certificates also carry the codeSigning EKU, which the firmware
+  # requires. These CAs issue exactly two certificates per deployment.
+  FirmwareSignerCA:
+    Type: AWS::ACMPCA::CertificateAuthority
+    Properties:
+      Type: ROOT
+      KeyAlgorithm: EC_prime256v1
+      SigningAlgorithm: SHA256WITHECDSA
+      Subject:
+        CommonName: PQC Workshop Firmware Signing Root CA
+        Organization: AWS PQC Workshop
+        Country: US
+      RevocationConfiguration:
+        CrlConfiguration:
+          Enabled: false
+
+  FirmwareSignerCACertificate:
+    Type: AWS::ACMPCA::Certificate
+    Properties:
+      CertificateAuthorityArn: !Ref FirmwareSignerCA
+      CertificateSigningRequest: !GetAtt FirmwareSignerCA.CertificateSigningRequest
+      SigningAlgorithm: SHA256WITHECDSA
+      TemplateArn: arn:aws:acm-pca:::template/RootCACertificate/V1
+      Validity:
+        Type: YEARS
+        Value: 10
+
+  FirmwareSignerCAActivation:
+    Type: AWS::ACMPCA::CertificateAuthorityActivation
+    Properties:
+      CertificateAuthorityArn: !Ref FirmwareSignerCA
+      Certificate: !GetAtt FirmwareSignerCACertificate.Certificate
+      Status: ACTIVE
+
+  MlDsaFirmwareSignerCA:
+    Type: AWS::ACMPCA::CertificateAuthority
+    Properties:
+      Type: ROOT
+      KeyAlgorithm: ML_DSA_44
+      SigningAlgorithm: ML_DSA_44
+      Subject:
+        CommonName: PQC Workshop ML-DSA-44 Firmware Signing Root CA
+        Organization: AWS PQC Workshop
+        Country: US
+      RevocationConfiguration:
+        CrlConfiguration:
+          Enabled: false
+
+  MlDsaFirmwareSignerCACertificate:
+    Type: AWS::ACMPCA::Certificate
+    Properties:
+      CertificateAuthorityArn: !Ref MlDsaFirmwareSignerCA
+      CertificateSigningRequest: !GetAtt MlDsaFirmwareSignerCA.CertificateSigningRequest
+      SigningAlgorithm: ML_DSA_44
+      TemplateArn: arn:aws:acm-pca:::template/RootCACertificate/V1
+      Validity:
+        Type: YEARS
+        Value: 10
+
+  MlDsaFirmwareSignerCAActivation:
+    Type: AWS::ACMPCA::CertificateAuthorityActivation
+    Properties:
+      CertificateAuthorityArn: !Ref MlDsaFirmwareSignerCA
+      Certificate: !GetAtt MlDsaFirmwareSignerCACertificate.Certificate
+      Status: ACTIVE
+
   # ─── Broker Certificate (issued by Private CA via Lambda custom resource) ──
   # The CertProvisionerFunction generates a key, CSR, issues the cert from
   # Private CA, and stores everything in Secrets Manager automatically.
@@ -554,11 +627,12 @@ Resources:
   # ─── OTA firmware SIGNER cert secrets (one STABLE signer per era) ───────────
   # These are the stable per-era firmware-signing identities, distinct from the
   # broker TLS certs and the per-device certs. The classical signer (ECDSA P-256,
-  # classical CA) signs OTA images for the 2.0.0/3.0.0 era; the ML-DSA-44 signer
-  # (ML-DSA CA) signs the 4.0.0+ era. The firmware build READS the signer key to
-  # sign firmware.bin; the device verifies the signature against the signer leaf
-  # delivered with the OTA, which chains to the baked-in CA root. One signer per
-  # era (not per build/device), so the device trusts a single leaf per era.
+  # issued by FirmwareSignerCA) signs OTA images for the 2.0.0/3.0.0 era; the
+  # ML-DSA-44 signer (issued by MlDsaFirmwareSignerCA) signs the 4.0.0+ era. The
+  # firmware build READS the signer key to sign firmware.bin; the device verifies
+  # the signature against the signer leaf delivered with the OTA, which must
+  # chain to the matching firmware-signing root in the device's certs partition
+  # and carry the codeSigning EKU. The *-ca secrets hold those signing roots.
   SignerClassicalCACertSecret:
     Type: AWS::SecretsManager::Secret
     Metadata:
@@ -574,7 +648,7 @@ Resources:
             comment: "default AWS-managed KMS key for Secrets Manager; workshop sample"
     Properties:
       Name: pqc-broker/signer-classical-ca
-      Description: Classical CA cert for the firmware signer (device trust root, 2.0.0/3.0.0 era)
+      Description: ECDSA P-256 firmware-signing root CA cert (device OTA trust, 2.0.0/3.0.0 era)
 
   SignerClassicalCertSecret:
     Type: AWS::SecretsManager::Secret
@@ -625,7 +699,7 @@ Resources:
             comment: "default AWS-managed KMS key for Secrets Manager; workshop sample"
     Properties:
       Name: pqc-broker/signer-mldsa-ca
-      Description: ML-DSA-44 CA cert for the firmware signer (device trust root, 4.0.0+ era)
+      Description: ML-DSA-44 firmware-signing root CA cert (device OTA trust, 4.0.0+ era)
 
   SignerMlDsaCertSecret:
     Type: AWS::SecretsManager::Secret
@@ -1330,9 +1404,20 @@ Resources:
                   - ecr:GetDownloadUrlForLayer
                   - ecr:BatchGetImage
                 Resource: !GetAtt CertIssuerEcrRepository.Arn
+              # Device/broker CAs ONLY, and only the end-entity (TLS) template.
+              # This role has no access to the firmware-signing roots: the OTA
+              # signers are minted by FirmwareSignerProvisionerRole (T024).
               - Effect: Allow
                 Action:
                   - acm-pca:IssueCertificate
+                Resource:
+                  - !Ref PrivateCA
+                  - !Ref MlDsaPrivateCA
+                Condition:
+                  StringEquals:
+                    'acm-pca:TemplateArn': 'arn:aws:acm-pca:::template/EndEntityCertificate/V1'
+              - Effect: Allow
+                Action:
                   - acm-pca:GetCertificate
                   - acm-pca:GetCertificateAuthorityCertificate
                 Resource:
@@ -1349,12 +1434,6 @@ Resources:
                   - !Ref MlDsaBrokerCACertSecret
                   - !Ref MlDsaBrokerCertSecret
                   - !Ref MlDsaBrokerKeySecret
-                  - !Ref SignerClassicalCACertSecret
-                  - !Ref SignerClassicalCertSecret
-                  - !Ref SignerClassicalKeySecret
-                  - !Ref SignerMlDsaCACertSecret
-                  - !Ref SignerMlDsaCertSecret
-                  - !Ref SignerMlDsaKeySecret
               # CodeBuild reads its build source from S3, so it needs both
               # GetObject (on the objects) and ListBucket (on the bucket) — the
               # same grant CertIssuerBuildRole has. Without ListBucket the
@@ -1397,6 +1476,8 @@ Resources:
             Value: !Ref PrivateCA
           - Name: MLDSA_CA_ARN
             Value: !Ref MlDsaPrivateCA
+          # Firmware-signing roots: the signer certs are issued here, NOT by the
+          # device/broker CAs above (T024).
           - Name: BROKER_CA_CERT_SECRET
             Value: !Ref BrokerCACertSecret
           - Name: BROKER_CERT_SECRET
@@ -1411,7 +1492,132 @@ Resources:
             Value: !Ref MlDsaBrokerKeySecret
           - Name: BROKER_CN
             Value: pqc-mqtt-broker
-          # ── OTA firmware signer secrets (stable per-era signing identity) ──
+      LogsConfig:
+        CloudWatchLogs:
+          Status: ENABLED
+          GroupName: !Sub '/aws/codebuild/pqc-workshop-broker-cert-provisioner'
+
+  # ─── Firmware Signer Provisioner (CodeBuild job, separate role) ─────────────
+  # Mints the two OTA firmware signer certs (classical ECDSA P-256 + ML-DSA-44)
+  # from the dedicated firmware-signing roots via issue_signer_certs.py, in the
+  # same shared cert-issuer image. Kept apart from the broker cert job so this
+  # role is the ONLY principal that can issue from the signing roots, and only
+  # with the CodeSigningCertificate/V1 template (threat T024). A compromise of
+  # the broker cert job can therefore not mint a firmware signer.
+  FirmwareSignerProvisionerRole:
+    Type: AWS::IAM::Role
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W11
+            reason: "ecr:GetAuthorizationToken does not support resource-level permissions and requires Resource '*'"
+          - id: W28
+            reason: "workshop depends on fixed resource names referenced across stacks/scripts"
+          - id: W76
+            reason: "SPCM counts the five services a CodeBuild job needs (logs, ECR pull, S3 source, ACM PCA, Secrets Manager); every statement is resource-scoped and IssueCertificate is pinned to the code-signing template"
+      checkov:
+        skip:
+          - id: CKV_AWS_111
+            comment: "ecr:GetAuthorizationToken does not support resource-level permissions and requires Resource '*'"
+          - id: CKV_AWS_109
+            comment: "ecr:GetAuthorizationToken does not support resource-level permissions and requires Resource '*'"
+    Properties:
+      RoleName: pqc-workshop-firmware-signer-provisioner
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codebuild.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: FirmwareSignerProvisionerPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/pqc-workshop-firmware-signer-provisioner*'
+              - Effect: Allow
+                Action:
+                  - ecr:GetAuthorizationToken
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - ecr:BatchCheckLayerAvailability
+                  - ecr:GetDownloadUrlForLayer
+                  - ecr:BatchGetImage
+                Resource: !GetAtt CertIssuerEcrRepository.Arn
+              # Firmware-signing roots ONLY, and only the code-signing template,
+              # so every leaf this role can mint carries the codeSigning EKU.
+              - Effect: Allow
+                Action:
+                  - acm-pca:IssueCertificate
+                Resource:
+                  - !Ref FirmwareSignerCA
+                  - !Ref MlDsaFirmwareSignerCA
+                Condition:
+                  StringEquals:
+                    'acm-pca:TemplateArn': 'arn:aws:acm-pca:::template/CodeSigningCertificate/V1'
+              - Effect: Allow
+                Action:
+                  - acm-pca:GetCertificate
+                  - acm-pca:GetCertificateAuthorityCertificate
+                Resource:
+                  - !Ref FirmwareSignerCA
+                  - !Ref MlDsaFirmwareSignerCA
+              - Effect: Allow
+                Action:
+                  - secretsmanager:PutSecretValue
+                  - secretsmanager:UpdateSecret
+                Resource:
+                  - !Ref SignerClassicalCACertSecret
+                  - !Ref SignerClassicalCertSecret
+                  - !Ref SignerClassicalKeySecret
+                  - !Ref SignerMlDsaCACertSecret
+                  - !Ref SignerMlDsaCertSecret
+                  - !Ref SignerMlDsaKeySecret
+              # CodeBuild reads its build source from S3 (GetObject + ListBucket).
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:GetBucketLocation
+                  - s3:ListBucket
+                Resource:
+                  - !GetAtt BrokerSourceBucket.Arn
+                  - !Sub '${BrokerSourceBucket.Arn}/*'
+
+  FirmwareSignerProvisionerProject:
+    Type: AWS::CodeBuild::Project
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W32
+            reason: "default AWS-managed CodeBuild encryption key"
+    Properties:
+      Name: pqc-workshop-firmware-signer-provisioner
+      Description: Mints both OTA firmware signer certs (classical + ML-DSA-44) from the firmware-signing roots
+      ServiceRole: !GetAtt FirmwareSignerProvisionerRole.Arn
+      TimeoutInMinutes: 15
+      Source:
+        Type: S3
+        Location: !Sub '${BrokerSourceBucket}/cert-issuer/'
+        BuildSpec: buildspec-signer-certs.yml
+      Artifacts:
+        Type: NO_ARTIFACTS
+      Environment:
+        Type: LINUX_CONTAINER
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: !Sub '${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/pqc-workshop-cert-issuer:latest'
+        ImagePullCredentialsType: SERVICE_ROLE
+        EnvironmentVariables:
+          - Name: SIGNER_CLASSICAL_CA_ARN
+            Value: !Ref FirmwareSignerCA
+          - Name: SIGNER_MLDSA_CA_ARN
+            Value: !Ref MlDsaFirmwareSignerCA
           - Name: SIGNER_CLASSICAL_CA_SECRET
             Value: !Ref SignerClassicalCACertSecret
           - Name: SIGNER_CLASSICAL_CERT_SECRET
@@ -1429,7 +1635,7 @@ Resources:
       LogsConfig:
         CloudWatchLogs:
           Status: ENABLED
-          GroupName: !Sub '/aws/codebuild/pqc-workshop-broker-cert-provisioner'
+          GroupName: '/aws/codebuild/pqc-workshop-firmware-signer-provisioner'
 
   # ═══════════════════════════════════════════════════════════════════════════
   # IoT Core Bridge — Thing, Certificate, Policy for Mosquitto→IoT Core bridge
@@ -1765,12 +1971,20 @@ Outputs:
     Description: ML-DSA-44 Private CA ARN (for issuing post-quantum device certificates)
     Value: !Ref MlDsaPrivateCA
 
+  FirmwareSignerCAArn:
+    Description: ECDSA P-256 firmware-signing root CA ARN (issues only the classical OTA signer)
+    Value: !Ref FirmwareSignerCA
+
+  MlDsaFirmwareSignerCAArn:
+    Description: ML-DSA-44 firmware-signing root CA ARN (issues only the ML-DSA OTA signer)
+    Value: !Ref MlDsaFirmwareSignerCA
+
   # ─── OTA firmware signer secret ARNs (consumed by the device-builder stack) ──
   # The firmware build reads the era-appropriate signer KEY to sign firmware.bin
   # and the signer CERT to ship alongside the OTA. Export the ARNs so the build's
   # CodeBuild role can be scoped to exactly these secrets.
   SignerClassicalCACertSecretArn:
-    Description: ARN of the classical firmware-signer CA cert secret (device trust root, 2.0.0/3.0.0)
+    Description: ARN of the ECDSA P-256 firmware-signing root CA cert secret (2.0.0/3.0.0)
     Value: !Ref SignerClassicalCACertSecret
 
   SignerClassicalCertSecretArn:
@@ -1782,7 +1996,7 @@ Outputs:
     Value: !Ref SignerClassicalKeySecret
 
   SignerMlDsaCACertSecretArn:
-    Description: ARN of the ML-DSA-44 firmware-signer CA cert secret (device trust root, 4.0.0+)
+    Description: ARN of the ML-DSA-44 firmware-signing root CA cert secret (4.0.0+)
     Value: !Ref SignerMlDsaCACertSecret
 
   SignerMlDsaCertSecretArn:
@@ -1816,3 +2030,7 @@ Outputs:
   BrokerCertProvisionerProjectName:
     Description: CodeBuild project that mints both broker server certs into Secrets Manager
     Value: !Ref BrokerCertProvisionerProject
+
+  FirmwareSignerProvisionerProjectName:
+    Description: CodeBuild project that mints both OTA firmware signer certs into Secrets Manager
+    Value: !Ref FirmwareSignerProvisionerProject

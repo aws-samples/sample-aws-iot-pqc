@@ -213,8 +213,15 @@ The custom partition table (`partitions_pqc_workshop.csv`) divides the 8MB flash
 │ 0x710000 - 0x710FFF │ NVS Keys (4 KB)          │
 ├─────────────────────────────────────────────────┤
 │ 0x711000 - 0x720FFF │ Coredump (64 KB)         │
+├─────────────────────────────────────────────────┤
+│ 0x721000 - 0x730FFF │ Certs: device identity   │
+│                      │ NVS (64 KB)               │
 └─────────────────────────────────────────────────┘
 ```
+
+The `certs` partition holds each device's identity (keys, certificates, CA
+roots and WiFi credentials) as NVS blobs. The Builder-Pi writes it over USB at
+registration; OTA updates never touch it, so firmware images carry no secrets.
 
 ## Troubleshooting
 

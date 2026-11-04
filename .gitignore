@@ -51,3 +51,13 @@ __pycache__/
 # Workshop Studio source zip, where it would error for attendees. Use the
 # user-level config at ~/.kiro/settings/mcp.json instead.
 .kiro/settings/mcp.json
+
+# NVS identity spike output (throwaway test keys)
+.spike-out/
+.spike-build/
+
+# ProtoShield local scan output (raw scanner results + AI summary reports).
+# Findings are an inventory of weaknesses, like .threatmodel/, so they stay
+# local. Only .protoshield/config.yaml is tracked, and the public-mirror
+# publisher strips the whole .protoshield/ directory.
+.protoshield/scans/

@@ -110,8 +110,9 @@
 #define WOLFSSL_BASE64_ENCODE
 
 // ─── Memory / Performance Tuning for ESP32 ──────────────────────────────────
-#define SMALL_SESSION_CACHE
-#define NO_SESSION_CACHE_REF
+// No TLS session cache: every connection does a full handshake anyway (the
+// sketches never resume a session), so the cache is ~1.1 KB of wasted .bss.
+#define NO_SESSION_CACHE
 #define WOLFSSL_SMALL_STACK
 #define WOLFSSL_SMALL_STACK_CACHE
 

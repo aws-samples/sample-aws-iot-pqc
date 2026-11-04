@@ -25,10 +25,9 @@ FreeRTOS tasks with automatic failure recovery.
 - [Code walkthrough](#code-walkthrough)
 - [MQTT best practices](#mqtt-best-practices)
 - [PQC migration techniques](#pqc-migration-techniques)
-- [PQC key exchange details](#pqc-key-exchange-details)
 - [Memory and performance](#memory-and-performance)
 - [Troubleshooting](#troubleshooting)
-- [Automatic registration and certificate provisioning](#automatic-registration-and-certificate-provisioning)
+- [Device registration](#device-registration)
 - [Security considerations](#security-considerations)
 - [Cleanup and teardown](#cleanup-and-teardown)
 - [References](#references)
@@ -55,13 +54,19 @@ classical mTLS connection:
 
 ![How a field device reaches AWS IoT Core: an ESP32-S3 device connects over MQTT-over-PQC-TLS (hybrid ML-KEM) to the internet-facing pqc-broker-nlb Network Load Balancer (8883 classical / 8884 ML-DSA, TCP passthrough), which passes TCP 8883 through to the ECS Fargate Mosquitto PQC broker (OpenSSL 3.5 + ML-KEM, private subnet, no public IP), which bridges over classical mTLS to the AWS IoT Core MQTT data endpoint](docs/images/broker-path.png)
 
-On the device side, the firmware runs two independent FreeRTOS tasks plus a main loop:
+On the device side, the firmware loads its identity (certificates, keys, WiFi)
+from the `certs` partition at boot, then runs independent FreeRTOS tasks:
 
-1. The **WiFi task** manages the wireless connection on FreeRTOS core 0. It connects to the configured network, monitors the link, and automatically reconnects on failure.
-
-2. The **MQTT task** waits for WiFi, initializes wolfSSL with your device certificates, then opens a TLS 1.3 connection to the containerized Mosquitto PQC broker (ECS Fargate, reached via a Network Load Balancer on port 8883). During the TLS handshake, it requests a hybrid PQC key exchange (P-256 + ML-KEM-768). Once connected, it publishes JSON telemetry every 30 seconds and subscribes to a topic for inbound commands. The broker bridges this traffic up to AWS IoT Core.
-
-3. The **main loop** prints a system status report every 60 seconds (uptime, WiFi RSSI, MQTT state, free heap).
+1. The **WiFi task** manages the wireless connection on core 0 and reconnects on
+   failure.
+2. The **MQTT task** waits for WiFi, sets the clock over NTP, sets up wolfSSL
+   with the device's certificate, then opens a TLS 1.3 connection to the
+   Mosquitto broker's load balancer (8883, or 8884 for the ML-DSA variant). On
+   the PQC variants it requests the hybrid P-256 + ML-KEM-768 key exchange. Once
+   connected it publishes telemetry every 30 seconds and handles commands.
+3. The **OTA task** waits for an update command, then downloads, verifies and
+   installs the new firmware.
+4. The **main loop** prints a status report every 60 seconds.
 
 If WiFi drops, the WiFi task reconnects automatically. The MQTT task detects the loss, waits for WiFi to return, then re-establishes the TLS and MQTT connection from scratch.
 
@@ -85,7 +90,19 @@ Both the ESP32 and Mosquitto negotiate the **IANA-standardized** hybrid key exch
 
 ### Certificate trust
 
-An **AWS Private CA** (ACM Private CA) created by the broker stack is the single trust root for the workshop. It issues both the broker's server certificate and every device certificate, so device ↔ broker mTLS validates against one CA. The broker's cert/key and the IoT Core bridge credentials are stored in Secrets Manager.
+The broker stack creates four **AWS Private CA** roots, in two pairs:
+
+- **Device and broker roots** (ECDSA P-256 for the 8883 listener, ML-DSA-44 for
+  8884) issue the broker's server certificates and every device certificate.
+  Each broker listener accepts only client certificates from its own root, so
+  every connection is mutually authenticated.
+- **Firmware-signing roots** (ECDSA P-256 and ML-DSA-44) issue only the two OTA
+  signer certificates, with the `codeSigning` EKU. A device trusts these for OTA
+  signatures and nothing else, and the device roots for TLS and nothing else, so
+  a key extracted from any board cannot sign firmware.
+
+The broker's certificates and keys, the signers, and the IoT Core bridge
+credentials are stored in Secrets Manager.
 
 ### Workshop flow
 
@@ -105,13 +122,19 @@ See [`cloudformation/DEPLOYMENT.md`](cloudformation/DEPLOYMENT.md) for the full 
 Sample-aws-iot-pqc/
 +-- README.md                              This file
 +-- check_setup_status.sh                  Validates AWS environment readiness
-+-- aws_iot_pqc_esp32/
-|   +-- aws_iot_pqc_esp32.ino              PQC firmware (OTA_1 / app1)
-|   +-- secrets.h                          WiFi + credentials (build-time generated)
++-- aws_iot_pqc_esp32/                     The device firmware: ONE sketch builds every variant
+|   +-- aws_iot_pqc_esp32.ino              setup() / loop(); starts the module tasks
+|   +-- variant_config.h                   Everything that differs between classical / pqc / pqc-mldsa
+|   +-- app_config.h                       Includes, build settings, task + timing constants
+|   +-- device_identity.h/.cpp             Thing name + keys/certs/WiFi from the "certs" NVS partition
+|   +-- wifi_manager.h/.cpp                WiFi station task (backoff + jitter)
+|   +-- pqc_tls_client.h/.cpp              wolfSSL TLS 1.3 (+ hybrid ML-KEM) as an Arduino Client
+|   +-- mqtt_manager.h/.cpp                Broker connection, telemetry, command dispatch
+|   +-- ota_updater.h/.cpp                 Signed OTA download + SHA-256 / signature / chain checks
+|   +-- diagnostics.h/.cpp                 On-demand memory report (cmd/<thing>/diag)
+|   +-- status_led.h/.cpp, json_util.h/.cpp
+|   +-- secrets.h.template                 Local-build settings (variant, broker); generated by CodeBuild
 |   +-- wolfssl_user_settings.h            Reference wolfSSL PQC configuration
-+-- aws_iot_pqc_esp32_v1_classical/
-|   +-- aws_iot_pqc_esp32_v1_classical.ino Classical firmware (OTA_0 / app0)
-|   +-- secrets.h                          WiFi + credentials
 +-- broker-container/                       Containerized PQC Mosquitto broker
 |   +-- cloudformation/
 |   |   +-- broker-container-stack.yaml    ECS Fargate + NLB + Private CA + ECR/CodeBuild
@@ -141,9 +164,8 @@ Sample-aws-iot-pqc/
 
 | Path | Description |
 |------|-------------|
-| `aws_iot_pqc_esp32/` | PQC Arduino sketch (OTA_1) with wolfSSL TLS 1.3, FreeRTOS tasks, and MQTT logic. |
-| `aws_iot_pqc_esp32_v1_classical/` | Classical TLS sketch (OTA_0) with OTA migration handler. |
-| `secrets.h` | WiFi SSID/password, broker endpoint, Thing name, and PEM certificates. For workshop builds this is generated at compile time by CodeBuild; the checked-in copy holds placeholders. |
+| `aws_iot_pqc_esp32/` | The firmware: one Arduino sketch (a `.ino` plus `.h/.cpp` modules, shown as tabs in the Arduino IDE) that builds every variant. `FIRMWARE_VARIANT` in `secrets.h` selects classical, pqc or pqc-mldsa; `variant_config.h` holds every difference between them. |
+| `secrets.h` | Build settings only (variant, version, broker endpoint and port, log level). CodeBuild generates it; copy `secrets.h.template` for a local build. Keys, certificates and WiFi are read from the device's "certs" NVS partition, never compiled in. |
 | `wolfssl_user_settings.h` | Reference `#define` values for wolfSSL with ML-KEM PQC on ESP32. |
 | `broker-container/` | The containerized PQC Mosquitto broker: CloudFormation (ECS Fargate, NLB, Private CA, ECR/CodeBuild image build) and the Docker image sources. |
 | `raw_device_builder/` | Device build/registration pipeline: builder API + firmware CodeBuild, the PQC-migration Step Functions workflow, the builder-pi CLI/GUI, and the v2 dashboard frontend. |
@@ -173,8 +195,9 @@ Boards with PSRAM (e.g., ESP32-S3 with 8MB PSRAM) are recommended because the PQ
 
 This project is deployed as an **AWS workshop**, not by hand in an IDE. You do
 **not** install the Arduino IDE, edit `secrets.h`, or flash devices from your
-laptop — per-device firmware is compiled in the cloud by a CodeBuild container
-image, and devices are flashed from the Builder-Pi GUI.
+laptop. The cloud builds each firmware variant once per deployment (CodeBuild),
+every device runs the same image, and each device's identity is written to its
+`certs` partition when it is registered and flashed at the Builder-Pi.
 
 The full, authoritative deployment runbook — prerequisites, the one-command
 stack deploy, the firmware builder image build, Builder-Pi provisioning, the
@@ -185,68 +208,94 @@ device — lives in:
 
 It mirrors the Workshop Studio operator deployment (section 99). Start there to
 stand up an environment. The sections below this one are **reference and
-background**: how the firmware and TLS stack work, the migration techniques,
-memory/performance notes, and security considerations.
+background**. The Workshop Studio content is the authoritative explanation of the
+firmware, the build pipeline, flash and memory, and each migration step; these
+sections summarise it for readers of the code.
 
 ---
 
 ## Code walkthrough
 
-### WolfSSLClient class (TLS layer)
+The firmware is **one Arduino sketch**, `aws_iot_pqc_esp32/`, that builds three
+**variants**. It is C/C++ in the Arduino sketch style: a slim `.ino` with
+`setup()` / `loop()`, plus one class per job in `.h/.cpp` modules (tabs in the
+Arduino IDE). The build picks the variant with `FIRMWARE_VARIANT` in the
+generated `secrets.h`; everything that differs between variants is in
+`variant_config.h`.
 
-The core of this sketch is the `WolfSSLClient` class, which wraps a plain Arduino `WiFiClient` (TCP only) with wolfSSL to add TLS 1.3 + PQC. It implements the Arduino `Client` interface so that `PubSubClient` can use it transparently.
+| Variant (`FIRMWARE_VARIANT`) | Key exchange | TLS certificate | Broker port | Version |
+|---|---|---|---|---|
+| `classical` (`FW_VARIANT_CLASSICAL`) | Classical ECDHE P-256 (TLS 1.3) | ECDSA-P256 | 8883 | `1.0.0-classical` |
+| `pqc` (`FW_VARIANT_PQC`) | Hybrid P-256 + ML-KEM-768 (SecP256r1MLKEM768) | ECDSA-P256 | 8883 | `2.0.0-pqc` |
+| `pqc-mldsa` (`FW_VARIANT_PQC_MLDSA`) | Hybrid P-256 + ML-KEM-768 | ML-DSA-44 (FIPS 204) | 8884 | `3.0.0-mldsa` |
 
-**Connection flow inside `WolfSSLClient::connect()`:**
+`4.0.0-signer` and `5.0.0-verified` build the `pqc-mldsa` variant again; they
+differ only in how the cloud signs the image (ML-DSA-44 instead of ECDSA P-256).
+The sketch refuses to compile if `FIRMWARE_VARIANT` is missing or unknown, or if
+the wolfSSL configuration does not enable TLS 1.3 and ML-KEM.
 
-1. **TCP connect** - `WiFiClient::connect()` opens a raw TCP socket to the AWS IoT endpoint on port 8883
-2. **Create SSL session** - `wolfSSL_new()` creates a new TLS session from the shared context
-3. **Set I/O callbacks** - Custom send/receive callbacks bridge wolfSSL to the Arduino `WiFiClient`
-4. **Request PQC key share** - `wolfSSL_UseKeyShare(ssl, WOLFSSL_SECP256R1_MLKEM768)` tells wolfSSL to offer a hybrid P-256 + ML-KEM-768 key exchange during the TLS handshake. If this fails, it falls back to X25519 + ML-KEM-768.
-5. **Set SNI** - Server Name Indication is required for AWS IoT to route to the correct endpoint
-6. **TLS handshake** - `wolfSSL_connect()` performs the full TLS 1.3 handshake with a 30-second timeout. The handshake loop handles non-blocking I/O (`WANT_READ`/`WANT_WRITE`) by yielding to FreeRTOS.
-7. **Verify** - On success, the protocol version and cipher suite are printed to Serial
+### Modules
 
-### wolfSSL I/O callbacks
+| File | What it does |
+|---|---|
+| `aws_iot_pqc_esp32.ino` | `setup()`: starts the LED, loads the identity (fail closed), then starts the WiFi, MQTT and OTA tasks. `loop()`: a status report every 60 s. |
+| `variant_config.h` | Everything that differs between variants: `VARIANT_PQC_KEX` (key share), `ID_TLS_*` (which certificate and key to load), `CERT_SIGNATURE_ALG`, banner, blink rate. |
+| `app_config.h` | Shared includes, task stack sizes and priorities, timeouts, topic prefixes, and the wolfSSL compile-time guards. |
+| `device_identity.h/.cpp` | `DeviceIdentity`: the Thing name from the chip MAC (`esp32-XXYYZZ`), and keys, certificates, the device and firmware-signing CA roots and WiFi from the `certs` NVS partition. Refuses an identity issued for a different chip. |
+| `wifi_manager.h/.cpp` | `WifiManager`: the WiFi station task (core 0), reconnect with exponential backoff and jitter. |
+| `pqc_tls_client.h/.cpp` | `WolfSSLClient`: wolfSSL TLS 1.3 under the Arduino `Client` interface, so the MQTT client can use it like any other connection. |
+| `mqtt_manager.h/.cpp` | `MqttManager`: NTP sync, the TLS context, broker connect with backoff, lifecycle and telemetry publishing, and dispatch of `cmd/<thing>/+`. |
+| `ota_updater.h/.cpp` | `OtaUpdater`: the signed OTA download and verification (its own task). |
+| `diagnostics.h/.cpp` | `Diagnostics`: the on-demand memory report on `cmd/<thing>/diag`. |
+| `status_led.h/.cpp`, `json_util.h/.cpp` | The heartbeat LED, and tiny JSON field extractors. |
 
-wolfSSL does not know about Arduino's `WiFiClient`. The `wolfssl_send_cb` and `wolfssl_recv_cb` functions bridge the gap:
+### TLS: `WolfSSLClient`
 
-- **Send callback**: Takes a buffer from wolfSSL and writes it to `WiFiClient::write()`
-- **Receive callback**: Reads from `WiFiClient::read()` into wolfSSL's buffer. Returns `WOLFSSL_CBIO_ERR_WANT_READ` when no data is available (non-blocking behavior).
+`WolfSSLClient::setupContext()` runs once, after NTP has set the clock. It
+creates a TLS 1.3 client context, loads this variant's CA root, device
+certificate and private key (DER, from `DeviceIdentity`), checks the key matches
+the certificate, and turns on peer verification (`WOLFSSL_VERIFY_PEER`).
 
-### wolfSSL context setup
+`WolfSSLClient::connect()`:
 
-`setupWolfSSLContext()` runs once and creates a shared `WOLFSSL_CTX` that all connections use:
+1. Opens a TCP connection with a plain `WiFiClient` to the broker's Network Load
+   Balancer.
+2. Creates a wolfSSL session and wires wolfSSL's I/O to the `WiFiClient` through
+   `wolfssl_send_cb` / `wolfssl_recv_cb`. The receive callback drains buffered
+   bytes before it reports a closed connection, so the last TLS record is not
+   lost.
+3. On the PQC variants (`#if VARIANT_PQC_KEX`), requests the hybrid key share:
+   `wolfSSL_UseKeyShare(ssl, WOLFSSL_SECP256R1MLKEM768)`, falling back to
+   `WOLFSSL_X25519MLKEM768`. The classical variant offers a P-256 key share.
+4. Sets SNI and runs the handshake with a 30 s timeout, yielding to FreeRTOS on
+   `WANT_READ` / `WANT_WRITE`.
+5. Records the protocol, cipher and key exchange for telemetry.
 
-1. Initializes the wolfSSL library
-2. Creates a TLS 1.3 client method context
-3. Loads the Amazon Root CA 1 for server verification
-4. Loads the device certificate and private key for client authentication (mTLS)
-5. Enables peer verification (`WOLFSSL_VERIFY_PEER`)
+### Tasks
 
-### WiFi FreeRTOS task
+| Task | Core | Stack | Job |
+|---|---|---|---|
+| `WiFiTask` | 0 | 4 KB | Keep the station connected. |
+| `MQTTTask` | 1 | 8 KB | Broker connection, telemetry every 30 s, commands. |
+| `OTATask` | 1 | 24 KB | Waits on a semaphore; runs a signed OTA when one is queued. |
+| `BlinkTask` | 0 | 2 KB | Heartbeat LED (slow on classical, fast on PQC). |
+| `loopTask` | 1 | 4 KB | Arduino `loop()`: status report. |
 
-`wifiTask()` runs on core 0 in an infinite loop:
+Stack sizes are about twice the peaks measured on the ESP32-S3; the `diag`
+command reports the live high-water marks. wolfSSL's handshake buffers are on the
+heap (in PSRAM), not on the task stacks.
 
-1. Checks `WiFi.status()` every second
-2. If disconnected, calls `WiFi.disconnect(true)` then `WiFi.begin()` with a 15-second timeout
-3. Updates the `g_wifiConnected` flag (protected by a mutex for thread safety)
-4. On success, prints the IP address and RSSI
+### Commands (`cmd/<thing>/+`)
 
-### MQTT FreeRTOS task
+| Topic | Payload | Effect |
+|---|---|---|
+| `cmd/<thing>/ota` | `{"action":"ota-update", "url", "sha256", "sigAlg", "sigUrl", "signerCertUrl", ...}` | Queue a signed OTA (sent by the migration workflow). |
+| `cmd/<thing>/control` | `{"action":"led-on"}` / `{"action":"led-off"}` | Resume / pause the heartbeat LED (the dashboard LED button). |
+| `cmd/<thing>/diag` | anything, `"full"` or `"dump"` | Publish a memory report to `dt/<thing>/diag`. |
 
-`mqttTask()` runs on core 1 (or core 0 on single-core chips):
-
-1. Waits for `g_wifiConnected` to become true
-2. Calls `setupWolfSSLContext()` once
-3. Creates a `WolfSSLClient` and wraps it in a `PubSubClient`
-4. Connects to AWS IoT Core using the Thing name as the MQTT client ID
-5. Subscribes to the inbound topic
-6. In the main loop: calls `mqttClient.loop()` to process incoming messages, publishes telemetry every 30 seconds
-7. If WiFi drops, disconnects MQTT and waits for WiFi to return before reconnecting
-
-### Main loop
-
-`loop()` prints a status report every 60 seconds showing uptime, WiFi/MQTT state, and heap usage. All real work happens in the FreeRTOS tasks.
+The old `migrate-classical` / `migrate-pqc` / `migrate-mldsa` partition-swap
+commands are refused: they picked a slot by the image's project name, which is
+now the same for every variant.
 
 ---
 
@@ -270,11 +319,11 @@ The `dt/` prefix means "device telemetry" (outbound data). The `cmd/` prefix mea
 {
   "Effect": "Allow",
   "Action": "iot:Publish",
-  "Resource": "arn:aws:iot:*:*:topic/dt/my-esp32-pqc-thing/*"
+  "Resource": "arn:aws:iot:*:*:topic/dt/esp32-XXYYZZ/*"
 }
 ```
 
-Topics are built dynamically from `THINGNAME` at runtime, so changing the Thing name in `secrets.h` automatically updates all topics.
+Topics are built at runtime from the MAC-derived Thing name (`esp32-XXYYZZ`), so the same image serves every device.
 
 ### Last will and testament (LWT)
 
@@ -294,7 +343,7 @@ On successful MQTT connection, the device publishes a retained "online" event:
 ```json
 {
   "status": "online",
-  "device": "my-esp32-pqc-thing",
+  "device": "esp32-XXYYZZ",
   "firmware_version": "2.0.0",
   "pqc_algorithm": "SECP256R1_MLKEM768",
   "ip": "192.168.1.42",
@@ -340,9 +389,10 @@ The random number generator is seeded with hardware entropy (analog pin noise XO
 
 For more detail on this pattern, see the [AWS Architecture Blog: Exponential Backoff and Jitter](https://aws.amazon.com/blogs/architecture/exponential-backoff-and-jitter/).
 
-### Updated IoT policy
+### IoT policy
 
-With the new topic structure, your IoT policy should be:
+The device registrar creates one policy per device, scoped to that device's
+client ID and topics. For a device `esp32-XXYYZZ` it is equivalent to:
 
 ```json
 {
@@ -351,25 +401,25 @@ With the new topic structure, your IoT policy should be:
     {
       "Effect": "Allow",
       "Action": "iot:Connect",
-      "Resource": "arn:aws:iot:REGION:ACCOUNT_ID:client/my-esp32-pqc-thing"
+      "Resource": "arn:aws:iot:REGION:ACCOUNT_ID:client/esp32-XXYYZZ"
     },
     {
       "Effect": "Allow",
       "Action": "iot:Publish",
       "Resource": [
-        "arn:aws:iot:REGION:ACCOUNT_ID:topic/dt/my-esp32-pqc-thing/telemetry",
-        "arn:aws:iot:REGION:ACCOUNT_ID:topic/dt/my-esp32-pqc-thing/lifecycle"
+        "arn:aws:iot:REGION:ACCOUNT_ID:topic/dt/esp32-XXYYZZ/telemetry",
+        "arn:aws:iot:REGION:ACCOUNT_ID:topic/dt/esp32-XXYYZZ/lifecycle"
       ]
     },
     {
       "Effect": "Allow",
       "Action": "iot:Subscribe",
-      "Resource": "arn:aws:iot:REGION:ACCOUNT_ID:topicfilter/cmd/my-esp32-pqc-thing/+"
+      "Resource": "arn:aws:iot:REGION:ACCOUNT_ID:topicfilter/cmd/esp32-XXYYZZ/+"
     },
     {
       "Effect": "Allow",
       "Action": "iot:Receive",
-      "Resource": "arn:aws:iot:REGION:ACCOUNT_ID:topic/cmd/my-esp32-pqc-thing/*"
+      "Resource": "arn:aws:iot:REGION:ACCOUNT_ID:topic/cmd/esp32-XXYYZZ/*"
     }
   ]
 }
@@ -402,126 +452,36 @@ OTA update itself verifiable against a post-quantum trust anchor.
 > of this journey (review risks → review architecture → migrate key exchange →
 > migrate certificates → migrate firmware signing). This repository holds the
 > code those stages deploy; see `cloudformation/DEPLOYMENT.md` for the deploy and
-> `cloudformation/DEPLOYMENT.md` §7 for the ML-DSA-44 certificate step.
+> the ML-DSA-44 reference section in `cloudformation/DEPLOYMENT.md` for the
+> certificate step.
 
-The rest of this section describes the OTA delivery mechanism that every stage
-above uses. It compares three approaches for pushing a firmware update to a
-device in the field.
+### How a migration is delivered
 
-The project includes a pre-PQC firmware (v1.0) and the PQC firmware (v2.0) to demonstrate the first migration live.
+Every stage uses the same over-the-air path:
 
-### Overview
+1. The dashboard's **Flash** button (the `migrateFirmware` mutation) starts the
+   `pqc-workshop-pqc-migration` Step Functions workflow.
+2. `prepare-build` resolves the target variant to its prebuilt shared image
+   under `shared/<version>/` (built once per deployment from `variants.json`).
+   No per-device build runs.
+3. `publish-ota` creates presigned S3 URLs for the image, its signature and the
+   signer certificate, and publishes an `ota-update` command to
+   `cmd/<thing>/ota`.
+4. The device streams the image into its **inactive** OTA slot, checks the
+   SHA-256, verifies the signature, checks that the signer chains to the
+   firmware-signing root for that algorithm in its `certs` partition and has the
+   `codeSigning` EKU, and only then switches the boot slot and reboots.
+5. The device reconnects on the new firmware; its telemetry (`firmware_version`,
+   `pqc_algorithm`, `cert_sig_alg`, `ota_sig_alg`) shows the change on the
+   dashboard. A rollback is the same path to an earlier variant.
 
-The migration demonstrates a real-world scenario: devices already deployed in the field running classical TLS need to be upgraded to PQC without physical access. The telemetry payload includes `pqc_algorithm` and `tls_version` fields, making the transition visible in real time on a dashboard.
+On the workshop hardware a migration takes about 90-100 s from the click to the
+first report from the new firmware.
 
-```
-Before (v1.0):  {"pqc_algorithm":"none", "tls_version":"TLS 1.2", "firmware_version":"1.0.0"}
-After  (v2.0):  {"pqc_algorithm":"SECP256R1_MLKEM768", "tls_version":"TLS 1.3", "firmware_version":"2.0.0"}
-```
-
-### Option A: HTTPS OTA pull (simple) ← used in builders session
-
-The device listens for an OTA command on its MQTT command topic, then downloads the new firmware binary from an HTTPS URL (e.g., S3 bucket).
-
-> **How the workshop implements this:** the dashboard **Migrate to PQC** button starts an asynchronous **Step Functions** workflow (`pqc-workshop-pqc-migration`). It builds the device's PQC firmware with CodeBuild (via the `startBuild.sync` integration so nothing blocks), then the `publish-ota` Lambda generates a **regional presigned S3 URL** and publishes `{"action":"ota-update","url":...}` to `cmd/<thing>/ota`. The device downloads to OTA_1 and reboots into PQC. Live progress (`building → pushing-ota → rebooting`) is written to the `pqc-workshop-devices` table and shown on the dashboard, which polls every 5 seconds.
-
-**Flow:**
-1. Device runs v1.0 (classical TLS), publishes telemetry normally
-2. Cloud publishes `{"url":"https://s3.amazonaws.com/bucket/firmware-v2.bin"}` to `cmd/<thing>/ota`
-3. Device downloads the binary using `httpUpdate`, writes to OTA partition
-4. Device reboots into v2.0 (PQC TLS)
-5. Telemetry now shows PQC algorithm and TLS 1.3
-
-**Pros:**
-- Simple implementation (~50 lines of OTA code)
-- No extra AWS services beyond S3
-- Works with Arduino Cloud IDE
-- Realistic production scenario
-
-**Cons:**
-- Requires network download during demo (risk of conference WiFi issues)
-- Download takes 10-30 seconds depending on binary size and network speed
-- No built-in rollback or fleet tracking
-
-**Best for:** Demos where showing the actual download process is important.
-
-### Option B: AWS IoT Jobs (production-grade)
-
-AWS IoT Jobs provides a managed OTA framework with status tracking, rollback, and fleet-wide deployment.
-
-**Flow:**
-1. Device runs v1.0 with an IoT Jobs agent polling `$aws/things/<thing>/jobs/notify-next`
-2. Operator creates a Job targeting the Thing with a Job Document containing the S3 firmware URL
-3. Device receives the job, downloads firmware, writes to OTA partition
-4. Device reboots into v2.0, reports job completion to `$aws/things/<thing>/jobs/<jobId>/update`
-5. IoT Jobs dashboard shows successful migration
-
-**Pros:**
-- Production-ready fleet management
-- Tracks success/failure per device
-- Supports staged rollout (percentage-based)
-- Built-in timeout and retry
-- Audit trail
-
-**Cons:**
-- More setup (IAM roles, Job Document, S3 presigned URLs, Jobs agent code)
-- Still requires network download during demo
-- More complex to explain in a short session
-
-**Best for:** Showing the production architecture in slides/diagrams, or longer workshops.
-
-### Option C: Dual-partition switch (instant demo)
-
-Both firmware versions are pre-flashed to the ESP32's two OTA partitions before the demo. A command on the MQTT topic triggers an instant boot partition switch — no download needed. (This was an earlier approach; the builders session now uses the real OTA pull in Option A.)
-
-**Flow:**
-1. Pre-flash v1.0 to OTA_0 and v2.0 to OTA_1 using `esptool.py`
-2. Device boots into v1.0 (OTA_0), connects with classical TLS
-3. Presenter publishes `{"action":"migrate-pqc"}` to `cmd/<thing>/ota`
-4. Device calls `esp_ota_set_boot_partition(ota_1)` and reboots (~3 seconds)
-5. Device boots into v2.0 (OTA_1), connects with PQC TLS
-6. Dashboard instantly shows the PQC fields change
-
-**Pros:**
-- Instant switch (~3 seconds total)
-- No network download — zero risk of WiFi failure on stage
-- Deterministic timing for live demos
-- Visually identical to a real OTA from the audience perspective
-
-**Cons:**
-- Requires pre-staging both images before the demo
-- Not a "real" OTA download (but the mechanism is the same as post-download)
-- Requires `esptool.py` for initial dual-flash setup
-
-**Best for:** Live stage demos where reliability and speed are critical.
-
-### Pre-flashing for Option C
-
-```bash
-# Build both sketches and export their binaries from Arduino IDE
-# (Sketch > Export Compiled Binary)
-
-# Flash v1.0 to OTA_0 partition and v2.0 to OTA_1 partition
-esptool.py --chip esp32s3 --port /dev/ttyUSB0 \
-  write_flash 0x10000 firmware_v1_classical.bin \
-               0x200000 firmware_v2_pqc.bin
-
-# The device boots from OTA_0 (v1.0) by default
-```
-
-The exact partition offsets depend on your partition table. The default ESP32 Arduino partition scheme with OTA uses:
-- `0x10000` — OTA_0 (primary)
-- `0x200000` — OTA_1 (secondary)
-
-Verify with: `esptool.py --chip esp32s3 read_flash_status`
-
-### Project structure for migration demo
-
-```
-aws_iot_pqc_esp32/              ← v2.0 (PQC) - the main sketch
-aws_iot_pqc_esp32_v1_classical/ ← v1.0 (Classical TLS) - pre-PQC baseline
-cloudformation/                 ← AWS IoT Core infrastructure
-```
+**Alternative for production: AWS IoT Jobs.** IoT Jobs adds managed fleet
+rollout (per-device status, staged percentages, timeouts and retries, an audit
+trail) on top of the same download-verify-switch mechanism. The workshop uses a
+direct MQTT command to keep the moving parts visible.
 
 ---
 
@@ -536,7 +496,7 @@ The sketch uses **hybrid key exchange**, combining a classical and a post-quantu
 
 The hybrid approach provides defense in depth:
 - If ML-KEM is found to have a weakness, ECDHE P-256 still protects the session
-- If a quantum computer breaks ECDHE, Kyber still protects the session
+- If a quantum computer breaks ECDHE, ML-KEM still protects the session
 - Both algorithms must be broken simultaneously to compromise the key exchange
 
 ### Fallback behavior
@@ -564,51 +524,27 @@ The legacy Kyber Round 3 constants (`WOLFSSL_P521_KYBER_LEVEL5` etc.) use experi
 
 ## Memory and performance
 
-### RAM usage
+The workshop's section 3.7 is the full explanation. In short:
 
-The PQC handshake requires significantly more memory than classical TLS due to larger key sizes.
-
-| Phase | Approximate Heap Usage |
-|-------|----------------------|
-| Idle (WiFi connected, no TLS) | ~5 KB |
-| During TLS 1.3 PQC handshake | ~40-60 KB peak |
-| Steady state (TLS + MQTT connected) | ~15-20 KB |
-| WiFi task stack | 4 KB |
-| MQTT task stack | 16 KB |
-
-**Minimum recommended free heap before connecting: 80 KB**
-
-### Flash usage
-
-| Component | Approximate Size |
-|-----------|-----------------|
-| wolfSSL with PQC (Kyber + TLS 1.3) | ~350-450 KB |
-| PubSubClient | ~15 KB |
-| Sketch code | ~30 KB |
-| Certificates (in PROGMEM) | ~5 KB |
-| **Total** | **~400-500 KB** |
-
-Most ESP32 boards have 4 MB flash, so this fits comfortably.
-
-### Handshake time
-
-| Key Exchange | Typical Handshake Time |
-|-------------|----------------------|
-| Classical ECDHE P-256 only | ~800-1200 ms |
-| Hybrid P-256 + ML-KEM-768 | ~1500-2500 ms |
-| Hybrid X25519 + ML-KEM-768 | ~1500-2500 ms |
-
-Times depend on WiFi latency, server load, and ESP32 clock speed (240 MHz recommended).
-
-### Reducing memory usage
-
-If you are tight on memory:
-
-1. Use `WOLFSSL_X25519_MLKEM768` as a lighter alternative (slightly smaller key shares)
-2. Add `#define WOLFSSL_NO_TLS12` to disable TLS 1.2 support (saves ~30 KB flash)
-3. Reduce `MQTT_TASK_STACK_SIZE` to 12288 if stable
-4. Reduce `mqttClient.setBufferSize()` from 1024 to 512
-5. Use a board with PSRAM and enable it in the Arduino board settings
+- **PSRAM must be enabled in the build.** The XIAO ESP32-S3 has 8 MB of octal
+  PSRAM, but the board option defaults to disabled. The build sets `PSRAM=opi`;
+  the heap then sends allocations over 4 KB (wolfSSL's handshake buffers, the
+  ML-DSA key and certificate) to PSRAM with no code changes.
+- **Measured on the workshop devices** (current firmware):
+  - static RAM: 47,968 B of 327,680 B;
+  - internal heap free at idle: about 215 KB;
+  - lowest internal heap on the heaviest path (ML-DSA certificate + ML-DSA-signed
+    OTA): 155.7 KB;
+  - PSRAM in use during the ML-DSA handshake: about 104 KB of 8 MB;
+  - task stack peaks: MQTT 3.8 KB, OTA 11.7 KB.
+- **Flash:** each variant is about 1.2 MB, a third of a 3.5 MB OTA slot. The
+  partition table (`esp32-flash/partitions_pqc_workshop.csv`) has two 3.5 MB app
+  slots and the 64 KB `certs` identity partition at `0x721000`, on 8 MB of flash.
+- **Handshake time:** the classical handshake to the broker takes about 2 s on
+  this board, with and without PSRAM.
+- **Diagnostics:** publish to `cmd/<thing>/diag` (payload `full` or `dump` for
+  more detail) to get heap, PSRAM and per-task stack figures on
+  `dt/<thing>/diag` and the serial console.
 
 ---
 
@@ -618,378 +554,52 @@ If you are tight on memory:
 
 | Error | Cause | Solution |
 |-------|-------|----------|
-| `#error "wolfSSL TLS 1.3 support is required"` | wolfSSL `user_settings.h` not configured | Add `#define WOLFSSL_TLS13` to wolfSSL's `user_settings.h` |
-| `#error "wolfSSL Kyber/ML-KEM support is required"` | PQC not enabled in wolfSSL | Add `#define WOLFSSL_HAVE_KYBER` and related defines |
-| `wolfssl.h: No such file or directory` | wolfSSL library not installed | Install wolfSSL via Library Manager |
-| `PubSubClient.h: No such file or directory` | PubSubClient not installed | Install PubSubClient via Library Manager |
-| `WOLFSSL_SECP256R1_MLKEM768 was not declared` | wolfSSL version too old or ML-KEM not enabled | Update wolfSSL to 5.7.0+ and verify `user_settings.h` |
-| Compilation takes very long (5+ minutes) | Normal for first build with wolfSSL PQC | Subsequent builds use cache and are faster |
+| `FIRMWARE_VARIANT is not set` / `must be FW_VARIANT_...` | `secrets.h` has no (or an unknown) variant | Set `#define FIRMWARE_VARIANT FW_VARIANT_CLASSICAL`, `FW_VARIANT_PQC` or `FW_VARIANT_PQC_MLDSA` (see `secrets.h.template`). CodeBuild generates this. |
+| `wolfSSL TLS 1.3 support is required` / `ML-KEM support is required` | wolfSSL's `user_settings.h` is not the workshop config | Copy `raw_device_builder/codebuild/wolfssl_user_settings_arduino.h` to the wolfSSL library's `src/user_settings.h` (the CodeBuild build does this before every compile). |
+| `wolfssl.h` / `MQTT.h: No such file or directory` | Library not installed | Install wolfSSL 5.8.4 and MQTT 2.5.3 (Joel Gaehwiler) with the Library Manager. |
+| `WOLFSSL_SECP256R1MLKEM768 was not declared` / `wc_dilithium_*` errors | Wrong wolfSSL version | Use wolfSSL 5.8.4: 5.9.x renamed the ML-DSA API. |
+| Build fails with the partition scheme | `pqc_workshop` partition table missing | Copy `esp32-flash/partitions_pqc_workshop.csv` into the ESP32 core's `tools/partitions/` as `pqc_workshop.csv`. |
 
 ### Runtime errors
 
 | Symptom | Cause | Solution |
 |---------|-------|----------|
-| `[WiFi] Connection failed` | Wrong SSID/password, or network out of range | Check `WIFI_SSID` and `WIFI_PASSWORD` in `secrets.h`. Move closer to the router. |
-| `[wolfSSL] TCP connection failed` | Cannot reach AWS IoT endpoint | Check `AWS_IOT_ENDPOINT` is correct. Verify port 8883 is not blocked by firewall. |
-| `[wolfSSL] Failed to load CA cert` | Malformed Root CA in `secrets.h` | Re-download `AmazonRootCA1.pem` and paste the full contents including BEGIN/END lines. |
-| `[wolfSSL] Failed to load device cert` | Malformed device certificate | Re-download from AWS IoT Console. Ensure no extra whitespace or missing lines. |
-| `[wolfSSL] Failed to load private key` | Wrong or malformed private key | Ensure you are using the private key (not the public key). You can only download it once during Thing creation. |
-| `[wolfSSL] Handshake error: -188` | Certificate verification failed | Ensure the Root CA matches your endpoint. Check that the device certificate is activated and has a policy attached. |
-| `[wolfSSL] Handshake timed out` | Network too slow or endpoint unreachable | Check WiFi signal strength. Try a closer access point. Increase `handshakeTimeout` if needed. |
-| `[wolfSSL] Failed to set PQC key share` | wolfSSL compiled without Kyber | Verify all PQC defines are in `user_settings.h`. Do a clean rebuild. |
-| `[MQTT] Connection failed, rc=-2` | TLS connection dropped | Usually a certificate or policy issue. Check the AWS IoT Console logs. |
-| `[MQTT] Connection failed, rc=-4` | MQTT keepalive timeout | Increase `MQTT_KEEPALIVE_SEC` or check for network instability. |
-| Stack overflow / crash / reboot loop | MQTT task stack too small | Increase `MQTT_TASK_STACK_SIZE` to 20480 or higher. |
-| `Guru Meditation Error: Core 1 panic'ed (LoadProhibited)` | Out of heap memory | Use a board with PSRAM, or a smaller ML-KEM parameter set (e.g. ML-KEM-512). |
+| `[Setup] FATAL: no valid device identity` | The `certs` partition is missing, an older format, or was issued for a different board (the line above says which) | Register (or Reflash) the device at the Builder-Pi; it re-issues and flashes the identity. |
+| `4WAY_HANDSHAKE_TIMEOUT` / `AUTH_FAIL` in the WiFi log | The WiFi password in the device's identity does not match the access point | WiFi comes from SSM `/pqc-workshop/wifi/*`. Make the AP and SSM agree (`setup-builder-pi-remote.sh --only configure-wifi-ap`), and Reflash devices if SSM changed. |
+| `[tls] TCP connection failed` | Cannot reach the broker | Check `MQTT_BROKER_ENDPOINT` (the broker NLB). On an account with VPC Block Public Access, the network stack's BPA exclusion must exist. |
+| `[wolfssl] Failed to load ...` / `Private key does not match the device certificate` | Corrupt or mixed identity entries | Reflash at the Builder-Pi. |
+| `Handshake error ... -188` on the broker connection | The broker's certificate does not chain to the CA the variant trusts | The ML-DSA variant must use port 8884, the others 8883 (set by the build from the variant). |
+| `Partition-swap command not supported` | A legacy `migrate-*` command | Migrate from the dashboard instead. |
+| `SIGNATURE VERIFICATION FAILED` / `sha256 mismatch` | The OTA image or its signer does not verify | The device keeps running its current firmware. Rebuild the shared images (`build-shared-firmware.sh`) and retry. |
 
 ### Debugging tips
 
-1. **Enable wolfSSL debug logging**: Uncomment `wolfSSL_Debugging_ON()` in `setupWolfSSLContext()` and add `#define DEBUG_WOLFSSL` to `user_settings.h`. This produces verbose TLS handshake output.
-
-2. **Monitor heap usage**: The status report in `loop()` shows free and minimum heap. If minimum heap drops below 20 KB, you are at risk of crashes.
-
-3. **Test with the MQTT test client**: In the AWS IoT Console, use **Test > MQTT test client** to subscribe to `dt/my-esp32-pqc-thing/#` and verify messages are arriving.
-
-4. **Check CloudWatch logs**: If the device connects via TCP but the TLS handshake fails, check the AWS IoT Core logs in CloudWatch for server-side error details.
-
-5. **Simplify first**: If you cannot get PQC working, temporarily comment out the `wolfSSL_UseKeyShare()` call. The connection will use classical key exchange, which confirms your certificates and network are correct. Then re-enable PQC.
+1. **Serial logs:** the Builder-Pi GUI's serial view, or
+   `/var/log/workshop-builder/device-<serial>.log` on the Pi (also shipped to the
+   `/pqc-workshop/builder-pi` CloudWatch log group).
+2. **wolfSSL debug output:** uncomment `wolfSSL_Debugging_ON()` in
+   `WolfSSLClient::setupContext()` and add `#define DEBUG_WOLFSSL` to the wolfSSL
+   configuration.
+3. **Memory:** use the `diag` command (above).
+4. **MQTT traffic:** subscribe to `dt/esp32-<serial>/#` in the AWS IoT console's
+   MQTT test client, or read the dashboard's message log.
 
 ---
 
-## Automatic registration and certificate provisioning
+## Device registration
 
-This project uses manually-created certificates for simplicity (appropriate for a 60-minute builders session). However, for production deployments or larger workshops, AWS IoT supports **Fleet Provisioning by Claim** — a mechanism where devices automatically register themselves and obtain unique certificates on first boot.
+Devices are registered at the Builder-Pi: plug in the board, click **Register &
+Flash**. The registrar creates the IoT Thing and policy, and a CodeBuild job
+issues **both** device certificates (ECDSA P-256 and ML-DSA-44) from the two
+Private CAs and packs them, both device CA roots, both firmware-signing roots
+and the WiFi credentials into a `certs` partition image. The Pi flashes that image with the shared classical firmware,
+then deletes the identity image from S3 so the private keys exist only on the
+device. Issuing the post-quantum identity alongside the classical one means the
+later certificate migration is a firmware change, not a re-provisioning.
 
-### How Fleet Provisioning works
-
-Instead of creating a certificate per device in the AWS Console, you bake a shared "claim certificate" into the firmware. On first boot, the device uses this claim cert to connect with limited permissions, requests its own unique certificate, registers as a Thing, and then reconnects with its permanent identity.
-
-```
-First Boot (one-time, ~5-10 seconds):
-┌──────────┐                              ┌─────────────────┐
-│  Device   │── Connect with claim cert ──▶│  AWS IoT Core   │
-│           │                              │                 │
-│           │── CreateCertificate ────────▶│  Returns new    │
-│           │◀── cert + private key ───────│  device cert    │
-│           │                              │                 │
-│           │── RegisterThing ───────────▶│  Creates Thing,  │
-│           │◀── thing name ───────────────│  attaches policy│
-│           │                              │                 │
-│           │── Save cert to NVS ──────────│                 │
-│           │── Reconnect with device cert─│                 │
-└──────────┘                              └─────────────────┘
-
-Subsequent Boots:
-┌──────────┐                              ┌─────────────────┐
-│  Device   │── Load cert from NVS ────────│                 │
-│           │── Connect directly ─────────▶│  AWS IoT Core   │
-└──────────┘                              └─────────────────┘
-```
-
-### When to use Fleet Provisioning
-
-| Scenario | Approach | Reason |
-|----------|----------|--------|
-| Builders session (60 min) | Manual certs | Simpler, fewer failure points, focus stays on PQC |
-| Workshop (2+ hours) | Fleet Provisioning | Flash the device and it connects automatically, no cert copy/paste |
-| Production (100+ devices) | Fleet Provisioning | Scales without per-device manual steps |
-| Manufacturing line | Fleet Provisioning | Same firmware image for all units |
-
-### AWS resources required
-
-To enable Fleet Provisioning, you would add these to the CloudFormation template:
-
-```yaml
-# Provisioning Template — defines what to create for each new device
-IoTProvisioningTemplate:
-  Type: AWS::IoT::ProvisioningTemplate
-  Properties:
-    TemplateName: esp32-pqc-provisioning
-    Description: Auto-provisions ESP32 PQC devices on first connection
-    Enabled: true
-    ProvisioningRoleArn: !GetAtt ProvisioningRole.Arn
-    TemplateBody: |
-      {
-        "Parameters": {
-          "SerialNumber": {"Type": "String"},
-          "AWS::IoT::Certificate::Id": {"Type": "String"}
-        },
-        "Resources": {
-          "thing": {
-            "Type": "AWS::IoT::Thing",
-            "Properties": {
-              "ThingName": {"Fn::Join": ["-", ["esp32-pqc", {"Ref": "SerialNumber"}]]},
-              "ThingTypeName": "esp32-pqc-device",
-              "AttributePayload": {
-                "Attributes": {
-                  "pqc_algorithm": "SECP256R1_MLKEM768",
-                  "provisioned_by": "fleet-provisioning"
-                }
-              }
-            }
-          },
-          "certificate": {
-            "Type": "AWS::IoT::Certificate",
-            "Properties": {
-              "CertificateId": {"Ref": "AWS::IoT::Certificate::Id"},
-              "Status": "ACTIVE"
-            }
-          },
-          "policy": {
-            "Type": "AWS::IoT::Policy",
-            "Properties": {
-              "PolicyName": "esp32-pqc-device-policy"
-            }
-          }
-        }
-      }
-
-# Claim Certificate Policy — very restrictive, only allows provisioning topics
-ClaimPolicy:
-  Type: AWS::IoT::Policy
-  Properties:
-    PolicyName: esp32-pqc-claim-policy
-    PolicyDocument:
-      Version: '2012-10-17'
-      Statement:
-        - Effect: Allow
-          Action: iot:Connect
-          Resource: '*'
-        - Effect: Allow
-          Action:
-            - iot:Publish
-            - iot:Receive
-          Resource:
-            - !Sub 'arn:aws:iot:${AWS::Region}:${AWS::AccountId}:topic/$aws/certificates/create/*'
-            - !Sub 'arn:aws:iot:${AWS::Region}:${AWS::AccountId}:topic/$aws/provisioning-templates/esp32-pqc-provisioning/provision/*'
-        - Effect: Allow
-          Action: iot:Subscribe
-          Resource:
-            - !Sub 'arn:aws:iot:${AWS::Region}:${AWS::AccountId}:topicfilter/$aws/certificates/create/*'
-            - !Sub 'arn:aws:iot:${AWS::Region}:${AWS::AccountId}:topicfilter/$aws/provisioning-templates/esp32-pqc-provisioning/provision/*'
-
-# IAM Role for the provisioning template
-ProvisioningRole:
-  Type: AWS::IAM::Role
-  Properties:
-    AssumeRolePolicyDocument:
-      Version: '2012-10-17'
-      Statement:
-        - Effect: Allow
-          Principal:
-            Service: iot.amazonaws.com
-          Action: sts:AssumeRole
-    ManagedPolicyArns:
-      - arn:aws:iam::aws:policy/service-role/AWSIoTThingsRegistration
-```
-
-### Device firmware changes (sample code)
-
-Below is a reference implementation of the provisioning flow for the ESP32. This would run once on first boot, before the normal MQTT task starts.
-
-```cpp
-#include <Preferences.h>  // ESP32 NVS (Non-Volatile Storage)
-
-// NVS namespace for storing provisioned credentials
-#define NVS_NAMESPACE    "iot_creds"
-#define NVS_KEY_CERT     "device_cert"
-#define NVS_KEY_KEY      "device_key"
-#define NVS_KEY_THING    "thing_name"
-#define NVS_KEY_PROVISIONED "provisioned"
-
-// Fleet Provisioning MQTT topics
-#define FP_CREATE_CERT_TOPIC     "$aws/certificates/create/json"
-#define FP_CREATE_CERT_ACCEPTED  "$aws/certificates/create/json/accepted"
-#define FP_CREATE_CERT_REJECTED  "$aws/certificates/create/json/rejected"
-#define FP_REGISTER_TOPIC        "$aws/provisioning-templates/esp32-pqc-provisioning/provision/json"
-#define FP_REGISTER_ACCEPTED     "$aws/provisioning-templates/esp32-pqc-provisioning/provision/json/accepted"
-#define FP_REGISTER_REJECTED     "$aws/provisioning-templates/esp32-pqc-provisioning/provision/json/rejected"
-
-Preferences nvs;
-
-// State machine for provisioning
-enum ProvisionState {
-    PROV_CHECK_NVS,
-    PROV_CONNECT_CLAIM,
-    PROV_CREATE_CERT,
-    PROV_WAIT_CERT,
-    PROV_REGISTER_THING,
-    PROV_WAIT_REGISTER,
-    PROV_SAVE_AND_RECONNECT,
-    PROV_DONE
-};
-
-static ProvisionState g_provState = PROV_CHECK_NVS;
-static String g_newCertPem;
-static String g_newKeyPem;
-static String g_certOwnershipToken;
-static String g_thingName;
-
-// Check if device is already provisioned
-bool isProvisioned() {
-    nvs.begin(NVS_NAMESPACE, true);  // Read-only
-    bool provisioned = nvs.getBool(NVS_KEY_PROVISIONED, false);
-    nvs.end();
-    return provisioned;
-}
-
-// Load provisioned credentials from NVS
-bool loadProvisionedCredentials(String& cert, String& key, String& thingName) {
-    nvs.begin(NVS_NAMESPACE, true);
-    cert = nvs.getString(NVS_KEY_CERT, "");
-    key = nvs.getString(NVS_KEY_KEY, "");
-    thingName = nvs.getString(NVS_KEY_THING, "");
-    nvs.end();
-    return (cert.length() > 0 && key.length() > 0 && thingName.length() > 0);
-}
-
-// Save new credentials to NVS
-void saveProvisionedCredentials(const String& cert, const String& key,
-                                 const String& thingName) {
-    nvs.begin(NVS_NAMESPACE, false);  // Read-write
-    nvs.putString(NVS_KEY_CERT, cert);
-    nvs.putString(NVS_KEY_KEY, key);
-    nvs.putString(NVS_KEY_THING, thingName);
-    nvs.putBool(NVS_KEY_PROVISIONED, true);
-    nvs.end();
-    ESP_LOGI("provision", "Credentials saved to NVS (cert=%d bytes, key=%d bytes, thing='%s')",
-             cert.length(), key.length(), thingName.c_str());
-}
-
-// Callback for provisioning MQTT messages
-void provisioningCallback(char* topic, byte* payload, unsigned int length) {
-    char buf[4096];
-    unsigned int copyLen = (length < sizeof(buf) - 1) ? length : sizeof(buf) - 1;
-    memcpy(buf, payload, copyLen);
-    buf[copyLen] = '\0';
-
-    if (strstr(topic, "certificates/create/json/accepted")) {
-        ESP_LOGI("provision", "Certificate created successfully");
-        // Parse JSON response to extract:
-        //   certificatePem, privateKey, certificateOwnershipToken
-        // (Use ArduinoJson or simple string parsing)
-        //
-        // Example response structure:
-        // {
-        //   "certificateId": "...",
-        //   "certificatePem": "-----BEGIN CERTIFICATE-----\n...",
-        //   "privateKey": "-----BEGIN RSA PRIVATE KEY-----\n...",
-        //   "certificateOwnershipToken": "..."
-        // }
-        //
-        // Store in g_newCertPem, g_newKeyPem, g_certOwnershipToken
-        g_provState = PROV_REGISTER_THING;
-
-    } else if (strstr(topic, "certificates/create/json/rejected")) {
-        ESP_LOGE("provision", "Certificate creation REJECTED: %s", buf);
-        g_provState = PROV_CONNECT_CLAIM;  // Retry
-
-    } else if (strstr(topic, "provision/json/accepted")) {
-        ESP_LOGI("provision", "Thing registered successfully");
-        // Parse response to extract thingName
-        // Example: {"deviceConfiguration":{"thingName":"esp32-pqc-ABC123"}}
-        // Store in g_thingName
-        g_provState = PROV_SAVE_AND_RECONNECT;
-
-    } else if (strstr(topic, "provision/json/rejected")) {
-        ESP_LOGE("provision", "Thing registration REJECTED: %s", buf);
-    }
-}
-
-// Run the provisioning flow (call from mqttTask before normal operation)
-void runProvisioningFlow(PubSubClient& mqttClient) {
-    switch (g_provState) {
-        case PROV_CREATE_CERT:
-            // Request a new certificate
-            ESP_LOGI("provision", "Requesting new device certificate...");
-            mqttClient.subscribe(FP_CREATE_CERT_ACCEPTED);
-            mqttClient.subscribe(FP_CREATE_CERT_REJECTED);
-            mqttClient.publish(FP_CREATE_CERT_TOPIC, "{}");
-            g_provState = PROV_WAIT_CERT;
-            break;
-
-        case PROV_REGISTER_THING: {
-            // Register the thing with the new certificate
-            ESP_LOGI("provision", "Registering thing...");
-            mqttClient.subscribe(FP_REGISTER_ACCEPTED);
-            mqttClient.subscribe(FP_REGISTER_REJECTED);
-
-            // Build registration payload with device serial number
-            String serialNumber = String((uint32_t)(ESP.getEfuseMac() >> 16), HEX);
-            char regPayload[512];
-            snprintf(regPayload, sizeof(regPayload),
-                     "{\"certificateOwnershipToken\":\"%s\","
-                     "\"parameters\":{\"SerialNumber\":\"%s\"}}",
-                     g_certOwnershipToken.c_str(),
-                     serialNumber.c_str());
-            mqttClient.publish(FP_REGISTER_TOPIC, regPayload);
-            g_provState = PROV_WAIT_REGISTER;
-            break;
-        }
-
-        case PROV_SAVE_AND_RECONNECT:
-            // Save credentials and reconnect with permanent identity
-            saveProvisionedCredentials(g_newCertPem, g_newKeyPem, g_thingName);
-            ESP_LOGI("provision", "Provisioning complete! Restarting with permanent cert...");
-            vTaskDelay(pdMS_TO_TICKS(1000));
-            esp_restart();
-            break;
-
-        default:
-            // PROV_WAIT_CERT, PROV_WAIT_REGISTER — just call mqttClient.loop()
-            break;
-    }
-}
-```
-
-### Integration with the main sketch
-
-The provisioning flow would be integrated into the MQTT task like this:
-
-```cpp
-void mqttTask(void* pvParameters) {
-    // ... wait for WiFi ...
-
-    if (isProvisioned()) {
-        // Normal path: load cert from NVS, connect with wolfSSL + PQC
-        String cert, key, thingName;
-        loadProvisionedCredentials(cert, key, thingName);
-        // Use cert/key for wolfSSL context...
-        // Use thingName for MQTT client ID and topics...
-    } else {
-        // First boot: connect with claim cert (classical TLS),
-        // run provisioning flow, then restart
-        ESP_LOGI("provision", "First boot — starting Fleet Provisioning...");
-        // Connect with WiFiClientSecure using CLAIM_CERT from PROGMEM
-        // Set callback to provisioningCallback
-        // Run provisioning state machine
-        // Device will restart after provisioning completes
-    }
-
-    // ... normal MQTT loop (only reached after provisioning) ...
-}
-```
-
-### Attendee experience with Fleet Provisioning
-
-If implemented, the builders session flow would simplify to:
-
-1. Attendee opens Arduino Cloud IDE
-2. Flashes the firmware (identical binary for everyone — contains claim cert + WiFi creds)
-3. Device powers on, auto-provisions in ~5-10 seconds
-4. Telemetry appears on the dashboard — no certificate copy/paste needed
-
-### Why we don't use it in this session
-
-For a 60-minute builders session, manual certificate provisioning is preferred because:
-
-- Fewer moving parts to debug in a room of attendees
-- Attendees learn the certificate model explicitly (educational value)
-- The PQC migration story stays the primary focus
-- Fleet Provisioning adds ~200 lines of code unrelated to PQC
-- If provisioning fails for one attendee, it's harder to troubleshoot than a cert paste error
-
-Fleet Provisioning is the right choice for production deployments or workshops longer than 2 hours where the experience of flashing a device and having it connect automatically justifies the additional infrastructure setup.
+AWS IoT **Fleet Provisioning by Claim** is the alternative for fleets that
+provision on first boot instead of at a provisioning station; see the
+[AWS IoT Fleet Provisioning documentation](https://docs.aws.amazon.com/iot/latest/developerguide/provision-wo-cert.html).
 
 ---
 
@@ -997,21 +607,28 @@ Fleet Provisioning is the right choice for production deployments or workshops l
 
 ### Certificate storage
 
-The certificates in `secrets.h` are stored in flash memory (`PROGMEM`). For production deployments, consider:
-
-- Using the ESP32's **eFuse** or **NVS encrypted partition** for key storage
-- Implementing **certificate rotation** via AWS IoT Jobs or Fleet Provisioning
-- Using an **ATECC608** secure element for hardware-protected private keys
+Device keys, certificates and WiFi credentials are in the `certs` NVS partition,
+**unencrypted**, so anyone with physical access to a board can read them. That is
+an accepted risk for the workshop. For production, consider NVS and flash
+encryption with secure boot, or a TPM / secure element (for example an ATECC608)
+for hardware-protected keys, and check that the chosen storage can hold a
+post-quantum key.
 
 ### Network security
 
-- The sketch uses **mutual TLS (mTLS)**: both the device and server authenticate each other with X.509 certificates
-- **Server certificate verification** is enabled (`WOLFSSL_VERIFY_PEER`), preventing man-in-the-middle attacks
-- **SNI** (Server Name Indication) is set, which is required by AWS IoT Core
+- The broker connection uses **mutual TLS 1.3**: the device and the broker each
+  authenticate with an X.509 certificate, and the device verifies the broker's
+  certificate against the CA root for its variant (`WOLFSSL_VERIFY_PEER`).
+- **SNI** is set on every connection.
+- **OTA downloads from S3 do not yet verify the server certificate and use a
+  classical key exchange.** The image's integrity and authenticity are still
+  enforced by the SHA-256 and signature checks before the device boots it. Fixing
+  the transport (certificate verification and a hybrid ML-KEM key share to S3,
+  which supports it) is a planned change.
 
 ### PQC readiness
 
-- AWS IoT Core is progressively adding PQC support. If your endpoint does not yet support hybrid PQC key exchange, the TLS handshake will still succeed using classical algorithms. The device is "PQC-ready" and will automatically use PQC once the server supports it.
+- The device connects to the workshop's Mosquitto broker, which supports the hybrid ML-KEM groups, and the broker bridges to AWS IoT Core. If a server does not support a hybrid group, the TLS 1.3 handshake still succeeds with classical key exchange.
 - The hybrid approach means there is **no security downgrade** compared to classical TLS, only an upgrade path.
 
 ### wolfSSL licensing
@@ -1027,17 +644,18 @@ done.
 
 - **Full workshop deployment** (the `deploy-workshop.sh` stack — ECS Fargate,
   ECR, CodeBuild, DynamoDB, AppSync, CloudFront, Cognito, AWS Private CA, NLB,
-  Secrets Manager, S3, Lambda, Step Functions, SSM): run the teardown script,
-  which empties the versioned S3 buckets and ECR repositories and deletes the
-  nested stacks:
+  Secrets Manager, S3, Lambda, Step Functions, SSM): Workshop Studio accounts are
+  cleaned automatically when the event ends. Otherwise run the teardown script,
+  which deletes the device Things, empties the versioned S3 buckets and ECR
+  repositories, and deletes the nested stacks:
 
   ```bash
-  CONFIRM_TEARDOWN=yes ./cloudformation/teardown-workshop.sh <region> --wait
+  ./cloudformation/teardown-workshop.sh us-east-1 --wait
   ```
 
-  See [`cloudformation/DEPLOYMENT.md`](cloudformation/DEPLOYMENT.md) for the full
-  teardown runbook, including the handful of resources (versioned buckets, ECR
-  images, the IoT Thing Type) that need attention around deletion.
+  The steps follow the workshop's **Cleanup** page; see
+  [`cloudformation/DEPLOYMENT.md` → Cleanup](cloudformation/DEPLOYMENT.md#cleanup-workshop-cleanup-page)
+  for what it does, its options, and what is deliberately left in place.
 
 - **Simple single-device stack** (the `esp32-pqc-iot` CloudFormation stack from
   the "AWS IoT Core Setup" section above): delete it with
@@ -1048,14 +666,14 @@ done.
 
 ## References
 
-- [wolfSSL Post-Quantum Key Share on the Espressif ESP32](https://www.wolfssl.com/post-quantum-key-share-on-the-espressif-esp32/) - Official wolfSSL blog post on enabling Kyber on ESP32
+- [wolfSSL Post-Quantum Key Share on the Espressif ESP32](https://www.wolfssl.com/post-quantum-key-share-on-the-espressif-esp32/) - Official wolfSSL blog post on post-quantum key shares on the ESP32
 - [wolfSSL Arduino Library (GitHub)](https://github.com/wolfSSL/Arduino-wolfSSL) - Source repository for the Arduino-packaged wolfSSL
 - [AWS IoT Core Developer Guide](https://docs.aws.amazon.com/iot/latest/developerguide/) - Complete AWS IoT documentation
 - [AWS Post-Quantum Cryptography Migration](https://aws.amazon.com/security/post-quantum-cryptography/migrating-to-post-quantum-cryptography/) - AWS PQC roadmap and migration guidance
 - [AWS IoT ESP32 Arduino Examples (GitHub)](https://github.com/aws-samples/aws-iot-esp32-arduino-examples) - Official AWS sample sketches for ESP32
 - [NIST Post-Quantum Cryptography Standards](https://csrc.nist.gov/projects/post-quantum-cryptography) - FIPS 203 (ML-KEM), FIPS 204 (ML-DSA)
-- [Arduino Cloud Editor Documentation](https://docs.arduino.cc/arduino-cloud/guides/cloud-editor/) - Guide to using the Arduino Cloud IDE
-- [PubSubClient Library](https://github.com/knolleary/pubsubclient) - MQTT client documentation
+- [Arduino-ESP32 documentation](https://docs.espressif.com/projects/arduino-esp32/en/latest/) - The Arduino core the firmware is built on
+- [arduino-mqtt (MQTT library by Joel Gaehwiler)](https://github.com/256dpi/arduino-mqtt) - The MQTT client the firmware uses
 
 ---
 

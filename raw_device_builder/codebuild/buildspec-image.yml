@@ -7,12 +7,9 @@ phases:
       - aws ecr get-login-password --region $AWS_DEFAULT_REGION | docker login --username AWS --password-stdin $(echo $ECR_REPO_URI | cut -d/ -f1)
       - echo "Downloading build context from S3..."
       - mkdir -p /tmp/docker-context
+      # Toolchain only. The wolfSSL config and partition table are overlaid per
+      # firmware build by buildspec.yml, so they are not part of this image.
       - aws s3 cp "s3://$FIRMWARE_BUCKET/source/Dockerfile" /tmp/docker-context/Dockerfile
-      - aws s3 cp "s3://$FIRMWARE_BUCKET/source/wolfssl_user_settings_arduino.h" /tmp/docker-context/wolfssl_user_settings_arduino.h
-      - aws s3 cp "s3://$FIRMWARE_BUCKET/source/partitions_pqc_workshop.csv" /tmp/docker-context/partitions_pqc_workshop.csv
-      # Shared cert-issuer script — baked into the image so the per-device build
-      # mints its device cert via the same code path as the broker cert-issuer.
-      - aws s3 cp "s3://$FIRMWARE_BUCKET/source/issue_cert.py" /tmp/docker-context/issue_cert.py
   build:
     commands:
       - echo "Building firmware-builder Docker image..."
@@ -25,3 +22,18 @@ phases:
       - docker push $ECR_REPO_URI:latest
       - docker push $ECR_REPO_URI:$BUILD_TAG
       - echo "Image pushed successfully"
+      # ─── Chain: build every firmware variant once for this deployment ──────
+      # The image carries no device identity, so one signed image per variant
+      # (shared/<version>/) serves every device. Building them here means they
+      # are ready when this build reports SUCCEEDED, and they build in parallel
+      # with Builder-Pi provisioning (workshop 99.4 / 99.6). Skipped if the image
+      # build itself failed (post_build runs either way).
+      - |
+        if [ "${CODEBUILD_BUILD_SUCCEEDING}" = "1" ]; then
+          aws s3 cp "s3://$FIRMWARE_BUCKET/source/build-shared-firmware.sh" /tmp/build-shared-firmware.sh
+          aws s3 cp "s3://$FIRMWARE_BUCKET/source/variants.json" /tmp/variants.json
+          bash /tmp/build-shared-firmware.sh --region "$AWS_DEFAULT_REGION" \
+            --variants-file /tmp/variants.json --wait
+        else
+          echo "Image build failed; not building shared firmware."
+        fi

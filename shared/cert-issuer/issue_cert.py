@@ -83,6 +83,17 @@ def _run(argv):
     return proc
 
 
+def _run_bytes(argv, stdin=None):
+    """Like _run, but binary: optional stdin bytes, returns stdout bytes."""
+    proc = subprocess.run(argv, input=stdin, capture_output=True)  # nosemgrep: dangerous-subprocess-use-audit — argv list, no shell, inputs sanitized
+    if proc.returncode != 0:
+        raise RuntimeError(
+            f"command failed ({proc.returncode}): {' '.join(argv)}\n"
+            f"{proc.stderr.decode(errors='replace')}"
+        )
+    return proc.stdout
+
+
 def generate_key_and_csr(common_name, key_mode, subject_org, subject_ou, country, workdir):
     """Generate the private key + CSR for the given key mode. Returns (key_path,
     csr_path). ML-DSA uses OpenSSL 3.5; EC uses the stock openssl."""
@@ -107,6 +118,17 @@ def generate_key_and_csr(common_name, key_mode, subject_org, subject_ou, country
     return key_path, csr_path
 
 
+# ACM PCA template for the OTA firmware signers: KeyUsage digitalSignature and
+# ExtendedKeyUsage codeSigning only, so a signer can never act as a TLS
+# identity and the device can require codeSigning on any OTA signer leaf.
+CODE_SIGNING_TEMPLATE_ARN = "arn:aws:acm-pca:::template/CodeSigningCertificate/V1"
+
+# ACM PCA's default end-entity template (TLS client + server EKU). Sending it
+# explicitly is identical to sending no template, but lets an IAM policy pin it
+# with an acm-pca:TemplateArn condition (the broker cert provisioner does this).
+END_ENTITY_TEMPLATE_ARN = "arn:aws:acm-pca:::template/EndEntityCertificate/V1"
+
+
 def issue_certificate(
     common_name,
     key_mode,
@@ -118,6 +140,7 @@ def issue_certificate(
     idempotency_token=None,
     signing_algorithm=None,
     acm_pca_client=None,
+    template_arn=None,
 ):
     """Generate a keypair + CSR, issue a cert from the given ACM PCA, and return
     {"caCert","cert","key","certificateArn"} (all PEM strings). The private key
@@ -138,13 +161,18 @@ def issue_certificate(
         with open(csr_path, "rb") as f:
             csr_bytes = f.read()
 
-    issue_resp = acm_pca.issue_certificate(
+    issue_args = dict(
         CertificateAuthorityArn=ca_arn,
         Csr=csr_bytes,
         SigningAlgorithm=signing_algorithm,
         Validity={"Type": "DAYS", "Value": validity_days},
         IdempotencyToken=_sanitize_token(idempotency_token or common_name),
     )
+    # Default (no template) is ACM PCA's EndEntityCertificate/V1 (TLS client +
+    # server EKU). Firmware signers pass CODE_SIGNING_TEMPLATE_ARN instead.
+    if template_arn:
+        issue_args["TemplateArn"] = template_arn
+    issue_resp = acm_pca.issue_certificate(**issue_args)
     cert_arn = issue_resp["CertificateArn"]
 
     # ACM PCA issuance is async; poll get_certificate until ready.

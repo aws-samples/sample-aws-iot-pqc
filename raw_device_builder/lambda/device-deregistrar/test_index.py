@@ -40,6 +40,15 @@ def _seed_registry_and_bucket():
         BillingMode="PAY_PER_REQUEST",
     )
     ddb.Table(REGISTRY_TABLE).put_item(Item={"serialNumber": "FC22E0"})
+    ddb.create_table(
+        TableName="pqc-workshop-devices",
+        KeySchema=[{"AttributeName": "thingName", "KeyType": "HASH"}],
+        AttributeDefinitions=[{"AttributeName": "thingName", "AttributeType": "S"}],
+        BillingMode="PAY_PER_REQUEST",
+    )
+    for t in ("esp32-FC22E0", "esp32-C69DE0"):
+        ddb.Table("pqc-workshop-devices").put_item(
+            Item={"thingName": t, "serialNumber": t[6:], "status": "online"})
     s3 = boto3.client("s3", region_name="us-east-1")
     s3.create_bucket(Bucket=FIRMWARE_BUCKET)
     s3.put_object(Bucket=FIRMWARE_BUCKET, Key="FC22E0/1.0.0/firmware.bin", Body=b"x")
@@ -113,3 +122,37 @@ def test_handler_never_returns_placeholder(monkeypatch):
     result = mod.handler({"serialNumber": "FC22E0"}, None)
     assert result["body"] != "placeholder"
     json.loads(result["body"])  # must be valid JSON, not the stub string
+
+
+@mock_aws
+def test_deregister_removes_identity_image_but_not_shared_firmware(monkeypatch):
+    """A device deregistered before it was flashed must not leave its private
+    keys in S3; the shared images other devices use must be untouched."""
+    _seed_registry_and_bucket()
+    s3 = boto3.client("s3", region_name="us-east-1")
+    s3.put_object(Bucket=FIRMWARE_BUCKET, Key="identity/FC22E0/certs.bin", Body=b"keys")
+    s3.put_object(Bucket=FIRMWARE_BUCKET, Key="identity/C69DE0/certs.bin", Body=b"other")
+    s3.put_object(Bucket=FIRMWARE_BUCKET, Key="shared/2.0.0-pqc/firmware.bin", Body=b"fw")
+    _env()
+    mod = load_handler_module(os.path.join(HERE, "index.py"), "device_deregistrar_index5")
+
+    mod.handler({"serialNumber": "FC22E0"}, None)
+
+    keys = {o["Key"] for o in s3.list_objects_v2(Bucket=FIRMWARE_BUCKET).get("Contents", [])}
+    assert "identity/FC22E0/certs.bin" not in keys
+    assert {"identity/C69DE0/certs.bin", "shared/2.0.0-pqc/firmware.bin"} <= keys
+
+
+@mock_aws
+def test_deregister_removes_the_dashboard_card_only_for_that_device(monkeypatch):
+    _seed_registry_and_bucket()
+    _env()
+    mod = load_handler_module(os.path.join(HERE, "index.py"), "device_deregistrar_index6")
+
+    result = mod.handler({"serialNumber": "FC22E0"}, None)
+
+    errors = json.loads(result["body"]).get("errors", [])
+    assert not [e for e in errors if "dashboard" in e], errors
+    devices = boto3.resource("dynamodb", region_name="us-east-1").Table("pqc-workshop-devices")
+    assert "Item" not in devices.get_item(Key={"thingName": "esp32-FC22E0"})
+    assert "Item" in devices.get_item(Key={"thingName": "esp32-C69DE0"})

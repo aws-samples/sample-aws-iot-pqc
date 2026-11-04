@@ -170,9 +170,11 @@ bridge_cafile ${BRIDGE_CERT_DIR}/AmazonRootCA1.pem
 bridge_certfile ${BRIDGE_CERT_DIR}/bridge.crt
 bridge_keyfile ${BRIDGE_CERT_DIR}/bridge.key
 
-# Topic bridging: only forward telemetry (non-retained) to IoT Core.
+# Topic bridging: forward telemetry and on-demand memory diagnostics
+# (non-retained) to IoT Core, where the message-log rule (dt/+/+) records them.
 # Lifecycle messages use MQTT retain which IoT Core rejects, so we exclude them.
 topic dt/+/telemetry out 0
+topic dt/+/diag out 0
 topic cmd/# in 0
 BRIDGE_EOF
     echo "       Bridge configured: ${IOT_ENDPOINT} (mTLS)"
