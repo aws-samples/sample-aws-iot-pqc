@@ -88,7 +88,7 @@ The remaining Probe findings are all INFO severity and are left as-is:
   local ProtoShield scan) — false positives over cryptographic algorithm
   names: the TLS key-exchange group string `"SECP256R1_MLKEM768"` passed to
   wolfSSL in the firmware sketches, `pqc_tls_client.cpp` and the OTA updater,
-  and the ACM PCA `KeyAlgorithm: EC_prime256v1` in the broker stack. They are
+  and the ACM PCA P-256 key-algorithm name in the broker stack. They are
   public, standard identifiers, not secrets. Suppressed by exact fingerprint in
   `.gitleaksignore`.
 - `unquoted-variable-expansion-in-command`, `prefer-json-notation`,

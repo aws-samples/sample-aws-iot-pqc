@@ -1513,6 +1513,8 @@ Resources:
             reason: "ecr:GetAuthorizationToken does not support resource-level permissions and requires Resource '*'"
           - id: W28
             reason: "workshop depends on fixed resource names referenced across stacks/scripts"
+          - id: W76
+            reason: "SPCM counts the five services a CodeBuild job needs (logs, ECR pull, S3 source, ACM PCA, Secrets Manager); every statement is resource-scoped and IssueCertificate is pinned to the code-signing template"
       checkov:
         skip:
           - id: CKV_AWS_111
