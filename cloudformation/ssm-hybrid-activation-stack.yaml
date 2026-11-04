@@ -194,7 +194,10 @@ Resources:
                   mkdir -p /var/log/workshop-builder
                   echo "=== install-awscli $(date -u +%FT%TZ) ==="
                   export DEBIAN_FRONTEND=noninteractive
-                  PKGS="awscli python3 python3-pip curl ca-certificates udev"
+                  # python3-venv: deploy-app installs the app's locked deps into
+                  # its own virtualenv, leaving the system Python (and awscli,
+                  # which needs Debian's urllib3) untouched.
+                  PKGS="awscli python3 python3-pip python3-venv curl ca-certificates udev"
                   MISSING=""
                   for p in $PKGS; do
                       dpkg -s "$p" >/dev/null 2>&1 || MISSING="$MISSING $p"
@@ -305,19 +308,33 @@ Resources:
                   echo "[2/3] Python deps + workshop-builder CLI..."
                   # Install EXACTLY the locked, hash-verified dependency set
                   # (requirements.lock.txt is exported from uv.lock in the app
-                  # tree), so the Pi runs what was CVE-scanned. The CLI itself
-                  # is then installed with --no-deps so pip cannot pull in
-                  # anything unpinned.
+                  # tree), so the Pi runs what was CVE-scanned. It goes into a
+                  # dedicated virtualenv: installing it system-wide would
+                  # shadow Debian's python3-urllib3 etc., which apt's awscli
+                  # (used by every SSM step here) depends on. The CLI is then
+                  # installed with --no-deps so nothing unpinned is pulled in.
+                  VENV="$INSTALL_DIR/venv"
                   LOCK="$APP_DIR/requirements.lock.txt"
-                  if [ -f "$LOCK" ]; then
-                      pip3 install --no-cache-dir --break-system-packages \
-                          --require-hashes -r "$LOCK" 2>&1 | tail -3 || rc=1
-                  else
+                  if [ ! -x "$VENV/bin/python" ] || ! "$VENV/bin/python" -c 'import sys' 2>/dev/null; then
+                      rm -rf "$VENV"
+                      python3 -m venv "$VENV" || { echo "      ERROR: python3 -m venv failed (is python3-venv installed? run install-base)"; rc=1; }
+                  fi
+                  if [ ! -f "$LOCK" ]; then
                       echo "      ERROR: $LOCK missing from app.tgz"
                       rc=1
+                  elif [ -x "$VENV/bin/pip" ]; then
+                      "$VENV/bin/pip" install --no-cache-dir --disable-pip-version-check \
+                          --require-hashes -r "$LOCK" 2>&1 | tail -8 || rc=1
                   fi
-                  if [ -f "$APP_DIR/pyproject.toml" ]; then
-                      pip3 install --no-cache-dir --break-system-packages --no-deps "$APP_DIR" 2>&1 | tail -3 || rc=1
+                  if [ -f "$APP_DIR/pyproject.toml" ] && [ -x "$VENV/bin/pip" ]; then
+                      "$VENV/bin/pip" install --no-cache-dir --disable-pip-version-check \
+                          --no-deps "$APP_DIR" 2>&1 | tail -3 || rc=1
+                      # Older provisioning pip-installed the CLI system-wide;
+                      # replace it with a link to the venv's entry point.
+                      if pip3 show workshop-builder 2>/dev/null | grep -q '^Location: /usr/local/'; then
+                          pip3 uninstall -y --break-system-packages workshop-builder >/dev/null 2>&1 || true
+                      fi
+                      ln -sf "$VENV/bin/workshop-builder" /usr/local/bin/workshop-builder
                       command -v workshop-builder >/dev/null 2>&1 \
                           && echo "      workshop-builder: $(command -v workshop-builder)" \
                           || echo "      [WARN] workshop-builder not on PATH"
@@ -413,6 +430,13 @@ Resources:
                       | python3 -c "import sys,json;print(json.load(sys.stdin).get('Region',''))" 2>/dev/null)
                   [ -z "$REGION" ] && REGION="${AWS_DEFAULT_REGION:-us-east-1}"
 
+                  # The GUI runs from the venv deploy-app builds; refuse to
+                  # point the service at a venv that isn't there.
+                  if [ ! -x "$INSTALL_DIR/venv/bin/python" ]; then
+                      echo "ERROR: $INSTALL_DIR/venv missing; run deploy-app first."
+                      exit 1
+                  fi
+
                   echo "[1/3] udev rules for ESP32 USB access..."
                   cat > /etc/udev/rules.d/99-esp32.rules <<'UDEV'
                   SUBSYSTEM=="tty", ATTRS{idVendor}=="10c4", MODE="0666"
@@ -432,7 +456,7 @@ Resources:
                   Type=simple
                   User=root
                   WorkingDirectory=$APP_DIR
-                  ExecStart=/usr/bin/python3 app.py
+                  ExecStart=$INSTALL_DIR/venv/bin/python app.py
                   Restart=on-failure
                   RestartSec=5
 
@@ -452,7 +476,20 @@ Resources:
                   sleep 2
                   if systemctl is-active --quiet pqc-builder-gui; then
                       echo "      pqc-builder-gui is active"
-                  else
+                      # The GUI now runs from the venv, so remove the copies of
+                      # the app's deps that older provisioning pip-installed
+                      # system-wide. They shadow Debian's python3-urllib3 etc.
+                      # that apt's awscli needs. Only /usr/local copies are
+                      # touched; apt-owned packages are left alone.
+                      LOCK="$APP_DIR/requirements.lock.txt"
+                      if [ -f "$LOCK" ]; then
+                          for pkg in $(sed -n 's/^\([A-Za-z0-9._-]*\)==.*/\1/p' "$LOCK"); do
+                              if pip3 show "$pkg" 2>/dev/null | grep -q '^Location: /usr/local/'; then
+                                  pip3 uninstall -y --break-system-packages "$pkg" >/dev/null 2>&1 \
+                                      && echo "      removed system-wide $pkg (now in the venv)"
+                              fi
+                          done
+                      fi
                       echo "      [ERROR] pqc-builder-gui failed to start:"
                       journalctl -u pqc-builder-gui --no-pager -n 30 || true
                       rc=1
