@@ -298,6 +298,10 @@ Outputs:
     Description: CodeBuild project that mints both broker server certs
     Value: !GetAtt BrokerStack.Outputs.BrokerCertProvisionerProjectName
 
+  FirmwareSignerProvisionerProjectName:
+    Description: CodeBuild project that mints both OTA firmware signer certs
+    Value: !GetAtt BrokerStack.Outputs.FirmwareSignerProvisionerProjectName
+
   BuilderApiEndpoint:
     Description: Builder-Pi REST API endpoint (register/deregister/firmware)
     Value: !GetAtt DeviceBuilderStack.Outputs.ApiEndpoint

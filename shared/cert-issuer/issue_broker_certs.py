@@ -16,10 +16,14 @@ job, triggered by the deploy script AFTER the cert-issuer image is built. This i
 the broker-side counterpart to the device-cert issuance in the firmware build —
 same shared issue_certificate(), one code path for classical and post-quantum.
 
-Because it runs as a CodeBuild job (not a container-image Lambda), it fits the
-deploy model where the stack is created first (no images yet) and images/values
-are filled in post-stack. The same shape drops into the future registration Step
-Function via codebuild:startBuild.sync.
+The OTA firmware SIGNER certs are NOT minted here. They come from the dedicated
+firmware-signing roots via a separate job and role (issue_signer_certs.py), so
+this job's role has no access to those CAs at all (threat T024).
+
+Both broker certs are issued with an EXPLICIT EndEntityCertificate/V1 template
+ARN (the ACM PCA default). The role's IAM policy requires that template via an
+acm-pca:TemplateArn condition, so this job cannot issue any other certificate
+type (for example code-signing) from the device CAs.
 
 Environment variables (set by the CodeBuild project):
   CLASSICAL_CA_ARN         — classical (ECDSA) Private CA ARN
@@ -31,17 +35,6 @@ Environment variables (set by the CodeBuild project):
   MLDSA_BROKER_CERT_SECRET — Secrets Manager id: ML-DSA broker cert
   MLDSA_BROKER_KEY_SECRET  — Secrets Manager id: ML-DSA broker key
   BROKER_CN                — broker cert CommonName (default pqc-mqtt-broker)
-
-OTA firmware signer env vars (optional; skipped if unset):
-  SIGNER_CLASSICAL_CA_ARN      — ECDSA P-256 firmware-signing root CA ARN (issues the classical signer)
-  SIGNER_MLDSA_CA_ARN          — ML-DSA-44 firmware-signing root CA ARN (issues the ML-DSA signer)
-  SIGNER_CLASSICAL_CA_SECRET   — Secrets Manager id: classical signing root cert (device OTA trust)
-  SIGNER_CLASSICAL_CERT_SECRET — Secrets Manager id: classical ECDSA signer leaf cert
-  SIGNER_CLASSICAL_KEY_SECRET  — Secrets Manager id: classical ECDSA signer key
-  SIGNER_MLDSA_CA_SECRET       — Secrets Manager id: ML-DSA signing root cert (device OTA trust)
-  SIGNER_MLDSA_CERT_SECRET     — Secrets Manager id: ML-DSA signer leaf cert
-  SIGNER_MLDSA_KEY_SECRET      — Secrets Manager id: ML-DSA signer key
-  SIGNER_CN                    — signer cert CommonName base (default pqc-firmware-signer)
 """
 
 import os
@@ -49,7 +42,7 @@ import sys
 
 import boto3
 
-from issue_cert import CODE_SIGNING_TEMPLATE_ARN, issue_certificate
+from issue_cert import END_ENTITY_TEMPLATE_ARN, issue_certificate
 
 secrets = boto3.client("secretsmanager")
 
@@ -69,6 +62,7 @@ def main():
         ca_arn=os.environ["CLASSICAL_CA_ARN"],
         subject_ou="MQTT Broker",
         idempotency_token=f"broker-classical-{broker_cn}",
+        template_arn=END_ENTITY_TEMPLATE_ARN,
     )
     _store(os.environ["BROKER_CA_CERT_SECRET"], classical["caCert"])
     _store(os.environ["BROKER_CERT_SECRET"], classical["cert"])
@@ -83,67 +77,15 @@ def main():
         ca_arn=os.environ["MLDSA_CA_ARN"],
         subject_ou="MQTT Broker PQC ML-DSA",
         idempotency_token=f"broker-mldsa-{broker_cn}",
+        template_arn=END_ENTITY_TEMPLATE_ARN,
     )
     _store(os.environ["MLDSA_CA_CERT_SECRET"], mldsa["caCert"])
     _store(os.environ["MLDSA_BROKER_CERT_SECRET"], mldsa["cert"])
     _store(os.environ["MLDSA_BROKER_KEY_SECRET"], mldsa["key"])
     print(f"  ML-DSA-44 broker cert stored ({mldsa['certificateArn']})")
 
-    # ── OTA firmware SIGNER certs (stable per era) ──────────────────────────
-    # One classical ECDSA-P256 signer for the 2.0.0/3.0.0 OTA era and one
-    # ML-DSA-44 signer for the 4.0.0+ era, each issued by its own dedicated
-    # firmware-signing root (never by the device/broker CAs, threat T024) with
-    # the codeSigning EKU. The firmware build reads the era's signer KEY to sign
-    # firmware.bin; the device verifies the signer leaf (shipped with the OTA)
-    # against the matching signing root in its certs partition and requires
-    # codeSigning. Provisioning is gated on the signer env vars being present.
-    _provision_signer_certs(signer_cn=os.environ.get("SIGNER_CN", "pqc-firmware-signer"))
-
     print("Broker certificates provisioned successfully.")
     return 0
-
-
-def _provision_signer_certs(signer_cn):
-    """Mint the two stable per-era firmware signer certs into Secrets Manager.
-
-    No-op (with a log line) if the signer secret env vars are not set, so an
-    older stack without the signer secrets still provisions broker certs cleanly.
-    """
-    classical_key_secret = os.environ.get("SIGNER_CLASSICAL_KEY_SECRET")
-    mldsa_key_secret = os.environ.get("SIGNER_MLDSA_KEY_SECRET")
-    if not classical_key_secret and not mldsa_key_secret:
-        print("No signer secret env vars set; skipping firmware-signer provisioning.")
-        return
-
-    # ── Classical ECDSA-P256 firmware signer (ECDSA firmware-signing root) ──
-    print(f"Issuing classical firmware signer cert (CN={signer_cn}-classical)...")
-    classical = issue_certificate(
-        common_name=f"{signer_cn}-classical",
-        key_mode="ec-p256",
-        ca_arn=os.environ["SIGNER_CLASSICAL_CA_ARN"],
-        subject_ou="Firmware Signer",
-        idempotency_token=f"codesign-classical-{signer_cn}",
-        template_arn=CODE_SIGNING_TEMPLATE_ARN,
-    )
-    _store(os.environ["SIGNER_CLASSICAL_CA_SECRET"], classical["caCert"])
-    _store(os.environ["SIGNER_CLASSICAL_CERT_SECRET"], classical["cert"])
-    _store(classical_key_secret, classical["key"])
-    print(f"  classical firmware signer cert stored ({classical['certificateArn']})")
-
-    # ── ML-DSA-44 firmware signer (ML-DSA-44 firmware-signing root) ──
-    print(f"Issuing ML-DSA-44 firmware signer cert (CN={signer_cn}-mldsa)...")
-    mldsa = issue_certificate(
-        common_name=f"{signer_cn}-mldsa",
-        key_mode="mldsa44",
-        ca_arn=os.environ["SIGNER_MLDSA_CA_ARN"],
-        subject_ou="Firmware Signer PQC ML-DSA",
-        idempotency_token=f"codesign-mldsa-{signer_cn}",
-        template_arn=CODE_SIGNING_TEMPLATE_ARN,
-    )
-    _store(os.environ["SIGNER_MLDSA_CA_SECRET"], mldsa["caCert"])
-    _store(os.environ["SIGNER_MLDSA_CERT_SECRET"], mldsa["cert"])
-    _store(mldsa_key_secret, mldsa["key"])
-    print(f"  ML-DSA-44 firmware signer cert stored ({mldsa['certificateArn']})")
 
 
 if __name__ == "__main__":

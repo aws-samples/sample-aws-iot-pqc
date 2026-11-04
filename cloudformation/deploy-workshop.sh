@@ -343,9 +343,11 @@ aws s3 cp "$PROJECT_ROOT/broker-container/docker/" \
     "s3://${BROKER_SOURCE_BUCKET}/broker-image/" --recursive >/dev/null
 
 # Shared cert-issuer build context (Dockerfile + issue_cert.py +
-# issue_broker_certs.py + buildspec-broker-certs.yml). Feeds TWO CodeBuild jobs:
-#   - CertIssuerBuildProject         -> builds the shared cert-issuer image
-#   - BrokerCertProvisionerProject   -> runs in that image to mint broker certs
+# issue_broker_certs.py + issue_signer_certs.py + their buildspecs). Feeds
+# THREE CodeBuild jobs:
+#   - CertIssuerBuildProject           -> builds the shared cert-issuer image
+#   - BrokerCertProvisionerProject     -> runs in that image to mint broker certs
+#   - FirmwareSignerProvisionerProject -> runs in that image to mint OTA signers
 echo "        - cert-issuer source -> s3://${BROKER_SOURCE_BUCKET}/cert-issuer/"
 aws s3 cp "$PROJECT_ROOT/shared/cert-issuer/" \
     "s3://${BROKER_SOURCE_BUCKET}/cert-issuer/" --recursive \
@@ -520,6 +522,8 @@ done
 # it. Both CAs are already ACTIVE (created by the stack in step 2). Ordering:
 #   1. build cert-issuer image        (CertIssuerImageBuildProject)
 #   2. run broker cert provisioner    (BrokerCertProvisionerProject, in that image)
+#   3. run firmware signer provisioner (FirmwareSignerProvisionerProject, same
+#      image, separate role that alone can issue from the signing roots)
 # This mirrors the broker image flow and keeps the whole deploy one-shot.
 run_build() {
     # $1 = human label, $2 = CodeBuild project name
@@ -546,6 +550,12 @@ run_build "cert-issuer image build" "$CERT_ISSUER_BUILD_PROJECT"
 BROKER_CERT_PROJECT=$(get_out BrokerCertProvisionerProjectName 2>/dev/null || true)
 [[ -z "$BROKER_CERT_PROJECT" || "$BROKER_CERT_PROJECT" == "None" ]] && BROKER_CERT_PROJECT="pqc-workshop-broker-cert-provisioner"
 run_build "broker cert provisioning (classical + ML-DSA-44)" "$BROKER_CERT_PROJECT"
+
+# OTA firmware signers come from the dedicated firmware-signing roots, via a
+# separate job and role (T024). Must finish before any firmware build signs.
+SIGNER_CERT_PROJECT=$(get_out FirmwareSignerProvisionerProjectName 2>/dev/null || true)
+[[ -z "$SIGNER_CERT_PROJECT" || "$SIGNER_CERT_PROJECT" == "None" ]] && SIGNER_CERT_PROJECT="pqc-workshop-firmware-signer-provisioner"
+run_build "firmware signer provisioning (classical + ML-DSA-44)" "$SIGNER_CERT_PROJECT"
 
 # Scale the broker ECS service up (it ships at DesiredCount 0). Now that an image
 # exists, one task can start and register with the NLB. The cluster and service

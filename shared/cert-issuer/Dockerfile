@@ -7,6 +7,8 @@
 # Contains OpenSSL 3.5 (ML-DSA-44 capable) + Python + boto3 + the shared
 # issue_cert.py. Used as a CodeBuild image:
 #   • broker certs  → CodeBuild runs issue_broker_certs.py (both server certs)
+#   • OTA signers   → a SEPARATE CodeBuild job + role runs issue_signer_certs.py
+#                     (both firmware signers, from the firmware-signing roots)
 #   • device identity → CodeBuild runs issue_device_identity.py at registration
 #                     (both device certs + CA roots + WiFi → certs NVS image)
 #   • device certs  → the firmware-builder image bakes in the SAME issue_cert.py
@@ -64,7 +66,7 @@ RUN pip3 install --no-cache-dir boto3
 RUN pip3 install --no-cache-dir esp-idf-nvs-partition-gen==0.3.0
 
 # Shared issuance code. /var/task keeps the path stable for the buildspec.
-COPY issue_cert.py issue_broker_certs.py issue_device_identity.py /var/task/
+COPY issue_cert.py issue_broker_certs.py issue_signer_certs.py issue_device_identity.py /var/task/
 ENV OPENSSL35_BIN=/opt/openssl-3.5/bin/openssl
 ENV PYTHONPATH=/var/task
 

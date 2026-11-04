@@ -1,0 +1,16 @@
+version: 0.2
+
+# Runs inside the shared cert-issuer image (OpenSSL 3.5 + boto3 + issue_cert.py).
+# Mints BOTH OTA firmware signer certs (classical ECDSA P-256 + ML-DSA-44) from
+# the dedicated firmware-signing roots and stores them in Secrets Manager.
+# Runs as its own CodeBuild project with its own role (the only principal that
+# may issue from those CAs, threat T024). Triggered by the deploy script AFTER
+# the cert-issuer image is built. Inputs come from the project's environment
+# variables (two signing CA ARNs + the six signer secret ids), set in
+# broker-container-stack.yaml.
+phases:
+  build:
+    commands:
+      - echo "Provisioning OTA firmware signer certificates (classical + ML-DSA-44)..."
+      - python3 /var/task/issue_signer_certs.py
+      - echo "Firmware signer certificate provisioning complete."

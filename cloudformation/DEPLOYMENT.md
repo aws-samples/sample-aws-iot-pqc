@@ -146,7 +146,12 @@ one is rejected. The script confirms the target account before any writes (set
    cert provisioner** (`pqc-workshop-broker-cert-provisioner`) in it — this mints
    **both** broker server certs (classical + ML-DSA-44) into Secrets Manager
    **before** scaling the broker ECS service to 1 task (the broker's entrypoint
-   fetches those secrets on start, so the order matters);
+   fetches those secrets on start, so the order matters). It then runs the
+   **firmware signer provisioner** (`pqc-workshop-firmware-signer-provisioner`)
+   in the same image, under its own IAM role, to mint the two OTA firmware
+   signer certs from the dedicated firmware-signing roots. That role is the only
+   one allowed to issue from those roots, and only with the code-signing
+   template;
 4. build + sync the v2 dashboard and invalidate CloudFront;
 5. print the outputs (dashboard URL, broker endpoint) and the remaining steps.
 

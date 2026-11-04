@@ -123,6 +123,11 @@ def generate_key_and_csr(common_name, key_mode, subject_org, subject_ou, country
 # identity and the device can require codeSigning on any OTA signer leaf.
 CODE_SIGNING_TEMPLATE_ARN = "arn:aws:acm-pca:::template/CodeSigningCertificate/V1"
 
+# ACM PCA's default end-entity template (TLS client + server EKU). Sending it
+# explicitly is identical to sending no template, but lets an IAM policy pin it
+# with an acm-pca:TemplateArn condition (the broker cert provisioner does this).
+END_ENTITY_TEMPLATE_ARN = "arn:aws:acm-pca:::template/EndEntityCertificate/V1"
+
 
 def issue_certificate(
     common_name,
