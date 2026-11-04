@@ -27,6 +27,12 @@ PREFIX="Sample-aws-iot-pqc/"
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 OUT="$REPO_ROOT/pqc-workshop-src.zip"
 MODE="head"
+# Tracked paths that must NEVER reach attendees. `.protoshield/` is internal
+# security-scan tooling (config + any scan reports, i.e. a weakness inventory).
+# Excluded via git pathspec at archive time, then verified fail-closed below.
+EXCLUDE_PATHS=(".protoshield")
+PATHSPEC=(-- .)
+for p in "${EXCLUDE_PATHS[@]}"; do PATHSPEC+=(":(exclude)$p"); done
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -51,7 +57,7 @@ if [[ "$MODE" == "working" ]]; then
   echo "[*] Archiving working tree (tracked files, incl. uncommitted)..."
   TREE=$(git stash create || true)
   TREE=${TREE:-HEAD}
-  git archive --format=zip --prefix="$PREFIX" -o "$OUT" "$TREE"
+  git archive --format=zip --prefix="$PREFIX" -o "$OUT" "$TREE" "${PATHSPEC[@]}"
 else
   echo "[*] Archiving committed HEAD ($(git rev-parse --short HEAD))..."
   # Warn if there are uncommitted changes that WON'T be in the zip.
@@ -59,7 +65,7 @@ else
     echo "[WARN] Uncommitted changes exist and will NOT be included in the zip."
     echo "       Commit them first, or re-run with --working-tree to include them."
   fi
-  git archive --format=zip --prefix="$PREFIX" -o "$OUT" HEAD
+  git archive --format=zip --prefix="$PREFIX" -o "$OUT" HEAD "${PATHSPEC[@]}"
 fi
 
 # Belt-and-braces: drop Python bytecode caches from the zip. These SHOULD be
@@ -71,6 +77,16 @@ fi
 if command -v zip >/dev/null 2>&1; then
   zip -q -d "$OUT" '*/__pycache__/*' '*.pyc' >/dev/null 2>&1 || true
 fi
+
+# Fail closed: if any excluded path made it into the zip, delete it and abort
+# so a leaky artifact can never be uploaded to the assets bucket.
+for p in "${EXCLUDE_PATHS[@]}"; do
+  if unzip -Z1 "$OUT" | grep -q "^${PREFIX}${p}/"; then
+    echo "[ERROR] $p/ found in $OUT; it must not ship to attendees. Zip removed."
+    rm -f "$OUT"
+    exit 2
+  fi
+done
 
 SIZE=$(du -h "$OUT" | cut -f1)
 COUNT=$(unzip -l "$OUT" 2>/dev/null | tail -1 | awk '{print $2}')
