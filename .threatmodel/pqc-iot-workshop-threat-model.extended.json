@@ -247,14 +247,14 @@
       "metadata": [],
       "statement": "A user on the workshop WiFi with the shared PSK can drive the unauthenticated Builder-Pi GUI to deregister or reflash other attendees' devices and read their serial consoles, which leads to disruption of other attendees' devices and exposure of serial output",
       "displayOrder": 9,
-      "status": "threatIdentified",
+      "status": "threatResolved",
       "tags": [
         "builder-pi",
         "no-auth"
       ],
       "category": "Elevation of Privilege",
       "severity": "High",
-      "likelihood": "Likely",
+      "likelihood": "Unlikely",
       "affected_components": [
         "C003",
         "C002"
@@ -275,7 +275,7 @@
       "metadata": [],
       "statement": "A user on the workshop WiFi with the shared PSK can POST to the Builder-Pi /api/config to re-point the firmware bucket or API endpoint to attacker-controlled resources, which leads to the Pi flashing attacker-supplied firmware onto the next boards plugged into the station",
       "displayOrder": 10,
-      "status": "threatIdentified",
+      "status": "threatResolved",
       "tags": [
         "builder-pi",
         "no-auth",
@@ -283,7 +283,7 @@
       ],
       "category": "Tampering",
       "severity": "High",
-      "likelihood": "Possible",
+      "likelihood": "Unlikely",
       "affected_components": [
         "C003"
       ]
@@ -679,6 +679,33 @@
         "C020",
         "C021"
       ]
+    },
+    {
+      "id": "T025",
+      "numericId": 25,
+      "metadata": [],
+      "statement": "A user on the workshop WiFi with network access to the Builder-Pi GUI can set firmware_version through POST /api/config to a path outside the firmware directory, so the next flash writes the device's identity image into the Flask static folder where GET /static/certs.bin serves it, which leads to disclosure of a device's private keys and the workshop WiFi PSK",
+      "displayOrder": 25,
+      "status": "threatResolved",
+      "category": "Information Disclosure",
+      "severity": "High",
+      "likelihood": "Unlikely",
+      "affected_components": [
+        "C003"
+      ],
+      "threatSource": "user on the workshop WiFi",
+      "prerequisites": "with network access to the Builder-Pi GUI",
+      "threatAction": "set firmware_version through POST /api/config to a path outside the firmware directory, so the next flash writes the device's identity image into the Flask static folder where GET /static/certs.bin serves it",
+      "threatImpact": "disclosure of a device's private keys and the workshop WiFi PSK",
+      "impactedGoal": [],
+      "impactedAssets": [
+        "A001",
+        "A005"
+      ],
+      "tags": [
+        "builder-pi",
+        "path-traversal"
+      ]
     }
   ],
   "mitigations": [
@@ -793,14 +820,14 @@
     {
       "id": "M010",
       "numericId": 10,
-      "status": "mitigationIdentified",
-      "content": "Lock down the Builder-Pi GUI: require an operator token, add CSRF protection, make /api/config read-only at runtime, and bind the GUI away from the attendee AP interface.",
+      "status": "mitigationResolved",
+      "content": "Lock down the Builder-Pi GUI: bind it to 127.0.0.1:8080 only (used from the Pi's own browser, at its console or through a KVM), remove /api/config, require a loopback Host header and JSON POSTs, and drop :8080 on every non-loopback interface with nftables.",
       "displayOrder": 10,
       "metadata": [],
       "type": "Preventive",
       "cost": "Low",
       "effectiveness": "High",
-      "implementation_details": "Flask before_request token check; drop POST /api/config or restrict to localhost; set gui_host to the operator interface rather than 0.0.0.0."
+      "implementation_details": "app.py GUI_HOST/GUI_PORT constants and before_request gate; configure-service writes the nftables rule and fails if the GUI listens beyond 127.0.0.1; install-base adds nftables; deploy-app drops gui_host/gui_port. Security ticket D570691687. Verified on pqc-a, Nov 5."
     },
     {
       "id": "M011",
@@ -1029,6 +1056,18 @@
       "cost": "Low",
       "effectiveness": "High",
       "implementation_details": "FirmwareSignerCA / MlDsaFirmwareSignerCA in broker-container-stack.yaml; issue_broker_certs.py issues the signers with CodeSigningCertificate/V1; identity format 2 carries sig_cls / sig_mldsa (read-only for the identity job); otaVerifyChainToRoot in ota_updater.cpp. Verified on pqc-a, Nov 4."
+    },
+    {
+      "id": "M030",
+      "numericId": 30,
+      "status": "mitigationResolved",
+      "content": "Validate Builder-Pi download inputs: allowlist the serial, firmware version, S3 prefix and identity key, require the local path to resolve inside the firmware directory, and delete the local identity image whether or not the flash succeeds.",
+      "displayOrder": 30,
+      "metadata": [],
+      "type": "Preventive",
+      "cost": "Low",
+      "effectiveness": "High",
+      "implementation_details": "validate_download, safe_local_dir and remove_local_identity in device_manager.py; tests in tests/test_device_manager.py. Security ticket D570691687."
     }
   ],
   "assumptions": [
@@ -1259,6 +1298,14 @@
     {
       "linkedId": "T024",
       "mitigationId": "M003"
+    },
+    {
+      "linkedId": "T025",
+      "mitigationId": "M030"
+    },
+    {
+      "linkedId": "T025",
+      "mitigationId": "M010"
     }
   ],
   "businessContext": {
@@ -1313,7 +1360,7 @@
       "service_provider": "On-Premise",
       "specific_service": "Raspberry Pi, Flask app.py, arduino-cli/esptool, SSM agent, CloudWatch agent",
       "version": null,
-      "description": "Flask GUI bound to 0.0.0.0:8080 with NO authentication or CSRF protection. Routes: /api/register, /api/reflash, /api/deregister, /api/serial/<port>, /api/scan, GET/POST /api/config (POST merges arbitrary JSON into config incl. API endpoint/bucket/region). Calls the builder API with SigV4 using SSM hybrid-activation role credentials, downloads the shared firmware pieces and the device's identity image from S3, USB-flashes them, then deletes every version of the identity image.",
+      "description": "Flask GUI bound to 127.0.0.1:8080 only and used from the Pi's own browser (console or KVM); an nftables rule drops :8080 on every other interface. No login; every request must carry a loopback Host header and every POST must be JSON. Routes: /api/devices, /api/register, /api/reflash, /api/deregister, /api/serial/<port>, /api/scan, /api/system-params (no config-write route). Calls the builder API with SigV4 using SSM hybrid-activation role credentials, downloads the shared firmware pieces and the device's identity image from S3, USB-flashes them, then deletes every version of the identity image.",
       "configuration": null
     },
     {
@@ -2135,7 +2182,7 @@
       "protocol": "HTTP",
       "port": 8080,
       "encryption": false,
-      "description": "Any client on the workshop AP (or a reachable LAN interface) can drive the UNAUTHENTICATED Flask GUI over plain HTTP: register/reflash/deregister devices, read serial output, and POST /api/config to re-point endpoints."
+      "description": "No longer reachable (M010): the GUI listens on 127.0.0.1 only and nftables drops :8080 on the AP and LAN interfaces. Before ticket D570691687 any AP or LAN client could drive the unauthenticated GUI and POST /api/config."
     },
     {
       "id": "CN062",
@@ -2731,7 +2778,7 @@
       "contained_nodes": [
         "C003"
       ],
-      "description": "On-site Raspberry Pi holding SSM-rotated AWS role credentials (whole firmware bucket, registry, WiFi PSK, builder API). Its Flask GUI on :8080 is unauthenticated."
+      "description": "On-site Raspberry Pi holding SSM-rotated AWS role credentials (whole firmware bucket, registry, WiFi PSK, builder API). Its Flask GUI has no login but listens on 127.0.0.1 only and is used from the Pi's console."
     }
   ],
   "crossingPoints": [
@@ -3045,7 +3092,7 @@
       "controls": [
         "Shared WPA2 PSK on the workshop AP",
         "Physical supervision of the Builder-Pi USB station",
-        "None on the Builder-Pi GUI (gap)"
+        "Builder-Pi GUI loopback-only with nftables backstop (not network-reachable)"
       ],
       "description": "Everything inside the workshop room: boards in attendees' hands, the shared-PSK AP, and USB access to the Builder-Pi. An attendee crosses this boundary legitimately, so it gives little protection."
     },
@@ -3852,18 +3899,18 @@
     },
     {
       "threat_id": "T009",
-      "decision": "Open",
-      "residual_severity": "High",
-      "residual_likelihood": "Likely",
-      "rationale": "Anyone on the AP can manage every device on the station. M010 is low cost.",
+      "decision": "Accepted",
+      "residual_severity": "Low",
+      "residual_likelihood": "Unlikely",
+      "rationale": "Resolved (M010): the GUI listens on 127.0.0.1:8080 only and is used from the Pi's own browser (console or KVM); nftables drops :8080 on every other interface, and requests must carry a loopback Host header and POST JSON. Nothing on the AP or LAN can reach it. Verified on pqc-a (Nov 5): connections from the LAN and to the Pi's LAN address were refused, and a register + flash of C69E18 from the Pi's local browser succeeded. Residual: someone at the Pi's console, covered by physical supervision of the station.",
       "is_current": true
     },
     {
       "threat_id": "T010",
-      "decision": "Open",
-      "residual_severity": "High",
-      "residual_likelihood": "Possible",
-      "rationale": "Runtime config changes can redirect flashing to attacker firmware. M010.",
+      "decision": "Accepted",
+      "residual_severity": "Low",
+      "residual_likelihood": "Unlikely",
+      "rationale": "Resolved (M010): /api/config is removed, so no config can be changed over HTTP, and the GUI is loopback-only. Even before the fix the Pi role could not read any bucket but the workshop firmware bucket (IAM simulation on pqc-a), so an attacker-hosted image could not be fetched. Verified on pqc-a (Nov 5): /api/config returns 404 and config.json carries no gui_host.",
       "is_current": true
     },
     {
@@ -3976,6 +4023,14 @@
       "residual_severity": "Low",
       "residual_likelihood": "Unlikely",
       "rationale": "Resolved (M029): the OTA signers are issued only by two dedicated firmware-signing root CAs, with the codeSigning EKU. Devices trust only the signing root that matches the image's sigAlg and require codeSigning; device CA roots are used for TLS only. Verified on pqc-a hardware: an OTA signed with a device-CA certificate was refused (no chain to sig_cls), and one signed with a signing-root certificate lacking codeSigning was refused (no EKU). Residual: theft of a signer key from Secrets Manager or the build (T015, T016).",
+      "is_current": true
+    },
+    {
+      "threat_id": "T025",
+      "decision": "Accepted",
+      "residual_severity": "Low",
+      "residual_likelihood": "Unlikely",
+      "rationale": "Resolved (M030, M010): download inputs are allowlisted and the local path must resolve inside FIRMWARE_DIR; /api/config is removed and the GUI is loopback-only; the local identity image is deleted whatever the flash outcome. Found by code review during security ticket D570691687 (not exploited); unit tests cover the reported traversal value.",
       "is_current": true
     }
   ],
@@ -4272,7 +4327,7 @@
       "entity_type": "Non-Human",
       "authentication_method": "IAM Role",
       "threat_actor_overlay": [],
-      "description": "On-site Raspberry Pi registered as an SSM managed instance (pqc-workshop-builder-pi-ssm role). Calls the builder API to register devices, downloads firmware from S3, flashes over USB, and runs the open Flask GUI on :8080 and the workshop WiFi AP.",
+      "description": "On-site Raspberry Pi registered as an SSM managed instance (pqc-workshop-builder-pi-ssm role). Calls the builder API to register devices, downloads firmware from S3, flashes over USB, and runs the loopback-only Flask GUI (127.0.0.1:8080, used at the Pi's console) and the workshop WiFi AP.",
       "is_relevant": true
     },
     {
@@ -4321,7 +4376,7 @@
       "entity_type": "Human",
       "authentication_method": "None",
       "threat_actor_overlay": [],
-      "description": "Can reach the internet-facing NLB (8883/8884), the CloudFront dashboard and the builder API endpoint, and anyone in RF range or on the venue LAN can attempt the workshop AP and the Builder-Pi GUI.",
+      "description": "Can reach the internet-facing NLB (8883/8884), the CloudFront dashboard and the builder API endpoint, and anyone in RF range or on the venue LAN can attempt the workshop AP (the Builder-Pi GUI is loopback-only).",
       "is_relevant": true
     },
     {
