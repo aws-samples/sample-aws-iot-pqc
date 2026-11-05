@@ -106,8 +106,13 @@ unzip builder-pi-bundle.zip && cd builder-pi-bundle && sudo ./setup-ssm.sh
 ### 3. Access the GUI
 
 ```
-http://<builder-pi-ip>:8080
+http://127.0.0.1:8080
 ```
+
+Open it in the Pi's **own** browser - its console, or a KVM attached to the
+Pi. The GUI listens on loopback only and is not reachable from the network or
+from the workshop WiFi access point; the Pi's network connection is used only
+for outbound HTTPS to AWS.
 
 ## Directory structure
 

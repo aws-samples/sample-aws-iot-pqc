@@ -223,6 +223,6 @@ echo "════════════════════════�
 echo "  ✅ Builder-Pi provisioned. The GUI auto-starts on boot, and the"
 echo "     workshop WiFi AP is up on wlan1 for devices to join."
 echo "═══════════════════════════════════════════════════════════════"
-echo "  Find the Pi's IP and open http://<pi-ip>:8080"
-echo "  (from the Pi:  hostname -I  — or check your AP's client list)"
+echo "  Open http://127.0.0.1:8080 in the Pi's own browser (its console or a KVM)."
+echo "  The GUI listens on loopback only; it is not reachable over the network."
 echo ""
