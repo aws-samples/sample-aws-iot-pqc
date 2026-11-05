@@ -26,7 +26,7 @@ def aws_credentials():
     """No-op marker fixture; env is already set at import time."""
     return {
         "region": os.environ["AWS_REGION"],
-        "account": "087195661091",
+        "account": "123456789012",
     }
 
 
