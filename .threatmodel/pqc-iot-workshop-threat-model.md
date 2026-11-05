@@ -24,8 +24,8 @@ Post-Quantum Cryptography Migration for IoT workshop (AWS Workshop Studio / re:I
 
 ### Key Statistics
 
-- **Total Threats**: 24
-- **Total Mitigations**: 29
+- **Total Threats**: 25
+- **Total Mitigations**: 30
 - **Total Assumptions**: 6
 - **System Components**: 30
 - **Assets**: 10
@@ -88,10 +88,10 @@ Post-Quantum Cryptography Migration for IoT workshop (AWS Workshop Studio / re:I
 | UP001 | System Administrator | Workshop operator | Administrative | Employee | Administrator, Operator | Legitimate | Human | IAM Role | N/A | Yes | Deploys and tears down the master stack with Admin credentials, provisions the Builder-Pi over SSM, and runs readiness checks. |
 | UP002 | Authenticated Standard User | Workshop attendee | Low | Customer | End User | Legitimate | Human | Password | N/A | Yes | Plugs in and flashes a device at the Builder-Pi, joins the workshop WiFi, and uses the dashboard (Cognito) to watch telemetry and trigger PQC migrations. Physically present with access to the hardware and the venue network. |
 | UP003 | Non-Human Identity / Service Account | ESP32 field device | Low | Customer | Service Account | Legitimate | Non-Human | Certificate | N/A | Yes | Authenticates to the broker with an mTLS client certificate; publishes dt/<thing>/* and subscribes to cmd/<thing>/*; downloads OTA firmware from presigned S3 URLs. |
-| UP004 | Non-Human Identity / Service Account | Builder-Pi edge host | Elevated | Employee | Service Account, Operator | Legitimate | Non-Human | IAM Role | N/A | Yes | On-site Raspberry Pi registered as an SSM managed instance (pqc-workshop-builder-pi-ssm role). Calls the builder API to register devices, downloads firmware from S3, flashes over USB, and runs the open Flask GUI on :8080 and the workshop WiFi AP. |
+| UP004 | Non-Human Identity / Service Account | Builder-Pi edge host | Elevated | Employee | Service Account, Operator | Legitimate | Non-Human | IAM Role | N/A | Yes | On-site Raspberry Pi registered as an SSM managed instance (pqc-workshop-builder-pi-ssm role). Calls the builder API to register devices, downloads firmware from S3, flashes over USB, and runs the loopback-only Flask GUI (127.0.0.1:8080, used at the Pi's console) and the workshop WiFi AP. |
 | UP005 | Non-Human Identity / Service Account | Mosquitto broker and IoT bridge | Medium | Employee | Service Account, Integration Endpoint | Legitimate | Non-Human | Certificate | N/A | Yes | Fargate task that terminates device PQC TLS and bridges to AWS IoT Core with its own client certificate (pqc-workshop-broker-bridge Thing). |
 | UP006 | Non-Human Identity / Service Account | Cloud workload roles | Elevated | Employee | Service Account | Legitimate | Non-Human | IAM Role | N/A | Yes | Lambda (registrar, deregistrar, prepare-build, publish-ota, start-migration, telemetry-processor, command-publisher, auto-register), CodeBuild (firmware build, image build, cert-issuer) and Step Functions roles that create IoT Things/policies, issue certificates and publish OTA. |
-| UP007 | Anonymous / Unauthenticated User | Unauthenticated internet or venue user | None | Public / Unknown | End User | Malicious | Human | None | N/A | Yes | Can reach the internet-facing NLB (8883/8884), the CloudFront dashboard and the builder API endpoint, and anyone in RF range or on the venue LAN can attempt the workshop AP and the Builder-Pi GUI. |
+| UP007 | Anonymous / Unauthenticated User | Unauthenticated internet or venue user | None | Public / Unknown | End User | Malicious | Human | None | N/A | Yes | Can reach the internet-facing NLB (8883/8884), the CloudFront dashboard and the builder API endpoint, and anyone in RF range or on the venue LAN can attempt the workshop AP (the Builder-Pi GUI is loopback-only). |
 | UP008 | Developer / DevOps User | Sample maintainer | Elevated | Employee | Developer | Legitimate | Human | Multi-factor | N/A | Yes | Commits to the internal GitLab repo and publishes the scrubbed public mirror to GitHub aws-samples and the Workshop Studio source zip. |
 
 ### Non-Functional Requirements
@@ -115,7 +115,7 @@ Post-Quantum Cryptography Migration for IoT workshop (AWS Workshop Studio / re:I
 |---|---|---|---|---|
 | C001 | ESP32 field device firmware | Compute | Other | One modular sketch built as three variants: classical (ECDHE + ECDSA cert, port 8883), pqc (SecP256r1MLKEM768 + ECDSA cert, 8883), pqc-mldsa (ML-KEM + ML-DSA-44 cert, 8884). Identity (keys, certs, both CA roots, WiFi) is loaded at boot from the unencrypted certs NVS partition; an identity issued for another chip is refused. mTLS to the broker with WOLFSSL_VERIFY_PEER chain check only (no hostname/SAN check). Publishes dt/<thing>/telemetry and lifecycle, subscribes cmd/<thing>/+. Dual-boot OTA: downloads from the URL in the command over TLS with WOLFSSL_VERIFY_NONE (no server cert check), enforces the sha256 from the same command if present, and verifies an ECDSA-P256 or ML-DSA-44 signature ONLY when the command includes sigAlg; an OTA without sigAlg is installed unsigned in every variant. The signer leaf must chain to the firmware-signing root for the image's sigAlg (sig_cls / sig_mldsa, separate CAs from the device roots) and carry the codeSigning EKU. |
 | C002 | Workshop WiFi access point | Network | On-Premise | 2.4GHz WPA2-PSK AP built by the configure-wifi-ap SSM document from /pqc-workshop/wifi/*. One shared PSK for every device and attendee; the same PSK is written into every device's certs partition. |
-| C003 | Builder-Pi edge host and Flask GUI | Compute | On-Premise | Flask GUI bound to 0.0.0.0:8080 with NO authentication or CSRF protection. Routes: /api/register, /api/reflash, /api/deregister, /api/serial/<port>, /api/scan, GET/POST /api/config (POST merges arbitrary JSON into config incl. API endpoint/bucket/region). Calls the builder API with SigV4 using SSM hybrid-activation role credentials, downloads the shared firmware pieces and the device's identity image from S3, USB-flashes them, then deletes every version of the identity image. |
+| C003 | Builder-Pi edge host and Flask GUI | Compute | On-Premise | Flask GUI bound to 127.0.0.1:8080 only and used from the Pi's own browser (console or KVM); an nftables rule drops :8080 on every other interface. No login; every request must carry a loopback Host header and every POST must be JSON. Routes: /api/devices, /api/register, /api/reflash, /api/deregister, /api/serial/<port>, /api/scan, /api/system-params (no config-write route). Calls the builder API with SigV4 using SSM hybrid-activation role credentials, downloads the shared firmware pieces and the device's identity image from S3, USB-flashes them, then deletes every version of the identity image. |
 | C004 | Broker Network Load Balancer | Network | AWS | Internet-facing NLB in public subnets. TCP listeners 8883 and 8884 pass TLS through to the broker (no termination). Broker SG allows 0.0.0.0/0 on both ports. VPC BPA exclusion (allow-bidirectional) lets IGW ingress through on BPA accounts. |
 | C005 | Mosquitto PQC broker | Container | AWS | Private subnets, no public IP, egress via NAT and VPC endpoints. Listener 8883 trusts the classical CA, 8884 the ML-DSA-44 CA; both require_certificate + use_identity_as_username, TLS 1.3 only. NO acl_file: any client holding any cert from the trusted CA can publish/subscribe to any topic. Loads broker and bridge credentials from Secrets Manager at startup. Logs connect/subscribe/publish events with client IDs and source IPs. |
 | C006 | Mosquitto to IoT Core bridge | Messaging | AWS | Bridge client pqc-workshop-broker-bridge connects to IoT Core 8883 with an IoT-issued X.509 cert (TLS 1.2, AmazonRootCA1). Bridges dt/+/telemetry out and cmd/# in; lifecycle is NOT bridged. Its IoT policy allows publish dt/* and shadow, subscribe/receive cmd/* and shadow wildcards: one identity speaks for every device. |
@@ -208,7 +208,7 @@ Post-Quantum Cryptography Migration for IoT workshop (AWS Workshop Studio / re:I
 | CN058 | Builder-Pi edge host and Flask GUI (C003) | SSM Parameter Store /pqc-workshop/* (D006) | HTTPS | 443 | Yes | GetParameter(s)/ByPath /pqc-workshop/* incl. WiFi PSK decrypt. |
 | CN059 | Builder-Pi edge host and Flask GUI (C003) | CloudWatch log groups (D010) | HTTPS | 443 | Yes | CloudWatch agent ships flash/serial logs to /pqc-workshop/builder-pi. |
 | CN060 | Builder-Pi edge host and Flask GUI (C003) | ESP32 field device firmware (C001) | Other | N/A | No | esptool erase/write of merged firmware and the serial console over USB. No authentication; physical access. |
-| CN061 | Workshop WiFi access point (C002) | Builder-Pi edge host and Flask GUI (C003) | HTTP | 8080 | No | Any client on the workshop AP (or a reachable LAN interface) can drive the UNAUTHENTICATED Flask GUI over plain HTTP: register/reflash/deregister devices, read serial output, and POST /api/config to re-point endpoints. |
+| CN061 | Workshop WiFi access point (C002) | Builder-Pi edge host and Flask GUI (C003) | HTTP | 8080 | No | No longer reachable (M010): the GUI listens on 127.0.0.1 only and nftables drops :8080 on the AP and LAN interfaces. Before ticket D570691687 any AP or LAN client could drive the unauthenticated GUI and POST /api/config. |
 | CN062 | Builder-Pi edge host and Flask GUI (C003) | SSM fleet management for the Builder-Pi (C027) | HTTPS | 443 | Yes | SSM agent registers with the hybrid activation and polls for Run Command. |
 | CN063 | SSM fleet management for the Builder-Pi (C027) | Builder-Pi edge host and Flask GUI (C003) | HTTPS | 443 | Yes | Run Command executes install-base / deploy-app / configure-service / configure-wifi-ap as root on the Pi. |
 | CN064 | SSM fleet management for the Builder-Pi (C027) | Secrets Manager secrets (D005) | HTTPS | 443 | Yes | Activation id/code stored in Secrets Manager iot/<instance>/*. |
@@ -471,14 +471,14 @@ Post-Quantum Cryptography Migration for IoT workshop (AWS Workshop Studio / re:I
 
 - **Trust Level**: Medium
 - **Architecture Nodes**: Builder-Pi edge host and Flask GUI (C003)
-- **Description**: On-site Raspberry Pi holding SSM-rotated AWS role credentials (whole firmware bucket, registry, WiFi PSK, builder API). Its Flask GUI on :8080 is unauthenticated.
+- **Description**: On-site Raspberry Pi holding SSM-rotated AWS role credentials (whole firmware bucket, registry, WiFi PSK, builder API). Its Flask GUI has no login but listens on 127.0.0.1 only and is used from the Pi's console.
 
 ### Trust Boundaries
 
 #### Venue physical and RF boundary
 
 - **Type**: Physical
-- **Controls**: Shared WPA2 PSK on the workshop AP, Physical supervision of the Builder-Pi USB station, None on the Builder-Pi GUI (gap)
+- **Controls**: Shared WPA2 PSK on the workshop AP, Physical supervision of the Builder-Pi USB station, Builder-Pi GUI loopback-only with nftables backstop (not network-reachable)
 - **Description**: Everything inside the workshop room: boards in attendees' hands, the shared-PSK AP, and USB access to the Builder-Pi. An attendee crosses this boundary legitimately, so it gives little protection.
 
 #### Internet to AWS public edge
@@ -669,36 +669,6 @@ Post-Quantum Cryptography Migration for IoT workshop (AWS Workshop Studio / re:I
 - **Residual Severity**: High
 - **Residual Likelihood**: Likely
 - **Residual Risk Rationale**: No revocation path; impact bounded by the throwaway account lifetime but extracted keys stay valid for the whole event. M009 needed.
-- **Assessment State**: Current
-
-#### T9: user on the workshop WiFi
-
-**Statement**: A user on the workshop WiFi with the shared PSK can drive the unauthenticated Builder-Pi GUI to deregister or reflash other attendees' devices and read their serial consoles, which leads to disruption of other attendees' devices and exposure of serial output
-
-- **Prerequisites**: with the shared PSK
-- **Action**: drive the unauthenticated Builder-Pi GUI to deregister or reflash other attendees' devices and read their serial consoles
-- **Impact**: disruption of other attendees' devices and exposure of serial output
-- **Impacted Assets**: A010
-- **Tags**: builder-pi, no-auth
-- **Residual Risk Decision**: Open
-- **Residual Severity**: High
-- **Residual Likelihood**: Likely
-- **Residual Risk Rationale**: Anyone on the AP can manage every device on the station. M010 is low cost.
-- **Assessment State**: Current
-
-#### T10: user on the workshop WiFi
-
-**Statement**: A user on the workshop WiFi with the shared PSK can POST to the Builder-Pi /api/config to re-point the firmware bucket or API endpoint to attacker-controlled resources, which leads to the Pi flashing attacker-supplied firmware onto the next boards plugged into the station
-
-- **Prerequisites**: with the shared PSK
-- **Action**: POST to the Builder-Pi /api/config to re-point the firmware bucket or API endpoint to attacker-controlled resources
-- **Impact**: the Pi flashing attacker-supplied firmware onto the next boards plugged into the station
-- **Impacted Assets**: A006, A010
-- **Tags**: builder-pi, no-auth, csrf
-- **Residual Risk Decision**: Open
-- **Residual Severity**: High
-- **Residual Likelihood**: Possible
-- **Residual Risk Rationale**: Runtime config changes can redirect flashing to attacker firmware. M010.
 - **Assessment State**: Current
 
 #### T12: attacker
@@ -941,6 +911,49 @@ Post-Quantum Cryptography Migration for IoT workshop (AWS Workshop Studio / re:I
 - **Residual Risk Rationale**: Resolved (M029): the OTA signers are issued only by two dedicated firmware-signing root CAs, with the codeSigning EKU. Devices trust only the signing root that matches the image's sigAlg and require codeSigning; device CA roots are used for TLS only. Verified on pqc-a hardware: an OTA signed with a device-CA certificate was refused (no chain to sig_cls), and one signed with a signing-root certificate lacking codeSigning was refused (no EKU). Residual: theft of a signer key from Secrets Manager or the build (T015, T016).
 - **Assessment State**: Current
 
+#### T9: user on the workshop WiFi
+
+**Statement**: A user on the workshop WiFi with the shared PSK can drive the unauthenticated Builder-Pi GUI to deregister or reflash other attendees' devices and read their serial consoles, which leads to disruption of other attendees' devices and exposure of serial output
+
+- **Prerequisites**: with the shared PSK
+- **Action**: drive the unauthenticated Builder-Pi GUI to deregister or reflash other attendees' devices and read their serial consoles
+- **Impact**: disruption of other attendees' devices and exposure of serial output
+- **Impacted Assets**: A010
+- **Tags**: builder-pi, no-auth
+- **Residual Risk Decision**: Accepted
+- **Residual Severity**: Low
+- **Residual Likelihood**: Unlikely
+- **Residual Risk Rationale**: Resolved (M010): the GUI listens on 127.0.0.1:8080 only and is used from the Pi's own browser (console or KVM); nftables drops :8080 on every other interface, and requests must carry a loopback Host header and POST JSON. Nothing on the AP or LAN can reach it. Verified on pqc-a (Nov 5): connections from the LAN and to the Pi's LAN address were refused, and a register + flash of C69E18 from the Pi's local browser succeeded. Residual: someone at the Pi's console, covered by physical supervision of the station.
+- **Assessment State**: Current
+
+#### T10: user on the workshop WiFi
+
+**Statement**: A user on the workshop WiFi with the shared PSK can POST to the Builder-Pi /api/config to re-point the firmware bucket or API endpoint to attacker-controlled resources, which leads to the Pi flashing attacker-supplied firmware onto the next boards plugged into the station
+
+- **Prerequisites**: with the shared PSK
+- **Action**: POST to the Builder-Pi /api/config to re-point the firmware bucket or API endpoint to attacker-controlled resources
+- **Impact**: the Pi flashing attacker-supplied firmware onto the next boards plugged into the station
+- **Impacted Assets**: A006, A010
+- **Tags**: builder-pi, no-auth, csrf
+- **Residual Risk Decision**: Accepted
+- **Residual Severity**: Low
+- **Residual Likelihood**: Unlikely
+- **Residual Risk Rationale**: Resolved (M010): /api/config is removed, so no config can be changed over HTTP, and the GUI is loopback-only. Even before the fix the Pi role could not read any bucket but the workshop firmware bucket (IAM simulation on pqc-a), so an attacker-hosted image could not be fetched. Verified on pqc-a (Nov 5): /api/config returns 404 and config.json carries no gui_host.
+- **Assessment State**: Current
+
+#### T25: user on the workshop WiFi
+**Statement**: A user on the workshop WiFi with network access to the Builder-Pi GUI can set firmware_version through POST /api/config to a path outside the firmware directory, so the next flash writes the device's identity image into the Flask static folder where GET /static/certs.bin serves it, which leads to disclosure of a device's private keys and the workshop WiFi PSK
+- **Prerequisites**: with network access to the Builder-Pi GUI
+- **Action**: set firmware_version through POST /api/config to a path outside the firmware directory, so the next flash writes the device's identity image into the Flask static folder where GET /static/certs.bin serves it
+- **Impact**: disclosure of a device's private keys and the workshop WiFi PSK
+- **Impacted Assets**: A001, A005
+- **Tags**: builder-pi, path-traversal
+- **Residual Risk Decision**: Accepted
+- **Residual Severity**: Low
+- **Residual Likelihood**: Unlikely
+- **Residual Risk Rationale**: Resolved (M030, M010): download inputs are allowlisted and the local path must resolve inside FIRMWARE_DIR; /api/config is removed and the GUI is loopback-only; the local identity image is deleted whatever the flash outcome. Found by code review during security ticket D570691687 (not exploited); unit tests cover the reported traversal value.
+- **Assessment State**: Current
+
 ## Mitigations
 
 ### Identified Mitigations
@@ -972,10 +985,6 @@ Post-Quantum Cryptography Migration for IoT workshop (AWS Workshop Studio / re:I
 #### M9: Make device identity revocable: enable CRLs on both Private CAs, revoke the device cert in the deregistrar, and have Mosquitto check the CRL (or an auth plugin that checks the registry).
 
 **Addresses Threats**: T8
-
-#### M10: Lock down the Builder-Pi GUI: require an operator token, add CSRF protection, make /api/config read-only at runtime, and bind the GUI away from the attendee AP interface.
-
-**Addresses Threats**: T9, T10
 
 #### M11: Least-privilege Builder-Pi role: drop bucket-wide firmware read and registry Scan; the builder API returns a short-lived presigned URL for just the device being flashed.
 
@@ -1064,6 +1073,13 @@ Post-Quantum Cryptography Migration for IoT workshop (AWS Workshop Studio / re:I
 #### M29: Separate code signing from device identity: the OTA signer certificates are issued only by two dedicated firmware-signing root CAs (ECDSA P-256 and ML-DSA-44) with the codeSigning EKU; the device trusts only the signing root matching the image's sigAlg, requires codeSigning on the signer leaf, and never trusts a device CA root for OTA.
 
 **Addresses Threats**: T24
+
+#### M10: Lock down the Builder-Pi GUI: bind it to 127.0.0.1:8080 only (used from the Pi's own browser, at its console or through a KVM), remove /api/config, require a loopback Host header and JSON POSTs, and drop :8080 on every non-loopback interface with nftables.
+
+**Addresses Threats**: T9, T10, T25
+
+#### M30: Validate Builder-Pi download inputs: allowlist the serial, firmware version, S3 prefix and identity key, require the local path to resolve inside the firmware directory, and delete the local identity image whether or not the flash succeeds.
+**Addresses Threats**: T25
 
 ## Assumptions
 

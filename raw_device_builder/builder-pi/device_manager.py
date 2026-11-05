@@ -13,6 +13,7 @@ NVS partition) in one esptool call, at the offsets in FLASH_LAYOUT. It does not
 use firmware.merged.bin, which is padded to 8 MB and would overwrite "certs".
 """
 
+import re
 import subprocess
 import sys
 import time
@@ -44,6 +45,46 @@ FLASH_LAYOUT = [
     ("0x10000", "app.bin", "firmware.bin"),
     ("0x721000", IDENTITY_FILE, None),             # "certs" NVS partition
 ]
+
+
+# Allowlists for the values that shape S3 keys and local paths. Serials are the
+# last 3 MAC bytes as hex (get_serial_number); versions are <semver>-<variant>.
+SERIAL_RE = re.compile(r'^[0-9A-F]{6}$')
+VERSION_RE = re.compile(r'^[0-9]+\.[0-9]+\.[0-9]+-[a-z0-9]+$')
+SHARED_PREFIX_RE = re.compile(r'^shared/[0-9]+\.[0-9]+\.[0-9]+-[a-z0-9]+$')
+
+
+def validate_download(serial: str, version: str, s3_prefix: str,
+                      identity_key: str) -> Optional[str]:
+    """None if every download input is well formed, else a reason string."""
+    if not SERIAL_RE.match(serial or ''):
+        return f'bad serial {serial!r}'
+    if not VERSION_RE.match(version or ''):
+        return f'bad firmware version {version!r}'
+    if not SHARED_PREFIX_RE.match(s3_prefix or ''):
+        return f'bad firmware prefix {s3_prefix!r}'
+    if identity_key != f'identity/{serial}/certs.bin':
+        return f'identity key {identity_key!r} is not this device\'s'
+    return None
+
+
+def safe_local_dir(serial: str, version: str) -> Optional[str]:
+    """FIRMWARE_DIR/<serial>/<version>, or None if it resolves outside
+    FIRMWARE_DIR (defence in depth behind validate_download)."""
+    root = os.path.realpath(FIRMWARE_DIR)
+    path = os.path.realpath(os.path.join(root, serial, version))
+    return path if path.startswith(root + os.sep) else None
+
+
+def remove_local_identity(firmware_dir: str) -> bool:
+    """Delete the local identity image; True if it is gone afterwards."""
+    try:
+        os.remove(os.path.join(firmware_dir, IDENTITY_FILE))
+    except FileNotFoundError:
+        pass
+    except OSError:
+        return False
+    return True
 
 
 def flash_args(firmware_dir: str) -> List[str]:
@@ -330,9 +371,19 @@ class DeviceManager:
 
         firmware_version = self.config.get('firmware_version', '1.0.0-classical')
         s3_prefix = (firmware_prefix or f'shared/{firmware_version}').rstrip('/')
-        local_dir = os.path.join(FIRMWARE_DIR, slot.serial_number, firmware_version)
-        os.makedirs(local_dir, exist_ok=True)
         identity_key = identity_key or f'identity/{slot.serial_number}/certs.bin'
+        # Every value below shapes an S3 key or a local path, and two of them
+        # come from the builder API's response. Allowlist each one, and make
+        # sure the local directory resolves inside FIRMWARE_DIR, so nothing can
+        # point a download (incl. the identity image with its private keys)
+        # anywhere else (security ticket D570691687).
+        problem = validate_download(slot.serial_number, firmware_version, s3_prefix, identity_key)
+        local_dir = None if problem else safe_local_dir(slot.serial_number, firmware_version)
+        if problem or not local_dir:
+            slot.error = f'Refusing download: {problem or "local path escapes the firmware directory"}'
+            slot.log(f'ERROR: {slot.error}')
+            return None
+        os.makedirs(local_dir, exist_ok=True)
 
         try:
             s3 = self._s3()
@@ -454,13 +505,17 @@ class DeviceManager:
     def flash_device(self, port: str, firmware_dir: str) -> bool:
         """Flash firmware + identity; on success delete the identity image.
 
-        On failure the identity image is kept (locally and in S3) so a retry
-        can flash it without re-issuing.
+        The local copy (it holds the device private keys) is removed whatever
+        the outcome. A retry never reuses it: Reflash issues a fresh identity.
+        On failure the S3 copy is left for the deregistrar or the bucket's
+        one-day lifecycle rule; the next successful flash deletes every version.
         """
         if not self.flash_firmware(port, firmware_dir):
             slot = self.devices.get(port)
+            removed = remove_local_identity(firmware_dir)
             if slot:
-                slot.log('Flash failed; keeping the identity image for a retry')
+                slot.log('Flash failed; removed the local identity image' if removed
+                         else 'Flash failed; WARN: could not remove the local identity image')
             return False
         self.delete_identity(self.devices[port], firmware_dir)
         return True

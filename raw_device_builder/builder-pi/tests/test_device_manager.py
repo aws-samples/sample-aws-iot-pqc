@@ -134,7 +134,10 @@ def test_flash_device_deletes_all_identity_versions_after_success(env, monkeypat
     assert slot.identity_key is None
 
 
-def test_flash_device_keeps_identity_on_failure(env, monkeypatch):
+def test_flash_failure_removes_local_identity_but_leaves_s3(env, monkeypatch):
+    """The local copy holds the private keys and is never reused (Reflash
+    issues a new identity), so it goes even when the flash fails. The S3 copy
+    is left for the deregistrar / lifecycle rule / next successful flash."""
     dm, slot, s3 = env
     version = _put_identity(s3)
     fw_dir = dm.download_firmware(slot, IDENTITY_KEY)
@@ -144,7 +147,59 @@ def test_flash_device_keeps_identity_on_failure(env, monkeypatch):
 
     versions = s3.list_object_versions(Bucket=BUCKET, Prefix=IDENTITY_KEY)["Versions"]
     assert [v["VersionId"] for v in versions] == [version]
-    assert os.path.exists(os.path.join(fw_dir, "certs.bin"))
+    assert not os.path.exists(os.path.join(fw_dir, "certs.bin"))
+
+
+# ─── Download input validation (security ticket D570691687) ─────────────────
+
+@pytest.mark.parametrize("version", [
+    "../../builder-app/static",   # the reported traversal into Flask's static/
+    "../x", "1.0.0", "1.0.0-Classical", "1.0.0-classical/../..", "",
+])
+def test_download_refuses_bad_firmware_version(env, version):
+    dm, slot, s3 = env
+    _put_identity(s3)
+    dm.config["firmware_version"] = version
+    assert dm.download_firmware(slot, IDENTITY_KEY, f"shared/{VERSION}") is None
+    assert "Refusing download" in slot.error
+    # Nothing was written anywhere, inside or outside FIRMWARE_DIR.
+    assert not os.path.exists(device_manager.FIRMWARE_DIR)
+
+
+@pytest.mark.parametrize("prefix", [
+    "shared/../identity", "C69DE0/1.0.0-classical", "shared/1.0.0-classical/../../x",
+    "s3://other-bucket/shared/1.0.0-classical", "shared/",
+])
+def test_download_refuses_bad_firmware_prefix(env, prefix):
+    dm, slot, s3 = env
+    _put_identity(s3)
+    assert dm.download_firmware(slot, IDENTITY_KEY, prefix) is None
+    assert "bad firmware prefix" in slot.error
+
+
+@pytest.mark.parametrize("key", [
+    "identity/FC22E0/certs.bin",            # another device's identity
+    f"identity/{SERIAL}/../FC22E0/certs.bin",
+    f"identity/{SERIAL}/other.bin",
+])
+def test_download_refuses_another_identity_key(env, key):
+    dm, slot, _s3 = env
+    assert dm.download_firmware(slot, key) is None
+    assert "is not this device's" in slot.error
+
+
+@pytest.mark.parametrize("serial", ["../../x", "c69de0", "C69DE0/..", "C69DE", ""])
+def test_download_refuses_bad_serial(env, serial):
+    dm, slot, _s3 = env
+    slot.serial_number = serial
+    assert dm.download_firmware(slot, f"identity/{serial}/certs.bin") is None
+    assert "bad serial" in slot.error
+
+
+def test_safe_local_dir_stays_inside_firmware_dir(env):
+    root = os.path.realpath(device_manager.FIRMWARE_DIR)
+    assert device_manager.safe_local_dir(SERIAL, VERSION) == os.path.join(root, SERIAL, VERSION)
+    assert device_manager.safe_local_dir(SERIAL, "../../escape") is None
 
 
 def test_flash_refuses_when_a_piece_is_missing(env, monkeypatch):

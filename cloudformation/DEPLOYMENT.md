@@ -317,7 +317,8 @@ configure-service → configure-wifi-ap):
 ```
 
 The GUI **auto-starts** at the end (systemd `enable`d + started), reachable at
-`http://<pi-ip>:8080`, **and the workshop 2.4 GHz WiFi AP is brought up on the
+`http://127.0.0.1:8080` in the Pi's own browser (loopback only; use the Pi's
+console or a KVM), **and the workshop 2.4 GHz WiFi AP is brought up on the
 Pi's USB radio** by the final `configure-wifi-ap` document — so the Pi ends fully
 networked with no manual step (see §7). No step is slow: on a freshly imaged Pi
 the longest is the first `apt` and `pip` install. Every step's output is
@@ -486,7 +487,8 @@ ip -s link show wlan1
 The smoke test that proves the whole environment works end to end. The step 4
 build must have reached `SUCCEEDED` first (the shared firmware must exist).
 
-1. Open the Builder-Pi GUI at `http://<pi-ip>:8080` (the IP from step 6.1).
+1. Open the Builder-Pi GUI at `http://127.0.0.1:8080` in the Pi's own browser
+   (its console, or a KVM attached to the Pi). It listens on loopback only.
 2. Plug an ESP32 into a USB port on the Pi. The GUI auto-detects it and shows
    its serial number.
 3. Click **Register & Flash**.

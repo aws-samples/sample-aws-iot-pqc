@@ -275,7 +275,8 @@ That orchestrator waits for the Pi to come Online, then runs, in order:
   3. configure-service    (udev, systemd; the GUI auto-starts)
   4. configure-wifi-ap    (the workshop 2.4 GHz WiFi AP)
 
-When it finishes, the GUI is running at http://<pi-ip>:8080
+When it finishes, open http://127.0.0.1:8080 in the Pi's own browser (its
+console or a KVM). The GUI listens on loopback only.
 
 Activation ID: $ACTIVATION_ID   (expires in 7 days — re-run this bundler if needed)
 README

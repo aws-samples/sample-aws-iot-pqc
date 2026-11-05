@@ -52,26 +52,33 @@ suppress it.
 
 ---
 
-## Accepted: Bandit `B104` — builder-Pi GUI binds all interfaces (by design)
+## Resolved: Bandit `B104` — builder-Pi GUI bound all interfaces
 
 - **Scanner / rule:** Bandit `B104` "Possible binding to all interfaces"
-  (WARNING).
-- **File:** `raw_device_builder/builder-pi/app.py` — the `gui_host` default
-  (`config.get('gui_host', '0.0.0.0')`).
-- **Status:** Accepted — by design. Annotated `# nosec B104` in code; baseline
-  in the scanner UI (Probe/Bandit ignore inline `# nosec`).
+  (WARNING), with Slingshot/Semgrep `avoid_app_run_with_bad_host`.
+- **File:** `raw_device_builder/builder-pi/app.py`.
+- **Status:** Resolved in source. The earlier "accepted by design" entry is
+  withdrawn: an external security report (ticket D570691687) showed that the
+  all-interfaces bind exposed the GUI's unauthenticated routes to anyone on the
+  workshop access point or the venue LAN.
 
-The builder-Pi Flask GUI is reached from the operator's laptop over the Pi's
-workshop WiFi access point, not from the Pi itself, so it must listen on the AP
-interface — a loopback bind would make it unreachable and break the workshop
-out of the box. The bind host is read from `config.json` (`gui_host`) and is
-operator-overridable: it can be narrowed to the AP interface IP or to
-`127.0.0.1`. The all-interfaces value is the documented default, not a
-hardcoded bind, and the exposure is limited to the Pi's own workshop LAN.
-(The companion Slingshot/Semgrep `avoid_app_run_with_bad_host` finding was
-resolved in source by sourcing the host from config — see the Slingshot
-section below — but Bandit's `B104` matches the `'0.0.0.0'` default literal
-wherever it appears, so it remains as this documented acceptance.)
+The GUI now listens on `127.0.0.1:8080` only, and the bind is no longer
+configurable (`gui_host` / `gui_port` in an old `config.json` are ignored). The
+operator uses it from the Pi's own browser, at its console or through a KVM;
+the Pi's network connection is only used for outbound HTTPS to AWS. Alongside
+the bind:
+
+- `POST /api/config` (which merged any JSON into the saved config) is removed;
+  config is written only by the SSM `deploy-app` step from SSM parameters.
+- Every request must carry a loopback `Host` header (blocks DNS rebinding) and
+  every POST must be JSON (a cross-site form cannot send it without a CORS
+  preflight, which the app never grants).
+- Download inputs (serial, firmware version, S3 prefix, identity key) are
+  allowlisted and the local path must resolve inside the firmware directory;
+  the local identity image is deleted whether or not the flash succeeds.
+- `configure-service` adds an nftables rule dropping inbound `:8080` on every
+  non-loopback interface, and fails the step if anything other than
+  `127.0.0.1:8080` is listening.
 
 ## Accepted INFO-tier noise
 
@@ -107,13 +114,8 @@ into three groups.
 ## Resolved in source (Slingshot)
 
 - **`avoid_app_run_with_bad_host` (HIGH)** — `raw_device_builder/builder-pi/app.py`.
-  The builder-Pi Flask GUI bind host is now read from config
-  (`config.json` → `gui_host`) instead of a hardcoded `'0.0.0.0'` literal in the
-  `app.run()` call. The default remains all-interfaces because the GUI is
-  reached from the operator's laptop over the Pi's workshop WiFi access point
-  (loopback would make it unreachable), but operators can now narrow it to the
-  AP interface IP or `127.0.0.1`. Making the bind a documented, overridable
-  deployment choice is the improvement; behavior is unchanged by default.
+  The builder-Pi Flask GUI now binds to a fixed `127.0.0.1:8080` and is used
+  from the Pi's own browser. See "Resolved: Bandit `B104`" above.
 
 - **`S3 Example Bucket Naming` (HIGH)** — `raw_device_builder/README.md`.
   The example `aws cloudformation deploy` command used a concrete, guessable

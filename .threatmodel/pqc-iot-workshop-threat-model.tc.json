@@ -130,8 +130,8 @@
     {
       "id": "28f6cd02-0682-5137-864c-5809d1996611",
       "numericId": 10,
-      "status": "mitigationIdentified",
-      "content": "Lock down the Builder-Pi GUI: require an operator token, add CSRF protection, make /api/config read-only at runtime, and bind the GUI away from the attendee AP interface.",
+      "status": "mitigationResolved",
+      "content": "Lock down the Builder-Pi GUI: bind it to 127.0.0.1:8080 only (used from the Pi's own browser, at its console or through a KVM), remove /api/config, require a loopback Host header and JSON POSTs, and drop :8080 on every non-loopback interface with nftables.",
       "displayOrder": 10,
       "metadata": []
     },
@@ -285,6 +285,14 @@
       "status": "mitigationResolved",
       "content": "Separate code signing from device identity: the OTA signer certificates are issued only by two dedicated firmware-signing root CAs (ECDSA P-256 and ML-DSA-44) with the codeSigning EKU; the device trusts only the signing root matching the image's sigAlg, requires codeSigning on the signer leaf, and never trusts a device CA root for OTA.",
       "displayOrder": 29,
+      "metadata": []
+    },
+    {
+      "id": "3a893f20-b972-4f7f-8dde-5990cb1c154c",
+      "numericId": 30,
+      "status": "mitigationResolved",
+      "content": "Validate Builder-Pi download inputs: allowlist the serial, firmware version, S3 prefix and identity key, require the local path to resolve inside the firmware directory, and delete the local identity image whether or not the flash succeeds.",
+      "displayOrder": 30,
       "metadata": []
     }
   ],
@@ -473,6 +481,14 @@
     {
       "mitigationId": "9792381f-1bd2-548e-a804-93bbb51476fd",
       "linkedId": "09ef5efa-0937-56fb-8409-c24c4b58a2d6"
+    },
+    {
+      "mitigationId": "3a893f20-b972-4f7f-8dde-5990cb1c154c",
+      "linkedId": "f9ec7394-7d5c-4334-80bb-e67ec4f5451d"
+    },
+    {
+      "mitigationId": "28f6cd02-0682-5137-864c-5809d1996611",
+      "linkedId": "f9ec7394-7d5c-4334-80bb-e67ec4f5451d"
     }
   ],
   "threats": [
@@ -745,7 +761,7 @@
       ],
       "statement": "A user on the workshop WiFi with the shared PSK can drive the unauthenticated Builder-Pi GUI to deregister or reflash other attendees' devices and read their serial consoles, which leads to disruption of other attendees' devices and exposure of serial output",
       "displayOrder": 9,
-      "status": "threatIdentified",
+      "status": "threatResolved",
       "tags": [
         "builder-pi",
         "no-auth"
@@ -777,7 +793,7 @@
       ],
       "statement": "A user on the workshop WiFi with the shared PSK can POST to the Builder-Pi /api/config to re-point the firmware bucket or API endpoint to attacker-controlled resources, which leads to the Pi flashing attacker-supplied firmware onto the next boards plugged into the station",
       "displayOrder": 10,
-      "status": "threatIdentified",
+      "status": "threatResolved",
       "tags": [
         "builder-pi",
         "no-auth",
@@ -1233,6 +1249,38 @@
             "S"
           ]
         }
+      ]
+    },
+    {
+      "id": "f9ec7394-7d5c-4334-80bb-e67ec4f5451d",
+      "numericId": 25,
+      "statement": "A user on the workshop WiFi with network access to the Builder-Pi GUI can set firmware_version through POST /api/config to a path outside the firmware directory, so the next flash writes the device's identity image into the Flask static folder where GET /static/certs.bin serves it, which leads to disclosure of a device's private keys and the workshop WiFi PSK",
+      "displayOrder": 25,
+      "status": "threatResolved",
+      "metadata": [
+        {
+          "key": "Priority",
+          "value": "High"
+        },
+        {
+          "key": "STRIDE",
+          "value": [
+            "I"
+          ]
+        }
+      ],
+      "threatSource": "user on the workshop WiFi",
+      "prerequisites": "with network access to the Builder-Pi GUI",
+      "threatAction": "set firmware_version through POST /api/config to a path outside the firmware directory, so the next flash writes the device's identity image into the Flask static folder where GET /static/certs.bin serves it",
+      "threatImpact": "disclosure of a device's private keys and the workshop WiFi PSK",
+      "impactedGoal": [],
+      "impactedAssets": [
+        "A001",
+        "A005"
+      ],
+      "tags": [
+        "builder-pi",
+        "path-traversal"
       ]
     }
   ]

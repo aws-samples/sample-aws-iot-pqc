@@ -251,7 +251,11 @@
 
         async function scanPorts() {
             try {
-                await fetch('/api/scan', { method: 'POST' });
+                await fetch('/api/scan', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: '{}'
+            });
             } catch (err) {
                 console.error('Scan failed:', err);
             }
