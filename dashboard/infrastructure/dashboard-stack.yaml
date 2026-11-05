@@ -111,10 +111,6 @@ Resources:
         rules_to_suppress:
           - id: F78
             reason: "single shared workshop-passcode user for a time-limited event; the passcode is random per deploy and the pool is deleted at teardown, so MFA has no second factor to bind to"
-      checkov:
-        skip:
-          - id: CKV_AWS_366
-            comment: "not an identity pool; no unauthenticated access is configured"
     Properties:
       # Not unique in Cognito, so a fixed name cannot collide on redeploys.
       UserPoolName: pqc-workshop-dashboard
