@@ -598,6 +598,8 @@ put_param /pqc-workshop/dashboard/appSyncEndpoint "$APPSYNC_ENDPOINT"
 put_param /pqc-workshop/dashboard/identityPoolId  "$IDENTITY_POOL"
 put_param /pqc-workshop/dashboard/apiEndpoint     "$API_ENDPOINT"
 put_param /pqc-workshop/dashboard/region          "$AWS_REGION"
+put_param /pqc-workshop/dashboard/userPoolId      "$(get_out DashboardUserPoolId)"
+put_param /pqc-workshop/dashboard/userPoolClientId "$(get_out DashboardUserPoolClientId)"
 put_param /pqc-workshop/builder-pi/apiEndpoint    "$API_ENDPOINT"
 put_param /pqc-workshop/builder-pi/firmwareBucket "$FIRMWARE_BUCKET"
 put_param /pqc-workshop/builder-pi/region         "$AWS_REGION"
@@ -645,6 +647,56 @@ if [[ "$WORKSHOP_WIFI_SSID" == "changeme" || "$WORKSHOP_WIFI_PASSWORD" == "chang
     echo "          join a real network. Re-run with WORKSHOP_WIFI_SSID and"
     echo "          WORKSHOP_WIFI_PASSWORD set to the real workshop credentials."
 fi
+
+# ─── Dashboard sign-in: the workshop passcode ────────────────────────────────
+# Attendees sign in to the dashboard with one passcode the facilitator shows on
+# screen. It is the password of the single "workshop" user in the dashboard's
+# Cognito user pool, so Cognito verifies it; guest access is off. A NEW pool
+# (every from-scratch deploy) gets a fresh random passcode; a redeploy into the
+# same stack keeps the existing one so signed-in attendees are not disrupted.
+# Stored as a SecureString OUTSIDE /pqc-workshop/dashboard/*, which the
+# dashboard build can read.
+DASHBOARD_USER_POOL=$(get_out DashboardUserPoolId)
+DASHBOARD_PASSCODE_PARAM=/pqc-workshop/dashboard-auth/passcode
+DASHBOARD_USER=workshop
+if [[ -z "$DASHBOARD_USER_POOL" || "$DASHBOARD_USER_POOL" == "None" ]]; then
+    echo "[ERROR] DashboardUserPoolId stack output is missing; cannot set the dashboard passcode."
+    exit 1
+fi
+new_passcode() {
+    # 8 characters from a 31-symbol alphabet (no 0/O, 1/I/L), ~40 bits. Read a
+    # fixed amount of randomness first: piping /dev/urandom straight into head
+    # ends with tr killed by SIGPIPE, which pipefail turns into a failed deploy.
+    local raw
+    raw=$(head -c 512 /dev/urandom | LC_ALL=C tr -dc 'ABCDEFGHJKMNPQRSTUVWXYZ23456789')
+    printf '%s' "${raw:0:8}"
+}
+if aws cognito-idp admin-get-user --user-pool-id "$DASHBOARD_USER_POOL" \
+        --username "$DASHBOARD_USER" --region "$AWS_REGION" >/dev/null 2>&1; then
+    DASHBOARD_PASSCODE=$(_ssm_value "$DASHBOARD_PASSCODE_PARAM")
+    if [[ -z "$DASHBOARD_PASSCODE" || "$DASHBOARD_PASSCODE" == "None" ]]; then
+        DASHBOARD_PASSCODE=$(new_passcode)
+        echo "  - dashboard passcode missing from SSM: generated a new one"
+    else
+        echo "  - dashboard user exists: keeping the current workshop passcode"
+    fi
+else
+    DASHBOARD_PASSCODE=$(new_passcode)
+    echo "  - new dashboard user pool: creating the '$DASHBOARD_USER' user with a fresh passcode"
+    aws cognito-idp admin-create-user --user-pool-id "$DASHBOARD_USER_POOL" \
+        --username "$DASHBOARD_USER" --message-action SUPPRESS \
+        --region "$AWS_REGION" >/dev/null
+fi
+if [[ ${#DASHBOARD_PASSCODE} -ne 8 ]]; then
+    echo "[ERROR] could not generate the dashboard passcode."
+    exit 1
+fi
+aws ssm put-parameter --name "$DASHBOARD_PASSCODE_PARAM" --type SecureString \
+    --overwrite --value "$DASHBOARD_PASSCODE" --region "$AWS_REGION" >/dev/null
+# --permanent so the user is CONFIRMED and signs in without a reset challenge.
+aws cognito-idp admin-set-user-password --user-pool-id "$DASHBOARD_USER_POOL" \
+    --username "$DASHBOARD_USER" --password "$DASHBOARD_PASSCODE" --permanent \
+    --region "$AWS_REGION" >/dev/null
 
 fi  # end of full-deploy-only block (skipped by --stage-only)
 
@@ -721,6 +773,8 @@ echo "════════════════════════�
 echo "  Deployment complete!"
 echo "═══════════════════════════════════════════════════════════════"
 echo "  Dashboard:  $(get_out DashboardURL)"
+echo "  Dashboard passcode (show this to attendees): $DASHBOARD_PASSCODE"
+echo "    retrieve it later with: aws ssm get-parameter --name $DASHBOARD_PASSCODE_PARAM --with-decryption --query Parameter.Value --output text"
 echo "  Broker:     $(get_out BrokerEndpoint):8883"
 echo ""
 echo "[5/5] Done."

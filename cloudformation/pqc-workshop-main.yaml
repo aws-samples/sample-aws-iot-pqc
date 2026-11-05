@@ -334,6 +334,14 @@ Outputs:
     Description: Cognito Identity Pool ID for dashboard
     Value: !GetAtt DashboardStack.Outputs.CognitoIdentityPoolId
 
+  DashboardUserPoolId:
+    Description: Cognito user pool for the dashboard's workshop-passcode sign-in
+    Value: !GetAtt DashboardStack.Outputs.DashboardUserPoolId
+
+  DashboardUserPoolClientId:
+    Description: Cognito app client the dashboard signs in with
+    Value: !GetAtt DashboardStack.Outputs.DashboardUserPoolClientId
+
   # ─── IoT Core ─────────────────────────────────────────────────────────────
   IoTEndpoint:
     Description: >

@@ -380,3 +380,90 @@ footer {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+/* ─── Sign-in (workshop passcode) ─────────────────────────────────────────── */
+.login-page {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 100vh;
+}
+.login-card {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: 100%;
+  max-width: 420px;
+  padding: 32px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+}
+.login-card h1 { font-size: 1.3rem; font-weight: 700; }
+.login-hint { color: var(--text-secondary); margin-bottom: 8px; }
+.login-card label { font-size: 0.85rem; color: var(--text-secondary); }
+.passcode-input,
+.serial-input {
+  padding: 10px 12px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 1.4rem;
+  letter-spacing: 0.25em;
+  text-transform: uppercase;
+  color: var(--text-primary);
+  background: var(--bg-primary);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.passcode-input:focus,
+.serial-input:focus {
+  outline: 2px solid var(--accent-blue);
+  outline-offset: 1px;
+}
+.login-card button {
+  padding: 10px 16px;
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  background: var(--accent-blue);
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+}
+.login-card button:disabled { opacity: 0.5; cursor: not-allowed; }
+.login-error { color: var(--accent-red); font-size: 0.9rem; }
+
+/* ─── Toolbar: device filter + sign out ───────────────────────────────────── */
+.toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 16px;
+  margin-bottom: 20px;
+}
+.view-toggle { display: inline-flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+.view-toggle button {
+  padding: 8px 14px;
+  font-size: 0.9rem;
+  color: var(--text-secondary);
+  background: var(--bg-secondary);
+  border: none;
+  cursor: pointer;
+}
+.view-toggle button + button { border-left: 1px solid var(--border); }
+.view-toggle button[aria-pressed="true"] { color: var(--text-primary); background: var(--accent-blue); }
+.view-toggle button:focus-visible,
+.signout-btn:focus-visible { outline: 2px solid var(--accent-blue); outline-offset: 2px; }
+.my-device { display: flex; align-items: center; gap: 8px; }
+.my-device label { font-size: 0.85rem; color: var(--text-secondary); }
+.serial-input { width: 9.5em; font-size: 1rem; padding: 6px 10px; }
+.signout-btn {
+  margin-left: auto;
+  padding: 8px 14px;
+  font-size: 0.9rem;
+  color: var(--text-secondary);
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  cursor: pointer;
+}
+.signout-btn:hover { color: var(--text-primary); border-color: var(--accent-blue); }

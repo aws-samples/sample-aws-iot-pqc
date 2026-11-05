@@ -24,10 +24,39 @@ Browser (Dashboard)                     AWS Cloud
                                         |  Lambda (command-publisher)               |
                                         |    - Publishes cmd/<thing>/... to IoT Core|
                                         |                                          |
-                                        |  Cognito Identity Pool                   |
-                                        |    - Unauthenticated access for dashboard |
+                                        |  Cognito user pool + identity pool       |
+                                        |    - Workshop-passcode sign-in; no guest |
                                         +------------------------------------------+
 ```
+
+## Signing in
+
+The dashboard asks for a **workshop passcode** before it shows anything. The
+facilitator puts the passcode on screen; attendees type it in (it is upper-cased
+for them) and stay signed in for the day.
+
+- The passcode is the password of a single `workshop` user in the dashboard's
+  Cognito user pool, so Cognito checks it. There is no sign-up and no guest
+  access: the identity pool hands AWS credentials only to signed-in users, and
+  that role may call only the read queries plus `sendCommand` and
+  `migrateFirmware` (not `updateDevice`, which only the telemetry processor
+  writes).
+- `deploy-workshop.sh` generates a fresh random passcode (8 characters, no
+  look-alike letters or digits) whenever the user pool is new, so every
+  from-scratch deploy gets a new one. A redeploy into the same stack keeps it.
+  It is printed at the end of the deploy and stored as an SSM SecureString:
+
+  ```bash
+  aws ssm get-parameter --name /pqc-workshop/dashboard-auth/passcode \
+    --with-decryption --query Parameter.Value --output text
+  ```
+
+- Everyone shares the one user, so Cognito's lockout applies to the room as a
+  whole: after five wrong passcodes it locks sign-in briefly (from one second,
+  doubling up to about 15 minutes). The sign-in page tells people to wait.
+- After signing in, **All devices / My device** filters the view. My device
+  shows the card for the 6-character code on the attendee's label. It only
+  filters what is shown: anyone signed in can still act on any device.
 
 ## Data Flow
 
@@ -91,6 +120,17 @@ aws s3 sync build/ "s3://$(aws cloudformation describe-stacks \
   --stack-name pqc-workshop-dashboard \
   --query 'Stacks[0].Outputs[?OutputKey==`DashboardBucketName`].OutputValue' \
   --output text)"
+```
+
+A standalone deploy does not create the passcode user (the workshop deploy
+script does). Create it once, with a passcode of at least 8 characters:
+
+```bash
+POOL=$(aws cloudformation describe-stacks --stack-name pqc-workshop-dashboard \
+  --query 'Stacks[0].Outputs[?OutputKey==`DashboardUserPoolId`].OutputValue' --output text)
+aws cognito-idp admin-create-user --user-pool-id "$POOL" --username workshop --message-action SUPPRESS
+aws cognito-idp admin-set-user-password --user-pool-id "$POOL" --username workshop \
+  --password '<PASSCODE>' --permanent
 ```
 
 Get the dashboard URL:

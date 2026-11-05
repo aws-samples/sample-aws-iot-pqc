@@ -18,6 +18,9 @@
 const config = {
   appSyncEndpoint: '',
   identityPoolId: '',
+  // Cognito user pool + app client for the workshop-passcode sign-in.
+  userPoolId: '',
+  userPoolClientId: '',
   apiEndpoint: '',
   region: 'us-east-1',
   pollInterval: 5000,
@@ -50,7 +53,8 @@ export async function loadConfig() {
         '). The dashboard config was not deployed correctly.'
     );
   }
-  if (!loaded.appSyncEndpoint || !loaded.apiEndpoint || !loaded.identityPoolId) {
+  if (!loaded.appSyncEndpoint || !loaded.apiEndpoint || !loaded.identityPoolId
+      || !loaded.userPoolId || !loaded.userPoolClientId) {
     throw new Error('config.json is missing required endpoints');
   }
   // Copy only the known config keys explicitly (rather than a blanket
@@ -58,6 +62,8 @@ export async function loadConfig() {
   // this allow-list and never extended by arbitrary keys from config.json.
   config.appSyncEndpoint = loaded.appSyncEndpoint;
   config.identityPoolId = loaded.identityPoolId;
+  config.userPoolId = loaded.userPoolId;
+  config.userPoolClientId = loaded.userPoolClientId;
   config.apiEndpoint = loaded.apiEndpoint;
   if (loaded.region) config.region = loaded.region;
   if (loaded.pollInterval) config.pollInterval = loaded.pollInterval;
