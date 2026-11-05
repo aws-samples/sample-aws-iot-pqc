@@ -7,7 +7,8 @@ Builder-Pi Web GUI
 Flask application that provides a local web interface for managing
 ESP32 device registration and firmware flashing.
 
-Access at http://<builder-pi-ip>:8080
+Listens on loopback only: open http://127.0.0.1:8080 in the Pi's own browser
+(its console, or a KVM attached to it). It is never reachable over the network.
 
 Flow:
   1. Operator plugs ESP32 into builder-pi USB
@@ -33,7 +34,7 @@ from device_manager import DeviceManager
 # Shared implementation so the GUI and the workshop-builder CLI cannot drift.
 from builder_core import operations
 from builder_core.aws import fresh_session
-from builder_core.config import load_config, save_config
+from builder_core.config import load_config
 
 
 def get_fresh_boto3_session():
@@ -43,9 +44,41 @@ def get_fresh_boto3_session():
 
 config = load_config()
 
+# ─── Network exposure ────────────────────────────────────────────────────────
+# The GUI listens on loopback ONLY and is not configurable: the operator uses
+# it from the Pi's own console browser (a keyboard/monitor or KVM on the Pi),
+# never over the network. The Pi's WiFi uplink is used only for outbound HTTPS
+# to AWS, and the workshop access point the ESP32s join can never reach it.
+# (Security ticket D570691687: the old all-interfaces bind exposed these
+# unauthenticated routes to anyone on the AP or the venue LAN.)
+GUI_HOST = '127.0.0.1'
+GUI_PORT = 8080
+# Requests must be addressed to the loopback listener by name. A Host header
+# for any other name means DNS rebinding, so it is refused.
+ALLOWED_HOSTS = {f'127.0.0.1:{GUI_PORT}', f'localhost:{GUI_PORT}'}
+
 # ─── Flask App ───────────────────────────────────────────────────────────────
 app = Flask(__name__)
 device_manager = DeviceManager(config)
+
+
+@app.before_request
+def _gate_request():
+    """Refuse requests not addressed to the loopback GUI, and POSTs that are
+    not JSON. A JSON content type cannot be sent cross-origin without a CORS
+    preflight, which this app never grants, so a web page open in the Pi's
+    browser cannot drive the API either."""
+    if request.host not in ALLOWED_HOSTS:
+        return jsonify({'error': 'Forbidden host'}), 403
+    if request.method == 'POST' and not request.is_json:
+        return jsonify({'error': 'Content-Type must be application/json'}), 415
+    return None
+
+
+def _json_body():
+    """The POST body as a dict ({} if it is not a JSON object)."""
+    data = request.get_json(silent=True)
+    return data if isinstance(data, dict) else {}
 
 # Background thread for periodic port scanning
 scan_running = True
@@ -88,18 +121,6 @@ def get_devices():
     return jsonify(device_manager.get_all_devices())
 
 
-@app.route('/api/config', methods=['GET', 'POST'])
-def handle_config():
-    """Get or update configuration."""
-    global config
-    if request.method == 'POST':
-        updates = request.json
-        config.update(updates)
-        save_config(config)
-        return jsonify({'success': True, 'config': config})
-    return jsonify(config)
-
-
 @app.route('/api/system-params')
 def get_system_params():
     """Read-only workshop parameters resolved from SSM (the single source of
@@ -135,8 +156,7 @@ def get_system_params():
 @app.route('/api/register', methods=['POST'])
 def register_device():
     """Trigger device registration and firmware build+flash pipeline."""
-    data = request.json
-    port = data.get('port')
+    port = _json_body().get('port')
 
     if not port or port not in device_manager.devices:
         return jsonify({'error': 'Invalid or unknown port'}), 400
@@ -162,8 +182,7 @@ def register_device():
 @app.route('/api/reflash', methods=['POST'])
 def reflash_device():
     """Re-flash a registered device with existing firmware from S3."""
-    data = request.json
-    port = data.get('port')
+    port = _json_body().get('port')
 
     if not port or port not in device_manager.devices:
         return jsonify({'error': 'Invalid or unknown port'}), 400
@@ -188,8 +207,7 @@ def reflash_device():
 @app.route('/api/deregister', methods=['POST'])
 def deregister_device():
     """Deregister a device — calls the API Gateway deregister endpoint."""
-    data = request.json
-    port = data.get('port')
+    port = _json_body().get('port')
 
     if not port or port not in device_manager.devices:
         return jsonify({'error': 'Invalid or unknown port'}), 400
@@ -359,15 +377,11 @@ if __name__ == '__main__':
     scan_thread = threading.Thread(target=port_scanner, daemon=True)
     scan_thread.start()
 
-    # Bind host is configurable (config.json "gui_host"). It defaults to all
-    # interfaces because the GUI is reached from the operator's laptop over the
-    # Pi's workshop WiFi access point, not from the Pi itself — so loopback would
-    # make it unreachable. Operators who want to narrow the exposure can set
-    # "gui_host" to the AP interface IP (e.g. the NetworkManager shared-AP
-    # address) or to "127.0.0.1" for local-only access. Sourcing the value from
-    # config (rather than a literal in the call) also keeps the bind address a
-    # deliberate, documented deployment choice.
-    gui_host = config.get('gui_host', '0.0.0.0')  # nosec B104 - all-interfaces default is intentional: the GUI is reached over the Pi's workshop WiFi AP, not loopback; operator-overridable via config "gui_host"
-    print(f"Builder-Pi GUI starting on {gui_host}:{config['gui_port']}...")
-    print(f"Access at: http://{gui_host}:{config['gui_port']}")
-    app.run(host=gui_host, port=config['gui_port'], debug=False)
+    # Loopback only (see GUI_HOST). Older config.json files may still carry
+    # gui_host / gui_port; they are ignored so no config can widen the bind.
+    for key in ('gui_host', 'gui_port'):
+        if key in config:
+            print(f"Ignoring config '{key}': the GUI always listens on {GUI_HOST}:{GUI_PORT}")
+    print(f"Builder-Pi GUI starting on {GUI_HOST}:{GUI_PORT} (loopback only)...")
+    print(f"Open it in the Pi's own browser: http://{GUI_HOST}:{GUI_PORT}")
+    app.run(host=GUI_HOST, port=GUI_PORT, debug=False)

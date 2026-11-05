@@ -197,7 +197,9 @@ Resources:
                   # python3-venv: deploy-app installs the app's locked deps into
                   # its own virtualenv, leaving the system Python (and awscli,
                   # which needs Debian's urllib3) untouched.
-                  PKGS="awscli python3 python3-pip python3-venv curl ca-certificates udev"
+                  # nftables: configure-service adds a host firewall rule that
+                  # keeps the GUI's port off every non-loopback interface.
+                  PKGS="awscli python3 python3-pip python3-venv nftables curl ca-certificates udev"
                   MISSING=""
                   for p in $PKGS; do
                       dpkg -s "$p" >/dev/null 2>&1 || MISSING="$MISSING $p"
@@ -362,7 +364,10 @@ Resources:
                   if fw and fw != "None":
                       cfg["firmware_bucket"] = fw
                   cfg.setdefault("serial_baud_rate", 115200)
-                  cfg.setdefault("gui_port", 8080)
+                  # The GUI always listens on 127.0.0.1:8080 (app.py); drop the
+                  # old bind settings so no config suggests otherwise.
+                  cfg.pop("gui_host", None)
+                  cfg.pop("gui_port", None)
                   with open(path, "w") as f:
                       json.dump(cfg, f, indent=2)
                   print("      config.json:", json.dumps(cfg))
@@ -447,6 +452,29 @@ Resources:
                   UDEV
                   udevadm control --reload-rules 2>/dev/null || true
 
+                  echo "      host firewall: drop inbound :8080 except on loopback..."
+                  # Defence in depth behind the GUI's 127.0.0.1 bind (security
+                  # ticket D570691687). Re-applied by the unit on every start;
+                  # the leading table + delete makes the file idempotent.
+                  mkdir -p /etc/pqc-workshop
+                  cat > /etc/pqc-workshop/gui-firewall.nft <<'NFT'
+                  table inet pqc_builder_gui
+                  delete table inet pqc_builder_gui
+                  table inet pqc_builder_gui {
+                      chain input {
+                          type filter hook input priority 0; policy accept;
+                          iif != "lo" tcp dport 8080 drop
+                      }
+                  }
+                  NFT
+                  if command -v nft >/dev/null 2>&1; then
+                      nft -f /etc/pqc-workshop/gui-firewall.nft \
+                          && echo "      nft rule active: $(nft list chain inet pqc_builder_gui input 2>/dev/null | grep -c 'dport 8080 drop') rule(s)" \
+                          || echo "      [WARN] nft rule failed to load; the loopback bind still applies"
+                  else
+                      echo "      [WARN] nft not installed (run install-base); the loopback bind still applies"
+                  fi
+
                   echo "[2/3] systemd unit for the GUI (enable + start = auto-start)..."
                   cat > /etc/systemd/system/pqc-builder-gui.service <<SERVICE
                   [Unit]
@@ -457,6 +485,9 @@ Resources:
                   Type=simple
                   User=root
                   WorkingDirectory=$APP_DIR
+                  # Backstop to the loopback bind: drop :8080 on every non-loopback
+                  # interface. '-' so a missing nft never stops the GUI.
+                  ExecStartPre=-/usr/sbin/nft -f /etc/pqc-workshop/gui-firewall.nft
                   ExecStart=$INSTALL_DIR/venv/bin/python app.py
                   Restart=on-failure
                   RestartSec=5
@@ -564,8 +595,15 @@ Resources:
                       echo "      [WARN] CloudWatch agent not present; Pi logs stay local"
                   fi
 
-                  IP=$(hostname -I | awk '{print $1}')
-                  echo "GUI: http://${IP}:8080"
+                  # Confirm the GUI is on loopback only. ss lists listening TCP
+                  # sockets; anything on :8080 other than 127.0.0.1 is a failure.
+                  LISTEN=$(ss -Hltn 'sport = :8080' 2>/dev/null | awk '{print $4}')
+                  echo "      GUI listening on: ${LISTEN:-<nothing yet>}"
+                  if echo "$LISTEN" | grep -v '^127\.0\.0\.1:8080$' | grep -q .; then
+                      echo "      [ERROR] GUI is listening beyond loopback: $LISTEN"
+                      rc=1
+                  fi
+                  echo "GUI: open http://127.0.0.1:8080 in the Pi's own browser (console or KVM)."
                   if [ "$rc" -ne 0 ]; then
                       echo "ERROR: configure-service had failures (rc=$rc); see log above."
                       exit 1
