@@ -280,7 +280,7 @@
       "metadata": []
     },
     {
-      "id": "a920bb9c-39f8-5676-945e-7ae7b09dbe5e",
+      "id": "adeb7122-a912-5608-a041-c258b81bca5b",
       "numericId": 29,
       "status": "mitigationResolved",
       "content": "Separate code signing from device identity: the OTA signer certificates are issued only by two dedicated firmware-signing root CAs (ECDSA P-256 and ML-DSA-44) with the codeSigning EKU; the device trusts only the signing root matching the image's sigAlg, requires codeSigning on the signer leaf, and never trusts a device CA root for OTA.",
@@ -288,7 +288,7 @@
       "metadata": []
     },
     {
-      "id": "3a893f20-b972-4f7f-8dde-5990cb1c154c",
+      "id": "dc2dd1c1-fde7-567c-9c07-363a4e96f022",
       "numericId": 30,
       "status": "mitigationResolved",
       "content": "Validate Builder-Pi download inputs: allowlist the serial, firmware version, S3 prefix and identity key, require the local path to resolve inside the firmware directory, and delete the local identity image whether or not the flash succeeds.",
@@ -296,7 +296,7 @@
       "metadata": []
     },
     {
-      "id": "f404816c-2b41-4f8f-909b-141dd91e9386",
+      "id": "cd59e791-9838-5953-8f4e-d4290d03d6f6",
       "numericId": 31,
       "status": "mitigationIdentified",
       "content": "Scope the device-management and Builder-Pi roles to workshop ARNs: thing/esp32-* and thing/pqc-workshop-broker-bridge, policy/pqc-workshop-* and esp32-* policies, and certificate ARNs where IoT allows; keep Resource * only for actions IoT cannot resource-scope (e.g. CreateKeysAndCertificate), and scope the DeviceIdentityRole KMS decrypt to the SSM key.",
@@ -483,24 +483,28 @@
       "linkedId": "477d100c-666d-543d-98e1-038585bc15c6"
     },
     {
-      "mitigationId": "a920bb9c-39f8-5676-945e-7ae7b09dbe5e",
-      "linkedId": "09ef5efa-0937-56fb-8409-c24c4b58a2d6"
+      "mitigationId": "adeb7122-a912-5608-a041-c258b81bca5b",
+      "linkedId": "493a698e-7e32-5a8f-9af8-36d6d9661cc8"
     },
     {
       "mitigationId": "9792381f-1bd2-548e-a804-93bbb51476fd",
-      "linkedId": "09ef5efa-0937-56fb-8409-c24c4b58a2d6"
+      "linkedId": "493a698e-7e32-5a8f-9af8-36d6d9661cc8"
     },
     {
-      "mitigationId": "3a893f20-b972-4f7f-8dde-5990cb1c154c",
-      "linkedId": "f9ec7394-7d5c-4334-80bb-e67ec4f5451d"
+      "mitigationId": "dc2dd1c1-fde7-567c-9c07-363a4e96f022",
+      "linkedId": "48ae656b-5c61-57bf-bdd0-ec29dca711ad"
     },
     {
       "mitigationId": "28f6cd02-0682-5137-864c-5809d1996611",
-      "linkedId": "f9ec7394-7d5c-4334-80bb-e67ec4f5451d"
+      "linkedId": "48ae656b-5c61-57bf-bdd0-ec29dca711ad"
     },
     {
-      "mitigationId": "f404816c-2b41-4f8f-909b-141dd91e9386",
-      "linkedId": "54fc200c-d7a9-4222-9ae2-c669cd95f7d6"
+      "mitigationId": "cd59e791-9838-5953-8f4e-d4290d03d6f6",
+      "linkedId": "6183b7ea-5d3a-5d97-b900-98c44b4b9e89"
+    },
+    {
+      "mitigationId": "5dcba292-23e8-591e-bcb2-e7f68dbbbfbc",
+      "linkedId": "b5ee0052-ce65-5df1-8ec8-2da6bd90fafd"
     }
   ],
   "threats": [
@@ -1231,11 +1235,11 @@
       ]
     },
     {
-      "id": "09ef5efa-0937-56fb-8409-c24c4b58a2d6",
+      "id": "493a698e-7e32-5a8f-9af8-36d6d9661cc8",
       "numericId": 24,
       "threatSource": "workshop attendee",
       "prerequisites": "with a device private key extracted from their own board",
-      "threatAction": "sign a modified firmware image with that key and push it to other devices as a signed OTA, because the OTA signer and device certificates are issued by the same CAs with the same extended key usage and devices only check that the signer chains to one of those CA roots",
+      "threatAction": "sign a modified firmware image with that key and push it to other devices as a signed OTA, because the OTA signer and device certificates are issued by the same CAs with the same extended key usage",
       "threatImpact": "every device accepting attacker-chosen firmware as authentic",
       "impactedGoal": [],
       "impactedAssets": [
@@ -1265,11 +1269,24 @@
       ]
     },
     {
-      "id": "f9ec7394-7d5c-4334-80bb-e67ec4f5451d",
+      "id": "48ae656b-5c61-57bf-bdd0-ec29dca711ad",
       "numericId": 25,
+      "threatSource": "user on the workshop WiFi",
+      "prerequisites": "with network access to the Builder-Pi GUI",
+      "threatAction": "set firmware_version through POST /api/config to a path outside the firmware directory, so the next flash writes the device's identity image into the Flask static folder where GET /static/certs.bin",
+      "threatImpact": "disclosure of a device's private keys and the workshop WiFi PSK",
+      "impactedGoal": [],
+      "impactedAssets": [
+        "A001",
+        "A005"
+      ],
       "statement": "A user on the workshop WiFi with network access to the Builder-Pi GUI can set firmware_version through POST /api/config to a path outside the firmware directory, so the next flash writes the device's identity image into the Flask static folder where GET /static/certs.bin serves it, which leads to disclosure of a device's private keys and the workshop WiFi PSK",
       "displayOrder": 25,
       "status": "threatResolved",
+      "tags": [
+        "builder-pi",
+        "path-traversal"
+      ],
       "metadata": [
         {
           "key": "Priority",
@@ -1281,27 +1298,27 @@
             "I"
           ]
         }
-      ],
-      "threatSource": "user on the workshop WiFi",
-      "prerequisites": "with network access to the Builder-Pi GUI",
-      "threatAction": "set firmware_version through POST /api/config to a path outside the firmware directory, so the next flash writes the device's identity image into the Flask static folder where GET /static/certs.bin serves it",
-      "threatImpact": "disclosure of a device's private keys and the workshop WiFi PSK",
-      "impactedGoal": [],
-      "impactedAssets": [
-        "A001",
-        "A005"
-      ],
-      "tags": [
-        "builder-pi",
-        "path-traversal"
       ]
     },
     {
-      "id": "5cc5c121-fd7c-4b4b-bee2-2ef025a98646",
+      "id": "b5ee0052-ce65-5df1-8ec8-2da6bd90fafd",
       "numericId": 26,
+      "threatSource": "anonymous internet user",
+      "prerequisites": "with the public dashboard URL and the workshop username from the public JavaScript",
+      "threatAction": "submit wrong passcodes for the shared workshop user until Cognito temporarily locks it",
+      "threatImpact": "attendees being unable to sign in to the dashboard until the lockout expires, because the whole room signs in as one user",
+      "impactedGoal": [],
+      "impactedAssets": [
+        "A009"
+      ],
       "statement": "A anonymous internet user with the public dashboard URL and the workshop username from the public JavaScript can submit wrong passcodes for the shared workshop user until Cognito temporarily locks it, which leads to attendees being unable to sign in to the dashboard until the lockout expires, because the whole room signs in as one user",
       "displayOrder": 26,
       "status": "threatResolved",
+      "tags": [
+        "cognito",
+        "availability",
+        "shared-passcode"
+      ],
       "metadata": [
         {
           "key": "Priority",
@@ -1313,27 +1330,27 @@
             "D"
           ]
         }
-      ],
-      "threatSource": "anonymous internet user",
-      "prerequisites": "with the public dashboard URL and the workshop username from the public JavaScript",
-      "threatAction": "submit wrong passcodes for the shared workshop user until Cognito temporarily locks it",
-      "threatImpact": "attendees being unable to sign in to the dashboard until the lockout expires, because the whole room signs in as one user",
-      "impactedGoal": [],
-      "impactedAssets": [
-        "A009"
-      ],
-      "tags": [
-        "cognito",
-        "availability",
-        "shared-passcode"
       ]
     },
     {
-      "id": "54fc200c-d7a9-4222-9ae2-c669cd95f7d6",
+      "id": "6183b7ea-5d3a-5d97-b900-98c44b4b9e89",
       "numericId": 27,
+      "threatSource": "attacker",
+      "prerequisites": "who gains code execution in a device-management Lambda or the Builder-Pi, e.g. via a dependency flaw",
+      "threatAction": "use that role's IoT management permissions on Resource * to create, delete or re-attach any Thing, certificate or policy in the account",
+      "threatImpact": "fleet-wide device lockout or a rogue identity trusted by IoT Core, well beyond the one device the role was meant to manage",
+      "impactedGoal": [],
+      "impactedAssets": [
+        "A001",
+        "A004"
+      ],
       "statement": "A attacker who gains code execution in a device-management Lambda or the Builder-Pi, e.g. via a dependency flaw can use that role's IoT management permissions on Resource * to create, delete or re-attach any Thing, certificate or policy in the account, which leads to fleet-wide device lockout or a rogue identity trusted by IoT Core, well beyond the one device the role was meant to manage",
       "displayOrder": 27,
       "status": "threatIdentified",
+      "tags": [
+        "iam",
+        "least-privilege"
+      ],
       "metadata": [
         {
           "key": "Priority",
@@ -1345,19 +1362,6 @@
             "E"
           ]
         }
-      ],
-      "threatSource": "attacker",
-      "prerequisites": "who gains code execution in a device-management Lambda or the Builder-Pi, e.g. via a dependency flaw",
-      "threatAction": "use that role's IoT management permissions on Resource * to create, delete or re-attach any Thing, certificate or policy in the account",
-      "threatImpact": "fleet-wide device lockout or a rogue identity trusted by IoT Core, well beyond the one device the role was meant to manage",
-      "impactedGoal": [],
-      "impactedAssets": [
-        "A001",
-        "A004"
-      ],
-      "tags": [
-        "iam",
-        "least-privilege"
       ]
     }
   ]
