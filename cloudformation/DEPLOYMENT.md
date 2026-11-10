@@ -425,7 +425,7 @@ order it:
    is not stable for USB adapters across reboots) and never picks the onboard
    uplink radio.
 4. **Builds the `workshop-ap` profile** (`802-11-wireless.mode ap`, `band bg`,
-   `channel 6`, `wpa-psk`) with `autoconnect yes` so it returns after a reboot,
+   `channel 11`, `wpa-psk`) with `autoconnect yes` so it returns after a reboot,
    and applies the density (`dhcp-lease-max=150`, `10.42.0.10-250` lease pool) and
    power-save (`wifi.powersave=2`) drop-ins for a full room.
 5. **Brings the AP up** and verifies `wlan1` reaches the `connected` (AP) state.

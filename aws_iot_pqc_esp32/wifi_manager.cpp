@@ -43,7 +43,15 @@ void WifiManager::task(void* pvParameters) {
     // Configure WiFi
     WiFi.mode(WIFI_STA);
     WiFi.setAutoReconnect(true);
-    ESP_LOGD(TAG_WIFI, "WiFi mode set to STA, auto-reconnect enabled");
+    // Disable modem sleep. The ESP32-S3 core defaults to WIFI_PS_MIN_MODEM,
+    // where the radio dozes between AP beacons; frames the AP sends while the
+    // board is asleep must be retried. Measured on the workshop AP: about 17%
+    // of frames to each device were retried, with none lost. Workshop boards
+    // are always USB-powered, so the extra radio current does not matter.
+    // The core stores this and re-applies it every time the station starts,
+    // so it survives the WiFi.disconnect(true) / WiFi.begin() retry cycle.
+    WiFi.setSleep(false);
+    ESP_LOGD(TAG_WIFI, "WiFi mode set to STA, auto-reconnect enabled, modem sleep off");
 
     int wifiAttempts = 0;
 
@@ -69,9 +77,10 @@ void WifiManager::task(void* pvParameters) {
             if (WiFi.status() == WL_CONNECTED) {
                 setConnected(true);
                 wifiAttempts = 0; // Reset backoff on success
-                ESP_LOGI(TAG_WIFI, "Connected! IP: %s, RSSI: %d dBm, Channel: %d",
+                ESP_LOGI(TAG_WIFI, "Connected! IP: %s, RSSI: %d dBm, Channel: %d, Sleep: %s",
                          WiFi.localIP().toString().c_str(),
-                         WiFi.RSSI(), WiFi.channel());
+                         WiFi.RSSI(), WiFi.channel(),
+                         WiFi.getSleep() == WIFI_PS_NONE ? "off" : "on");
                 ESP_LOGI(TAG_WIFI, "  Gateway: %s, Subnet: %s, DNS: %s",
                          WiFi.gatewayIP().toString().c_str(),
                          WiFi.subnetMask().toString().c_str(),
