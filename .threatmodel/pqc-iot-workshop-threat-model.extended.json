@@ -684,16 +684,6 @@
     {
       "id": "T025",
       "numericId": 25,
-      "metadata": [],
-      "statement": "A user on the workshop WiFi with network access to the Builder-Pi GUI can set firmware_version through POST /api/config to a path outside the firmware directory, so the next flash writes the device's identity image into the Flask static folder where GET /static/certs.bin serves it, which leads to disclosure of a device's private keys and the workshop WiFi PSK",
-      "displayOrder": 25,
-      "status": "threatResolved",
-      "category": "Information Disclosure",
-      "severity": "High",
-      "likelihood": "Unlikely",
-      "affected_components": [
-        "C003"
-      ],
       "threatSource": "user on the workshop WiFi",
       "prerequisites": "with network access to the Builder-Pi GUI",
       "threatAction": "set firmware_version through POST /api/config to a path outside the firmware directory, so the next flash writes the device's identity image into the Flask static folder where GET /static/certs.bin serves it",
@@ -703,25 +693,24 @@
         "A001",
         "A005"
       ],
+      "metadata": [],
+      "statement": "A user on the workshop WiFi with network access to the Builder-Pi GUI can set firmware_version through POST /api/config to a path outside the firmware directory, so the next flash writes the device's identity image into the Flask static folder where GET /static/certs.bin serves it, which leads to disclosure of a device's private keys and the workshop WiFi PSK",
+      "displayOrder": 25,
+      "status": "threatResolved",
       "tags": [
         "builder-pi",
         "path-traversal"
+      ],
+      "category": "Information Disclosure",
+      "severity": "High",
+      "likelihood": "Unlikely",
+      "affected_components": [
+        "C003"
       ]
     },
     {
       "id": "T026",
       "numericId": 26,
-      "metadata": [],
-      "statement": "A anonymous internet user with the public dashboard URL and the workshop username from the public JavaScript can submit wrong passcodes for the shared workshop user until Cognito temporarily locks it, which leads to attendees being unable to sign in to the dashboard until the lockout expires, because the whole room signs in as one user",
-      "displayOrder": 26,
-      "status": "threatResolved",
-      "category": "Denial of Service",
-      "severity": "Low",
-      "likelihood": "Possible",
-      "affected_components": [
-        "C023",
-        "C025"
-      ],
       "threatSource": "anonymous internet user",
       "prerequisites": "with the public dashboard URL and the workshop username from the public JavaScript",
       "threatAction": "submit wrong passcodes for the shared workshop user until Cognito temporarily locks it",
@@ -730,29 +719,26 @@
       "impactedAssets": [
         "A009"
       ],
+      "metadata": [],
+      "statement": "A anonymous internet user with the public dashboard URL and the workshop username from the public JavaScript can submit wrong passcodes for the shared workshop user until Cognito temporarily locks it, which leads to attendees being unable to sign in to the dashboard until the lockout expires, because the whole room signs in as one user",
+      "displayOrder": 26,
+      "status": "threatResolved",
       "tags": [
         "cognito",
         "availability",
         "shared-passcode"
+      ],
+      "category": "Denial of Service",
+      "severity": "Low",
+      "likelihood": "Possible",
+      "affected_components": [
+        "C023",
+        "C025"
       ]
     },
     {
       "id": "T027",
       "numericId": 27,
-      "metadata": [],
-      "statement": "A attacker who gains code execution in a device-management Lambda or the Builder-Pi, e.g. via a dependency flaw can use that role's IoT management permissions on Resource * to create, delete or re-attach any Thing, certificate or policy in the account, which leads to fleet-wide device lockout or a rogue identity trusted by IoT Core, well beyond the one device the role was meant to manage",
-      "displayOrder": 27,
-      "status": "threatIdentified",
-      "category": "Elevation of Privilege",
-      "severity": "Medium",
-      "likelihood": "Unlikely",
-      "affected_components": [
-        "C012",
-        "C013",
-        "C019",
-        "C018",
-        "C027"
-      ],
       "threatSource": "attacker",
       "prerequisites": "who gains code execution in a device-management Lambda or the Builder-Pi, e.g. via a dependency flaw",
       "threatAction": "use that role's IoT management permissions on Resource * to create, delete or re-attach any Thing, certificate or policy in the account",
@@ -762,9 +748,23 @@
         "A001",
         "A004"
       ],
+      "metadata": [],
+      "statement": "A attacker who gains code execution in a device-management Lambda or the Builder-Pi, e.g. via a dependency flaw can use that role's IoT management permissions on Resource * to create, delete or re-attach any Thing, certificate or policy in the account, which leads to fleet-wide device lockout or a rogue identity trusted by IoT Core, well beyond the one device the role was meant to manage",
+      "displayOrder": 27,
+      "status": "threatIdentified",
       "tags": [
         "iam",
         "least-privilege"
+      ],
+      "category": "Elevation of Privilege",
+      "severity": "Medium",
+      "likelihood": "Unlikely",
+      "affected_components": [
+        "C012",
+        "C013",
+        "C019",
+        "C018",
+        "C027"
       ]
     }
   ],
@@ -1382,6 +1382,10 @@
     {
       "linkedId": "T027",
       "mitigationId": "M031"
+    },
+    {
+      "linkedId": "T026",
+      "mitigationId": "M004"
     }
   ],
   "businessContext": {
@@ -4110,20 +4114,20 @@
       "is_current": true
     },
     {
-      "threat_id": "T026",
-      "is_current": true,
-      "decision": "Accepted",
-      "residual_severity": "Low",
-      "residual_likelihood": "Possible",
-      "rationale": "Accepted for the workshop (a known trade-off of the shared passcode, M004): Cognito's lockout is temporary and backs off, browsers already signed in keep their session through the 12 h refresh token, and the 8-character passcode from a 31-symbol set (about 8.5 x 10^11 values) makes guessing it impractical."
-    },
-    {
       "threat_id": "T027",
-      "is_current": true,
       "decision": "Open",
       "residual_severity": "Medium",
       "residual_likelihood": "Unlikely",
-      "rationale": "Found by the ProtoShield IAM least-privilege scan (Nov 10): Resource * on IoT management actions in BridgeProvisionerRole, CertificateProvisionerRole, DeviceRegistrarRole, DeviceDeregistrarRole and FleetCleanupRole (high), plus the SSM managed-instance and activation roles and the DeviceIdentityRole KMS decrypt (medium, condition-scoped). Bounded by the per-event account and by callers being IAM/SigV4 principals only. Track M031."
+      "rationale": "Found by the ProtoShield IAM least-privilege scan (Nov 10): Resource * on IoT management actions in BridgeProvisionerRole, CertificateProvisionerRole, DeviceRegistrarRole, DeviceDeregistrarRole and FleetCleanupRole (high), plus the SSM managed-instance and activation roles and the DeviceIdentityRole KMS decrypt (medium, condition-scoped). Bounded by the per-event account and by callers being IAM/SigV4 principals only. Track M031.",
+      "is_current": true
+    },
+    {
+      "threat_id": "T026",
+      "decision": "Accepted",
+      "residual_severity": "Low",
+      "residual_likelihood": "Possible",
+      "rationale": "Accepted for the workshop (a known trade-off of the shared passcode, M004): Cognito's lockout is temporary and backs off, browsers already signed in keep their session through the 12 h refresh token, and the 8-character passcode from a 31-symbol set (about 8.5 x 10^11 values) makes guessing it impractical.",
+      "is_current": true
     }
   ],
   "softwareProfile": {
@@ -4550,7 +4554,7 @@
       "5": 1.0,
       "6": 1.0,
       "7": 1.0,
-      "7.5": 1.0,
+      "7.5": 0.0,
       "8": 1.0,
       "9": 1.0
     },
@@ -4566,7 +4570,7 @@
       "8": "Residual Risk Analysis",
       "9": "Output Generation and Documentation"
     },
-    "overall_completion": 1.0
+    "overall_completion": 0.9
   },
   "referenceCatalogue": {
     "description": "Threat actors the server pre-loaded but that were never assessed for this system. These are NOT part of the threat model.",

@@ -1,8 +1,8 @@
 # Comprehensive Threat Model Report
 
-**Generated**: 2026-10-28 07:47:49
+**Generated**: 2026-11-10 13:48:12
 **Current Phase**: 1 - Business Context Analysis
-**Overall Completion**: 100.0%
+**Overall Completion**: 90.0%
 
 ## Table of Contents
 
@@ -582,7 +582,9 @@ Post-Quantum Cryptography Migration for IoT workshop (AWS Workshop Studio / re:I
 ### Identified Threats
 
 #### T1: signed-in dashboard user
+
 **Statement**: A signed-in dashboard user with the shared workshop passcode (any attendee, or anyone it leaks to) can call the AppSync migrateFirmware mutation for any thingName, which leads to unrequested firmware builds and OTA pushes to any attendee's device, disrupting the live workshop and spending account resources
+
 - **Prerequisites**: with the shared workshop passcode (any attendee, or anyone it leaks to)
 - **Action**: call the AppSync migrateFirmware mutation for any thingName
 - **Impact**: unrequested firmware builds and OTA pushes to any attendee's device, disrupting the live workshop and spending account resources
@@ -593,6 +595,7 @@ Post-Quantum Cryptography Migration for IoT workshop (AWS Workshop Studio / re:I
 - **Residual Likelihood**: Possible
 - **Residual Risk Rationale**: Mitigated by M004: guest access is off, so an anonymous internet user can no longer do this; the caller must hold the room passcode, which is random and regenerated on every from-scratch deploy. Residual: the whole room shares one user, so migrations are not limited to the caller's own device (the My device filter is view-only). M006 would cap the impact; per-device scoping is not planned for the workshop.
 - **Assessment State**: Current
+
 #### T6: workshop attendee
 
 **Statement**: A workshop attendee with a device certificate extracted from their own board can publish an ota-update with no sigAlg, a URL to their own HTTPS server and a matching sha256 to another device's cmd/<thing>/ota, which leads to any device variant installing attacker-chosen firmware, because devices skip signature checks when sigAlg is absent and do not verify the download server's TLS certificate
@@ -636,6 +639,21 @@ Post-Quantum Cryptography Migration for IoT workshop (AWS Workshop Studio / re:I
 - **Residual Severity**: High
 - **Residual Likelihood**: Likely
 - **Residual Risk Rationale**: No revocation path; impact bounded by the throwaway account lifetime but extracted keys stay valid for the whole event. M009 needed.
+- **Assessment State**: Current
+
+#### T11: attacker
+
+**Statement**: A attacker with root on the Builder-Pi or its role credentials can use the Pi role (bucket-wide s3:GetObject and the builder API) to read identity images that are waiting to be flashed, or register a serial to have a new identity issued, which leads to disclosure of the keys of devices being registered and the ability to obtain broker-trusted device identities; firmware images carry no keys, and identity images exist in S3 only until flashed
+
+- **Prerequisites**: with root on the Builder-Pi or its role credentials
+- **Action**: use the Pi role (bucket-wide s3:GetObject and the builder API) to read identity images that are waiting to be flashed, or register a serial to have a new identity issued
+- **Impact**: disclosure of the keys of devices being registered and the ability to obtain broker-trusted device identities; firmware images carry no keys, and identity images exist in S3 only until flashed
+- **Impacted Assets**: A001, A006, A010
+- **Tags**: builder-pi, least-privilege
+- **Residual Risk Decision**: Open
+- **Residual Severity**: Medium
+- **Residual Likelihood**: Possible
+- **Residual Risk Rationale**: No longer fleet-wide: shared firmware images hold no keys, and each identity image is deleted (every version) after flashing with a 1-day lifecycle backstop. A Pi compromise still exposes identities in flight and can mint new ones through /register. M011 (scope GetObject to shared/* and identity/*), M010 and M009 reduce it further.
 - **Assessment State**: Current
 
 #### T12: attacker
@@ -699,7 +717,9 @@ Post-Quantum Cryptography Migration for IoT workshop (AWS Workshop Studio / re:I
 - **Assessment State**: Current
 
 #### T17: signed-in dashboard user
+
 **Statement**: A signed-in dashboard user with the shared workshop passcode (any attendee, or anyone it leaks to) can repeatedly call migrateFirmware across many devices, which leads to queued or throttled CodeBuild builds that stall real migrations during the session, plus avoidable build cost
+
 - **Prerequisites**: with the shared workshop passcode (any attendee, or anyone it leaks to)
 - **Action**: repeatedly call migrateFirmware across many devices
 - **Impact**: queued or throttled CodeBuild builds that stall real migrations during the session, plus avoidable build cost
@@ -710,8 +730,11 @@ Post-Quantum Cryptography Migration for IoT workshop (AWS Workshop Studio / re:I
 - **Residual Likelihood**: Unlikely
 - **Residual Risk Rationale**: Needs the room passcode (M004). Reserved concurrency of 5 limits fan-out, but builds still queue; M006 closes it.
 - **Assessment State**: Current
+
 #### T19: signed-in dashboard user
+
 **Statement**: A signed-in dashboard user with the shared workshop passcode can migrate devices or send commands through AppSync, which leads to actions that cannot be attributed to a person, because every attendee signs in as the same workshop user
+
 - **Prerequisites**: with the shared workshop passcode
 - **Action**: migrate devices or send commands through AppSync
 - **Impact**: actions that cannot be attributed to a person, because every attendee signs in as the same workshop user
@@ -722,6 +745,7 @@ Post-Quantum Cryptography Migration for IoT workshop (AWS Workshop Studio / re:I
 - **Residual Likelihood**: Possible
 - **Residual Risk Rationale**: Sign-in now exists (M004) but is shared by design, so actions cannot be attributed to a person. M019 (AppSync request logging) would add the time, field and source IP.
 - **Assessment State**: Current
+
 #### T20: attacker
 
 **Statement**: A attacker who compromises the broker task, e.g. via a Mosquitto or oqs-provider flaw can publish to dt/* and $aws/things/*/shadow/* and receive cmd/* for every device through the bridge identity, which leads to fleet-wide telemetry spoofing and command interception in IoT Core from one compromised component
@@ -751,21 +775,6 @@ Post-Quantum Cryptography Migration for IoT workshop (AWS Workshop Studio / re:I
 - **Residual Risk Rationale**: Public mirror is protected (M021); the Workshop Studio source zip is not (M022).
 - **Assessment State**: Current
 
-#### T11: attacker
-
-**Statement**: A attacker with root on the Builder-Pi or its role credentials can use the Pi role (bucket-wide s3:GetObject and the builder API) to read identity images that are waiting to be flashed, or register a serial to have a new identity issued, which leads to disclosure of the keys of devices being registered and the ability to obtain broker-trusted device identities; firmware images carry no keys, and identity images exist in S3 only until flashed
-
-- **Prerequisites**: with root on the Builder-Pi or its role credentials
-- **Action**: use the Pi role (bucket-wide s3:GetObject and the builder API) to read identity images that are waiting to be flashed, or register a serial to have a new identity issued
-- **Impact**: disclosure of the keys of devices being registered and the ability to obtain broker-trusted device identities; firmware images carry no keys, and identity images exist in S3 only until flashed
-- **Impacted Assets**: A001, A006, A010
-- **Tags**: builder-pi, least-privilege
-- **Residual Risk Decision**: Open
-- **Residual Severity**: Medium
-- **Residual Likelihood**: Possible
-- **Residual Risk Rationale**: No longer fleet-wide: shared firmware images hold no keys, and each identity image is deleted (every version) after flashing with a 1-day lifecycle backstop. A Pi compromise still exposes identities in flight and can mint new ones through /register. M011 (scope GetObject to shared/* and identity/*), M010 and M009 reduce it further.
-- **Assessment State**: Current
-
 #### T23: workshop attendee
 
 **Statement**: A workshop attendee with a rogue AP using the workshop SSID and extracted PSK can intercept a device's OTA download, which does not verify the server certificate, and serve or capture the image, which leads to capture of firmware images, and installation of a modified image on any device sent an unsigned OTA
@@ -782,7 +791,9 @@ Post-Quantum Cryptography Migration for IoT workshop (AWS Workshop Studio / re:I
 - **Assessment State**: Current
 
 #### T27: attacker
+
 **Statement**: A attacker who gains code execution in a device-management Lambda or the Builder-Pi, e.g. via a dependency flaw can use that role's IoT management permissions on Resource * to create, delete or re-attach any Thing, certificate or policy in the account, which leads to fleet-wide device lockout or a rogue identity trusted by IoT Core, well beyond the one device the role was meant to manage
+
 - **Prerequisites**: who gains code execution in a device-management Lambda or the Builder-Pi, e.g. via a dependency flaw
 - **Action**: use that role's IoT management permissions on Resource * to create, delete or re-attach any Thing, certificate or policy in the account
 - **Impact**: fleet-wide device lockout or a rogue identity trusted by IoT Core, well beyond the one device the role was meant to manage
@@ -793,24 +804,28 @@ Post-Quantum Cryptography Migration for IoT workshop (AWS Workshop Studio / re:I
 - **Residual Likelihood**: Unlikely
 - **Residual Risk Rationale**: Found by the ProtoShield IAM least-privilege scan (Nov 10): Resource * on IoT management actions in BridgeProvisionerRole, CertificateProvisionerRole, DeviceRegistrarRole, DeviceDeregistrarRole and FleetCleanupRole (high), plus the SSM managed-instance and activation roles and the DeviceIdentityRole KMS decrypt (medium, condition-scoped). Bounded by the per-event account and by callers being IAM/SigV4 principals only. Track M031.
 - **Assessment State**: Current
+
 ### Resolved Threats
 
-#### T18: internet attacker
+#### T2: anonymous internet user
 
-**Statement**: A internet attacker with modest bandwidth can flood the NLB on 8883/8884 with TLS handshakes, which leads to exhaustion of the single Fargate broker task, disconnecting every device
+**Statement**: A anonymous internet user with Cognito guest credentials can call the AppSync updateDevice mutation to overwrite any device's firmwareVersion, pqcAlgorithm, tlsVersion or status, which leads to a dashboard that shows false migration results, undermining the workshop's proof that devices negotiated ML-KEM
 
-- **Prerequisites**: with modest bandwidth
-- **Action**: flood the NLB on 8883/8884 with TLS handshakes
-- **Impact**: exhaustion of the single Fargate broker task, disconnecting every device
-- **Tags**: availability
+- **Prerequisites**: with Cognito guest credentials
+- **Action**: call the AppSync updateDevice mutation to overwrite any device's firmwareVersion, pqcAlgorithm, tlsVersion or status
+- **Impact**: a dashboard that shows false migration results, undermining the workshop's proof that devices negotiated ML-KEM
+- **Impacted Assets**: A008, A009
+- **Tags**: appsync, anonymous-access, integrity
 - **Residual Risk Decision**: Accepted
-- **Residual Severity**: Medium
-- **Residual Likelihood**: Possible
-- **Residual Risk Rationale**: Accepted at workshop scale: a single task is enough for tens of devices and the event is short; M018 recorded for production use.
+- **Residual Severity**: Low
+- **Residual Likelihood**: Unlikely
+- **Residual Risk Rationale**: Resolved (M005, M004): guest identities are off and the signed-in role can call only listDevices, getDevice, getDeviceLog, getBrokerLog, sendCommand and migrateFirmware, so updateDevice is not browser-callable and only the telemetry processor writes device state. test_dashboard_auth.py pins the role to those six fields; verified on pqc-a and on the pqc-b from-scratch rebuild that a guest GetId is refused.
 - **Assessment State**: Current
 
 #### T3: anonymous internet user
+
 **Statement**: A anonymous internet user with Cognito guest credentials within 15 minutes of a migration can read OTA commands through getDeviceLog and use a still-valid presigned URL to download the firmware image it points to, which leads to access to the shared, identity-free firmware image only (the same code as the public repository), not to any device key or the WiFi PSK
+
 - **Prerequisites**: with Cognito guest credentials within 15 minutes of a migration
 - **Action**: read OTA commands through getDeviceLog and use a still-valid presigned URL to download the firmware image it points to
 - **Impact**: access to the shared, identity-free firmware image only (the same code as the public repository), not to any device key or the WiFi PSK
@@ -821,6 +836,22 @@ Post-Quantum Cryptography Migration for IoT workshop (AWS Workshop Studio / re:I
 - **Residual Likelihood**: Possible
 - **Residual Risk Rationale**: Resolved by the NVS identity design (M012): firmware images are built once per variant and carry no keys, certificates or WiFi PSK, so a leaked presigned URL discloses only public code. Since M004 the message log, and the presigned URLs in it, are readable only by signed-in users; M007 (redaction, shorter expiry) is still open.
 - **Assessment State**: Current
+
+#### T4: anonymous internet user
+
+**Statement**: A anonymous internet user with Cognito guest credentials can read broker connection logs and all device message payloads through getBrokerLog and getDeviceLog, which leads to disclosure of device client IDs, source IP addresses and full telemetry and command history
+
+- **Prerequisites**: with Cognito guest credentials
+- **Action**: read broker connection logs and all device message payloads through getBrokerLog and getDeviceLog
+- **Impact**: disclosure of device client IDs, source IP addresses and full telemetry and command history
+- **Impacted Assets**: A008, A007
+- **Tags**: appsync, anonymous-access
+- **Residual Risk Decision**: Accepted
+- **Residual Severity**: Low
+- **Residual Likelihood**: Possible
+- **Residual Risk Rationale**: Resolved (M004): logs are readable only by signed-in users holding the room passcode, the same people who see the dashboard. Low data value: synthetic telemetry, client IDs and source IPs.
+- **Assessment State**: Current
+
 #### T5: workshop attendee
 
 **Statement**: A workshop attendee with physical access to their own ESP32 board can dump the board's flash over USB and read the unencrypted certs NVS partition, which leads to the attendee holding that board's two broker-trusted device identities (ECDSA P-256 and ML-DSA-44 keys and certificates) and the WiFi PSK, enabling the broker-level attacks
@@ -834,51 +865,6 @@ Post-Quantum Cryptography Migration for IoT workshop (AWS Workshop Studio / re:I
 - **Residual Severity**: Medium
 - **Residual Likelihood**: Very Likely
 - **Residual Risk Rationale**: Accepted for the workshop: boards are handed to attendees and flash/NVS encryption and secure boot would complicate re-flashing. The identity now lives only in the board's certs partition (never in firmware images, and deleted from S3 once flashed), so extraction is limited to the attendee's own board; the firmware refuses an identity issued for another chip, which stops copying a certs image onto another board but not reuse of an extracted key. The design must not rely on key secrecy (see T006, T008, T024), and M008 is documented as production guidance.
-- **Assessment State**: Current
-
-#### T13: user or role with read-only account access
-
-**Statement**: A user or role with read-only account access with CodeBuild, Step Functions or DynamoDB read permissions can read the workshop WiFi PSK from the CodeBuild project environment, build details, Step Functions execution history or the registry table, which leads to disclosure of the PSK outside its SecureString
-
-- **Prerequisites**: with CodeBuild, Step Functions or DynamoDB read permissions
-- **Action**: read the workshop WiFi PSK from the CodeBuild project environment, build details, Step Functions execution history or the registry table
-- **Impact**: disclosure of the PSK outside its SecureString
-- **Impacted Assets**: A005
-- **Tags**: secrets-handling
-- **Residual Risk Decision**: Accepted
-- **Residual Severity**: Low
-- **Residual Likelihood**: Unlikely
-- **Residual Risk Rationale**: Resolved (M013): the PSK lives only in SSM as a SecureString. The device-identity CodeBuild job reads it as a PARAMETER_STORE variable, and the registrar, registry table, prepare-build and migration state machine no longer store or pass it. The remaining copies are by design: the Builder-Pi (it runs the AP), each device's certs partition, and the identity image until it is flashed.
-- **Assessment State**: Current
-
-#### T22: harvest-now-decrypt-later adversary
-
-**Statement**: A harvest-now-decrypt-later adversary with a future cryptographically relevant quantum computer can record and later decrypt the classical-only links: bridge TLS 1.2, Builder-Pi HTTPS and the OTA firmware download from S3, which leads to future disclosure of telemetry and of firmware images, contrary to the workshop's PQC message
-
-- **Prerequisites**: with a future cryptographically relevant quantum computer
-- **Action**: record and later decrypt the classical-only links: bridge TLS 1.2, Builder-Pi HTTPS and the OTA firmware download from S3
-- **Impact**: future disclosure of telemetry and of firmware images, contrary to the workshop's PQC message
-- **Impacted Assets**: A006, A008
-- **Tags**: pqc, hndl
-- **Residual Risk Decision**: Accepted
-- **Residual Severity**: Low
-- **Residual Likelihood**: Unlikely
-- **Residual Risk Rationale**: Accepted: short-lived workshop data has no long-term secrecy value, and firmware images no longer carry keys. The classical links are part of the teaching story (M023); moving the OTA download to hybrid ML-KEM is a planned change (S3 supports it).
-- **Assessment State**: Current
-
-#### T24: workshop attendee
-
-**Statement**: A workshop attendee with a device private key extracted from their own board can sign a modified firmware image with that key and push it to other devices as a signed OTA, because the OTA signer and device certificates are issued by the same CAs with the same extended key usage and devices only check that the signer chains to one of those CA roots, which leads to every device accepting attacker-chosen firmware as authentic
-
-- **Prerequisites**: with a device private key extracted from their own board
-- **Action**: sign a modified firmware image with that key and push it to other devices as a signed OTA, because the OTA signer and device certificates are issued by the same CAs with the same extended key usage and devices only check that the signer chains to one of those CA roots
-- **Impact**: every device accepting attacker-chosen firmware as authentic
-- **Impacted Assets**: A006, A007, A002
-- **Tags**: ota, code-signing, pki
-- **Residual Risk Decision**: Accepted
-- **Residual Severity**: Low
-- **Residual Likelihood**: Unlikely
-- **Residual Risk Rationale**: Resolved (M029): the OTA signers are issued only by two dedicated firmware-signing root CAs, with the codeSigning EKU. Devices trust only the signing root that matches the image's sigAlg and require codeSigning; device CA roots are used for TLS only. Verified on pqc-a hardware: an OTA signed with a device-CA certificate was refused (no chain to sig_cls), and one signed with a signing-root certificate lacking codeSigning was refused (no EKU). Residual: theft of a signer key from Secrets Manager or the build (T015, T016).
 - **Assessment State**: Current
 
 #### T9: user on the workshop WiFi
@@ -911,8 +897,69 @@ Post-Quantum Cryptography Migration for IoT workshop (AWS Workshop Studio / re:I
 - **Residual Risk Rationale**: Resolved (M010): /api/config is removed, so no config can be changed over HTTP, and the GUI is loopback-only. Even before the fix the Pi role could not read any bucket but the workshop firmware bucket (IAM simulation on pqc-a), so an attacker-hosted image could not be fetched. Verified on pqc-a (Nov 5): /api/config returns 404 and config.json carries no gui_host.
 - **Assessment State**: Current
 
+#### T13: user or role with read-only account access
+
+**Statement**: A user or role with read-only account access with CodeBuild, Step Functions or DynamoDB read permissions can read the workshop WiFi PSK from the CodeBuild project environment, build details, Step Functions execution history or the registry table, which leads to disclosure of the PSK outside its SecureString
+
+- **Prerequisites**: with CodeBuild, Step Functions or DynamoDB read permissions
+- **Action**: read the workshop WiFi PSK from the CodeBuild project environment, build details, Step Functions execution history or the registry table
+- **Impact**: disclosure of the PSK outside its SecureString
+- **Impacted Assets**: A005
+- **Tags**: secrets-handling
+- **Residual Risk Decision**: Accepted
+- **Residual Severity**: Low
+- **Residual Likelihood**: Unlikely
+- **Residual Risk Rationale**: Resolved (M013): the PSK lives only in SSM as a SecureString. The device-identity CodeBuild job reads it as a PARAMETER_STORE variable, and the registrar, registry table, prepare-build and migration state machine no longer store or pass it. The remaining copies are by design: the Builder-Pi (it runs the AP), each device's certs partition, and the identity image until it is flashed.
+- **Assessment State**: Current
+
+#### T18: internet attacker
+
+**Statement**: A internet attacker with modest bandwidth can flood the NLB on 8883/8884 with TLS handshakes, which leads to exhaustion of the single Fargate broker task, disconnecting every device
+
+- **Prerequisites**: with modest bandwidth
+- **Action**: flood the NLB on 8883/8884 with TLS handshakes
+- **Impact**: exhaustion of the single Fargate broker task, disconnecting every device
+- **Tags**: availability
+- **Residual Risk Decision**: Accepted
+- **Residual Severity**: Medium
+- **Residual Likelihood**: Possible
+- **Residual Risk Rationale**: Accepted at workshop scale: a single task is enough for tens of devices and the event is short; M018 recorded for production use.
+- **Assessment State**: Current
+
+#### T22: harvest-now-decrypt-later adversary
+
+**Statement**: A harvest-now-decrypt-later adversary with a future cryptographically relevant quantum computer can record and later decrypt the classical-only links: bridge TLS 1.2, Builder-Pi HTTPS and the OTA firmware download from S3, which leads to future disclosure of telemetry and of firmware images, contrary to the workshop's PQC message
+
+- **Prerequisites**: with a future cryptographically relevant quantum computer
+- **Action**: record and later decrypt the classical-only links: bridge TLS 1.2, Builder-Pi HTTPS and the OTA firmware download from S3
+- **Impact**: future disclosure of telemetry and of firmware images, contrary to the workshop's PQC message
+- **Impacted Assets**: A006, A008
+- **Tags**: pqc, hndl
+- **Residual Risk Decision**: Accepted
+- **Residual Severity**: Low
+- **Residual Likelihood**: Unlikely
+- **Residual Risk Rationale**: Accepted: short-lived workshop data has no long-term secrecy value, and firmware images no longer carry keys. The classical links are part of the teaching story (M023); moving the OTA download to hybrid ML-KEM is a planned change (S3 supports it).
+- **Assessment State**: Current
+
+#### T24: workshop attendee
+
+**Statement**: A workshop attendee with a device private key extracted from their own board can sign a modified firmware image with that key and push it to other devices as a signed OTA, because the OTA signer and device certificates are issued by the same CAs with the same extended key usage and devices only check that the signer chains to one of those CA roots, which leads to every device accepting attacker-chosen firmware as authentic
+
+- **Prerequisites**: with a device private key extracted from their own board
+- **Action**: sign a modified firmware image with that key and push it to other devices as a signed OTA, because the OTA signer and device certificates are issued by the same CAs with the same extended key usage and devices only check that the signer chains to one of those CA roots
+- **Impact**: every device accepting attacker-chosen firmware as authentic
+- **Impacted Assets**: A006, A007, A002
+- **Tags**: ota, code-signing, pki
+- **Residual Risk Decision**: Accepted
+- **Residual Severity**: Low
+- **Residual Likelihood**: Unlikely
+- **Residual Risk Rationale**: Resolved (M029): the OTA signers are issued only by two dedicated firmware-signing root CAs, with the codeSigning EKU. Devices trust only the signing root that matches the image's sigAlg and require codeSigning; device CA roots are used for TLS only. Verified on pqc-a hardware: an OTA signed with a device-CA certificate was refused (no chain to sig_cls), and one signed with a signing-root certificate lacking codeSigning was refused (no EKU). Residual: theft of a signer key from Secrets Manager or the build (T015, T016).
+- **Assessment State**: Current
+
 #### T25: user on the workshop WiFi
+
 **Statement**: A user on the workshop WiFi with network access to the Builder-Pi GUI can set firmware_version through POST /api/config to a path outside the firmware directory, so the next flash writes the device's identity image into the Flask static folder where GET /static/certs.bin serves it, which leads to disclosure of a device's private keys and the workshop WiFi PSK
+
 - **Prerequisites**: with network access to the Builder-Pi GUI
 - **Action**: set firmware_version through POST /api/config to a path outside the firmware directory, so the next flash writes the device's identity image into the Flask static folder where GET /static/certs.bin serves it
 - **Impact**: disclosure of a device's private keys and the workshop WiFi PSK
@@ -924,32 +971,10 @@ Post-Quantum Cryptography Migration for IoT workshop (AWS Workshop Studio / re:I
 - **Residual Risk Rationale**: Resolved (M030, M010): download inputs are allowlisted and the local path must resolve inside FIRMWARE_DIR; /api/config is removed and the GUI is loopback-only; the local identity image is deleted whatever the flash outcome. Found by code review during security ticket D570691687 (not exploited); unit tests cover the reported traversal value.
 - **Assessment State**: Current
 
-#### T2: anonymous internet user
-**Statement**: A anonymous internet user with Cognito guest credentials can call the AppSync updateDevice mutation to overwrite any device's firmwareVersion, pqcAlgorithm, tlsVersion or status, which leads to a dashboard that shows false migration results, undermining the workshop's proof that devices negotiated ML-KEM
-- **Prerequisites**: with Cognito guest credentials
-- **Action**: call the AppSync updateDevice mutation to overwrite any device's firmwareVersion, pqcAlgorithm, tlsVersion or status
-- **Impact**: a dashboard that shows false migration results, undermining the workshop's proof that devices negotiated ML-KEM
-- **Impacted Assets**: A008, A009
-- **Tags**: appsync, anonymous-access, integrity
-- **Residual Risk Decision**: Accepted
-- **Residual Severity**: Low
-- **Residual Likelihood**: Unlikely
-- **Residual Risk Rationale**: Resolved (M005, M004): guest identities are off and the signed-in role can call only listDevices, getDevice, getDeviceLog, getBrokerLog, sendCommand and migrateFirmware, so updateDevice is not browser-callable and only the telemetry processor writes device state. test_dashboard_auth.py pins the role to those six fields; verified on pqc-a and on the pqc-b from-scratch rebuild that a guest GetId is refused.
-- **Assessment State**: Current
-#### T4: anonymous internet user
-**Statement**: A anonymous internet user with Cognito guest credentials can read broker connection logs and all device message payloads through getBrokerLog and getDeviceLog, which leads to disclosure of device client IDs, source IP addresses and full telemetry and command history
-- **Prerequisites**: with Cognito guest credentials
-- **Action**: read broker connection logs and all device message payloads through getBrokerLog and getDeviceLog
-- **Impact**: disclosure of device client IDs, source IP addresses and full telemetry and command history
-- **Impacted Assets**: A008, A007
-- **Tags**: appsync, anonymous-access
-- **Residual Risk Decision**: Accepted
-- **Residual Severity**: Low
-- **Residual Likelihood**: Possible
-- **Residual Risk Rationale**: Resolved (M004): logs are readable only by signed-in users holding the room passcode, the same people who see the dashboard. Low data value: synthetic telemetry, client IDs and source IPs.
-- **Assessment State**: Current
 #### T26: anonymous internet user
+
 **Statement**: A anonymous internet user with the public dashboard URL and the workshop username from the public JavaScript can submit wrong passcodes for the shared workshop user until Cognito temporarily locks it, which leads to attendees being unable to sign in to the dashboard until the lockout expires, because the whole room signs in as one user
+
 - **Prerequisites**: with the public dashboard URL and the workshop username from the public JavaScript
 - **Action**: submit wrong passcodes for the shared workshop user until Cognito temporarily locks it
 - **Impact**: attendees being unable to sign in to the dashboard until the lockout expires, because the whole room signs in as one user
@@ -960,6 +985,7 @@ Post-Quantum Cryptography Migration for IoT workshop (AWS Workshop Studio / re:I
 - **Residual Likelihood**: Possible
 - **Residual Risk Rationale**: Accepted for the workshop (a known trade-off of the shared passcode, M004): Cognito's lockout is temporary and backs off, browsers already signed in keep their session through the 12 h refresh token, and the 8-character passcode from a 31-symbol set (about 8.5 x 10^11 values) makes guessing it impractical.
 - **Assessment State**: Current
+
 ## Mitigations
 
 ### Identified Mitigations
@@ -971,6 +997,10 @@ Post-Quantum Cryptography Migration for IoT workshop (AWS Workshop Studio / re:I
 #### M2: Verify the OTA download server: fix the wolfSSL chain issue (load the Amazon intermediate/roots and enable WOLFSSL_VERIFY_PEER with SNI and domain check) and only accept URLs whose host is the workshop firmware bucket's regional S3 endpoint.
 
 **Addresses Threats**: T6, T22, T23
+
+#### M3: Add a Mosquitto ACL that confines each device to its own topics: write dt/%u/#, read cmd/%u/#, using the certificate CN as the username (use_identity_as_username is already on).
+
+**Addresses Threats**: T6, T7, T20, T24
 
 #### M7: Redact presigned URLs from logged OTA commands and shorten the presign expiry to the minimum the download needs.
 
@@ -997,7 +1027,9 @@ Post-Quantum Cryptography Migration for IoT workshop (AWS Workshop Studio / re:I
 **Addresses Threats**: T18
 
 #### M19: Make dashboard actions auditable: enable AppSync request logging (time, field, source IP); sign-in is a shared workshop user, so logs cannot name a person.
+
 **Addresses Threats**: T19
+
 #### M20: Narrow the bridge IoT policy to the device topic shapes (dt/esp32-*/telemetry, cmd/esp32-*/*) and remove the shadow wildcards it does not use.
 
 **Addresses Threats**: T20
@@ -1010,27 +1042,31 @@ Post-Quantum Cryptography Migration for IoT workshop (AWS Workshop Studio / re:I
 
 **Addresses Threats**: T22
 
-#### M3: Add a Mosquitto ACL that confines each device to its own topics: write dt/%u/#, read cmd/%u/#, using the certificate CN as the username (use_identity_as_username is already on).
-
-**Addresses Threats**: T6, T7, T20, T24
-
 #### M31: Scope the device-management and Builder-Pi roles to workshop ARNs: thing/esp32-* and thing/pqc-workshop-broker-bridge, policy/pqc-workshop-* and esp32-* policies, and certificate ARNs where IoT allows; keep Resource * only for actions IoT cannot resource-scope (e.g. CreateKeysAndCertificate), and scope the DeviceIdentityRole KMS decrypt to the SSM key.
+
 **Addresses Threats**: T27
-### In Progress Mitigations
-
-#### M6: Throttle migrations: reject migrateFirmware while a device already has a migration in progress, cap start-migration concurrency, and set a CodeBuild concurrent-build limit.
-
-**Addresses Threats**: T1, T17
-
-#### M14: Limit the SSM hybrid activation: registration limit of 1, expiry of hours not 7 days, and auto-deregister stale managed instances.
-
-**Addresses Threats**: T12
-
-#### M16: Harden the build supply chain: pin base images by digest, pin oqs-provider/OpenSSL commits and package versions, verify Arduino index signatures, use npm ci with a lockfile, and deploy images by digest with immutable ECR tags.
-
-**Addresses Threats**: T15, T16
 
 ### Resolved Mitigations
+
+#### M4: Replace anonymous dashboard access with a workshop passcode sign-in: a Cognito user pool (Lite tier, admin-only sign-up) holding one workshop user whose password is a random 8-character passcode generated per from-scratch deploy and stored in SSM, shown to the room by the facilitator; guest identities off; only the signed-in role gets AWS credentials.
+
+**Addresses Threats**: T1, T2, T3, T4, T17, T19, T26
+
+#### M5: Remove updateDevice from browser-callable access: the signed-in role's appsync:GraphQL is limited to listDevices, getDevice, getDeviceLog, getBrokerLog, sendCommand and migrateFirmware, so only the telemetry processor writes device state.
+
+**Addresses Threats**: T2
+
+#### M10: Lock down the Builder-Pi GUI: bind it to 127.0.0.1:8080 only (used from the Pi's own browser, at its console or through a KVM), remove /api/config, require a loopback Host header and JSON POSTs, and drop :8080 on every non-loopback interface with nftables.
+
+**Addresses Threats**: T9, T10, T25
+
+#### M12: Device identity is never in a firmware image: keys, certificates, CA roots and WiFi go into a separate certs NVS partition image built per device at registration, flashed by the Builder-Pi and then deleted from S3 (every version), with a 1-day lifecycle rule on identity/ as a backstop.
+
+**Addresses Threats**: T3, T11, T23
+
+#### M13: Keep the WiFi PSK only in SSM: the device-identity CodeBuild job reads it as a PARAMETER_STORE environment variable, and the registry, registrar, prepare-build and migration state machine no longer store or pass it.
+
+**Addresses Threats**: T13
 
 #### M17: ECR scan on push for all three images.
 
@@ -1060,29 +1096,28 @@ Post-Quantum Cryptography Migration for IoT workshop (AWS Workshop Studio / re:I
 
 **Addresses Threats**: T1
 
-#### M12: Device identity is never in a firmware image: keys, certificates, CA roots and WiFi go into a separate certs NVS partition image built per device at registration, flashed by the Builder-Pi and then deleted from S3 (every version), with a 1-day lifecycle rule on identity/ as a backstop.
-
-**Addresses Threats**: T3, T11, T23
-
-#### M13: Keep the WiFi PSK only in SSM: the device-identity CodeBuild job reads it as a PARAMETER_STORE environment variable, and the registry, registrar, prepare-build and migration state machine no longer store or pass it.
-
-**Addresses Threats**: T13
-
 #### M29: Separate code signing from device identity: the OTA signer certificates are issued only by two dedicated firmware-signing root CAs (ECDSA P-256 and ML-DSA-44) with the codeSigning EKU; the device trusts only the signing root matching the image's sigAlg, requires codeSigning on the signer leaf, and never trusts a device CA root for OTA.
 
 **Addresses Threats**: T24
 
-#### M10: Lock down the Builder-Pi GUI: bind it to 127.0.0.1:8080 only (used from the Pi's own browser, at its console or through a KVM), remove /api/config, require a loopback Host header and JSON POSTs, and drop :8080 on every non-loopback interface with nftables.
-
-**Addresses Threats**: T9, T10, T25
-
 #### M30: Validate Builder-Pi download inputs: allowlist the serial, firmware version, S3 prefix and identity key, require the local path to resolve inside the firmware directory, and delete the local identity image whether or not the flash succeeds.
+
 **Addresses Threats**: T25
 
-#### M4: Replace anonymous dashboard access with a workshop passcode sign-in: a Cognito user pool (Lite tier, admin-only sign-up) holding one workshop user whose password is a random 8-character passcode generated per from-scratch deploy and stored in SSM, shown to the room by the facilitator; guest identities off; only the signed-in role gets AWS credentials.
-**Addresses Threats**: T1, T2, T3, T4, T17, T19
-#### M5: Remove updateDevice from browser-callable access: the signed-in role's appsync:GraphQL is limited to listDevices, getDevice, getDeviceLog, getBrokerLog, sendCommand and migrateFirmware, so only the telemetry processor writes device state.
-**Addresses Threats**: T2
+### In Progress Mitigations
+
+#### M6: Throttle migrations: reject migrateFirmware while a device already has a migration in progress, cap start-migration concurrency, and set a CodeBuild concurrent-build limit.
+
+**Addresses Threats**: T1, T17
+
+#### M14: Limit the SSM hybrid activation: registration limit of 1, expiry of hours not 7 days, and auto-deregister stale managed instances.
+
+**Addresses Threats**: T12
+
+#### M16: Harden the build supply chain: pin base images by digest, pin oqs-provider/OpenSSL commits and package versions, verify Arduino index signatures, use npm ci with a lockfile, and deploy images by digest with immutable ECR tags.
+
+**Addresses Threats**: T15, T16
+
 ## Assumptions
 
 ### A011: Deployment
@@ -1138,7 +1173,7 @@ Post-Quantum Cryptography Migration for IoT workshop (AWS Workshop Studio / re:I
 | 5 | Asset Flow Analysis | 100% ✅ |
 | 6 | Threat Identification | 100% ✅ |
 | 7 | Mitigation Planning | 100% ✅ |
-| 7.5 | Code Validation Analysis | 100% ✅ |
+| 7.5 | Code Validation Analysis | 0% ⏳ |
 | 8 | Residual Risk Analysis | 100% ✅ |
 | 9 | Output Generation and Documentation | 100% ✅ |
 

@@ -92,12 +92,17 @@ def main():
         help="export base filename in this folder (default: %(default)s)",
     )
     parser.add_argument(
+        "--dir",
+        default=here,
+        help="folder holding the export (default: this script's folder)",
+    )
+    parser.add_argument(
         "--dry-run", action="store_true", help="report the changes without writing"
     )
     args = parser.parse_args()
 
-    tc_path = os.path.join(here, f"{args.base}.tc.json")
-    ext_path = os.path.join(here, f"{args.base}.extended.json")
+    tc_path = os.path.join(args.dir, f"{args.base}.tc.json")
+    ext_path = os.path.join(args.dir, f"{args.base}.extended.json")
     tc = load_json(tc_path)
     ext = load_json(ext_path)
 
