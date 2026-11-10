@@ -216,7 +216,7 @@ void MqttManager::task(void* pvParameters) {
                 // Announce that the device is online. This is the counterpart
                 // to the LWT offline message. Retained so new subscribers
                 // immediately know the device state.
-                char onlinePayload[448];  // headroom for ota_sig_alg + firmware_sha256
+                char onlinePayload[512];  // headroom for ota_sig_alg + firmware_sha256 + handshake_ms
                 snprintf(onlinePayload, sizeof(onlinePayload),
                          "{"
                          "\"status\":\"online\","
@@ -228,6 +228,7 @@ void MqttManager::task(void* pvParameters) {
                          "\"ota_sig_alg\":\"%s\","
                          "\"firmware_sha256\":\"%s\","
                          "\"ip\":\"%s\","
+                         "\"handshake_ms\":%lu,"
                          "\"uptime_sec\":%lu"
                          "}",
                          DeviceIdentity::thingName(),
@@ -238,6 +239,7 @@ void MqttManager::task(void* pvParameters) {
                          FIRMWARE_OTA_SIG_ALG,
                          DeviceIdentity::firmwareSha256(),
                          WiFi.localIP().toString().c_str(),
+                         WolfSSLClient::handshakeMs(),
                          millis() / 1000);
 
                 if (mqttClient.publish(g_topicLifecycle, onlinePayload, true, 1)) {
@@ -298,7 +300,8 @@ void MqttManager::task(void* pvParameters) {
                      "\"tls_version\":\"%s\","
                      "\"cert_sig_alg\":\"%s\","
                      "\"ota_sig_alg\":\"%s\","
-                     "\"firmware_sha256\":\"%s\""
+                     "\"firmware_sha256\":\"%s\","
+                     "\"handshake_ms\":%lu"
                      "}",
                      DeviceIdentity::thingName(),
                      FIRMWARE_VERSION,
@@ -319,7 +322,8 @@ void MqttManager::task(void* pvParameters) {
                      WolfSSLClient::tlsVersion(),
                      CERT_SIGNATURE_ALG,
                      FIRMWARE_OTA_SIG_ALG,
-                     DeviceIdentity::firmwareSha256());
+                     DeviceIdentity::firmwareSha256(),
+                     WolfSSLClient::handshakeMs());
 
             if (mqttClient.publish(g_topicTelemetry, payload)) {
                 ESP_LOGI(TAG_MQTT, "Published telemetry #%lu → %s", messageCount, g_topicTelemetry);

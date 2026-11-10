@@ -9,6 +9,7 @@ WOLFSSL_CTX* WolfSSLClient::s_ctx = NULL;
 char WolfSSLClient::s_tlsVersion[32]     = "unknown";
 char WolfSSLClient::s_tlsCipher[64]      = "unknown";
 char WolfSSLClient::s_tlsKeyExchange[64] = "none";
+unsigned long WolfSSLClient::s_handshakeMs = 0;
 
 // ═══════════════════════════════════════════════════════════════════════════
 //  wolfSSL I/O Callbacks for Arduino WiFiClient
@@ -302,6 +303,7 @@ int WolfSSLClient::connect(const char* host, uint16_t port) {
         strncpy(s_tlsKeyExchange, "ECDHE-P256", sizeof(s_tlsKeyExchange) - 1);
     }
 
+    s_handshakeMs = handshakeDuration;  // reported in telemetry (handshake_ms)
     ESP_LOGI(TAG_TLS, "TLS handshake complete in %lu ms", handshakeDuration);
     ESP_LOGI(TAG_TLS, "Protocol: %s, Cipher: %s", s_tlsVersion, s_tlsCipher);
     ESP_LOGI(TAG_TLS, "Key Exchange: %s", s_tlsKeyExchange);

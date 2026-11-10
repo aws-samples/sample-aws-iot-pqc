@@ -9,14 +9,14 @@ TaskHandle_t StatusLed::s_task = NULL;
 void StatusLed::begin() {
     // LED on right away: a visual indicator the device is alive
     pinMode(LED_PIN, OUTPUT);
-    digitalWrite(LED_PIN, HIGH);
+    digitalWrite(LED_PIN, LED_ON);
     xTaskCreatePinnedToCore(task, "BlinkTask", BLINK_TASK_STACK_SIZE,
                             NULL, BLINK_TASK_PRIORITY, &s_task, 0);
 }
 
 void StatusLed::off() {
     if (s_task) vTaskSuspend(s_task);
-    digitalWrite(LED_PIN, LOW);
+    digitalWrite(LED_PIN, LED_OFF);
     delay(1);  // Ensure GPIO state settles
 }
 
@@ -29,9 +29,9 @@ void StatusLed::on() {
 void StatusLed::task(void* pvParameters) {
     pinMode(LED_PIN, OUTPUT);
     for (;;) {
-        digitalWrite(LED_PIN, HIGH);
+        digitalWrite(LED_PIN, LED_ON);
         vTaskDelay(pdMS_TO_TICKS(VARIANT_BLINK_MS));
-        digitalWrite(LED_PIN, LOW);
+        digitalWrite(LED_PIN, LED_OFF);
         vTaskDelay(pdMS_TO_TICKS(VARIANT_BLINK_MS));
     }
 }
