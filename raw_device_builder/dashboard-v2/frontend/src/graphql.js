@@ -16,6 +16,7 @@ export const LIST_DEVICES = `
       certSigAlg
       otaSigAlg
       firmwareSha256
+      handshakeMs
       wifiRssi
       freeHeap
       heapTotal

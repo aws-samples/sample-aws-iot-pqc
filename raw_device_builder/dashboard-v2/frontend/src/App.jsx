@@ -232,6 +232,13 @@ function DeviceCard({ device, onCommand, onShowLog, onFlash }) {
         </div>
         <div className="metric">
           {/* nosemgrep: jsx-not-internationalized */}
+          <label>TLS Handshake</label>
+          <span title="Time the device's last TLS handshake with the broker took">
+            {formatMs(device.handshakeMs)}
+          </span>
+        </div>
+        <div className="metric">
+          {/* nosemgrep: jsx-not-internationalized */}
           <label>Firmware</label>
           <span>{device.firmwareVersion || '—'}</span>
         </div>
@@ -717,6 +724,13 @@ function formatUptime(seconds) {
 function formatKB(bytes) {
   if (bytes === undefined || bytes === null) return '—';
   return `${Math.round(bytes / 1024)}KB`;
+}
+
+// Render a handshake duration: "850 ms" below a second, "2.05 s" above, or an
+// em dash when the device has not reported one (older firmware).
+function formatMs(ms) {
+  if (ms === undefined || ms === null) return '—';
+  return ms < 1000 ? `${ms} ms` : `${(ms / 1000).toFixed(2)} s`;
 }
 
 function truncate(str, maxLen) {

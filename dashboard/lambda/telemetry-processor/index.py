@@ -66,6 +66,10 @@ def handler(event, context):
             # the device computed of its own running app partition at boot.
             'otaSigAlg': event.get('ota_sig_alg'),
             'firmwareSha256': event.get('firmware_sha256'),
+            # Duration (ms) of the device's last TLS handshake with the broker:
+            # classical vs hybrid ML-KEM vs ML-DSA certificate. Older firmware
+            # does not send it, so it is simply skipped (None).
+            'handshakeMs': event.get('handshake_ms'),
             'status': 'online',
         }
         # Only include firmware_version if present (don't overwrite with 'unknown')
@@ -111,6 +115,10 @@ def handler(event, context):
             update_parts.append('#firmwareSha256 = :firmwareSha256')
             attr_names['#firmwareSha256'] = 'firmwareSha256'
             attr_values[':firmwareSha256'] = event['firmware_sha256']
+        if 'handshake_ms' in event:
+            update_parts.append('#handshakeMs = :handshakeMs')
+            attr_names['#handshakeMs'] = 'handshakeMs'
+            attr_values[':handshakeMs'] = event['handshake_ms']
 
     # Update DynamoDB (only modifies fields present — doesn't clear others).
     #

@@ -250,6 +250,7 @@ Resources:
           certSigAlg: String
           otaSigAlg: String
           firmwareSha256: String
+          handshakeMs: Int
           wifiRssi: Int
           freeHeap: Int
           heapTotal: Int
@@ -321,6 +322,7 @@ Resources:
           certSigAlg: String
           otaSigAlg: String
           firmwareSha256: String
+          handshakeMs: Int
           wifiRssi: Int
           freeHeap: Int
           heapTotal: Int
