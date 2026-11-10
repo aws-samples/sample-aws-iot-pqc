@@ -34,7 +34,9 @@ _CfnLoader.add_multi_constructor("!", _tag)
 @pytest.fixture(scope="module")
 def resources():
     with open(TEMPLATE, encoding="utf-8") as f:
-        return yaml.load(f, Loader=_CfnLoader)["Resources"]
+        # _CfnLoader is a SafeLoader subclass (adds only CloudFormation tags),
+        # so this is as safe as yaml.safe_load.
+        return _CfnLoader(f).get_single_data()["Resources"]
 
 
 def _of_type(resources, cfn_type):
