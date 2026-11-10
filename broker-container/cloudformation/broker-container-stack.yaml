@@ -277,12 +277,16 @@ Resources:
     Metadata:
       cfn_nag:
         rules_to_suppress:
+          - id: W92
+            reason: "No reserved concurrency: Workshop Studio accounts reserve 890 of the 1000 account concurrency for their own curtailer function, leaving only 10 reservable, so any reservation here fails the deploy."
           - id: W28
             reason: "workshop depends on fixed resource names referenced across stacks/scripts"
           - id: W89
             reason: "calls public AWS APIs, no VPC resources"
       checkov:
         skip:
+          - id: CKV_AWS_115
+            comment: "No reserved concurrency: Workshop Studio accounts reserve 890 of the 1000 account concurrency for their own curtailer function, leaving only 10 reservable, so any reservation here fails the deploy."
           - id: CKV_AWS_116
             comment: "synchronous/custom-resource invocation"
           - id: CKV_AWS_117
@@ -291,7 +295,6 @@ Resources:
             comment: "AWS-managed key default"
     Properties:
       FunctionName: pqc-workshop-broker-build-trigger
-      ReservedConcurrentExecutions: 5
       Runtime: python3.12
       Handler: index.handler
       Timeout: 900
@@ -1290,12 +1293,16 @@ Resources:
     Metadata:
       cfn_nag:
         rules_to_suppress:
+          - id: W92
+            reason: "No reserved concurrency: Workshop Studio accounts reserve 890 of the 1000 account concurrency for their own curtailer function, leaving only 10 reservable, so any reservation here fails the deploy."
           - id: W28
             reason: "workshop depends on fixed resource names referenced across stacks/scripts"
           - id: W89
             reason: "calls public AWS APIs, no VPC resources"
       checkov:
         skip:
+          - id: CKV_AWS_115
+            comment: "No reserved concurrency: Workshop Studio accounts reserve 890 of the 1000 account concurrency for their own curtailer function, leaving only 10 reservable, so any reservation here fails the deploy."
           - id: CKV_AWS_116
             comment: "synchronous/custom-resource invocation"
           - id: CKV_AWS_117
@@ -1304,7 +1311,6 @@ Resources:
             comment: "AWS-managed key default"
     Properties:
       FunctionName: pqc-workshop-cert-issuer-build-trigger
-      ReservedConcurrentExecutions: 5
       Runtime: python3.12
       Handler: index.handler
       Timeout: 900
@@ -1758,12 +1764,16 @@ Resources:
     Metadata:
       cfn_nag:
         rules_to_suppress:
+          - id: W92
+            reason: "No reserved concurrency: Workshop Studio accounts reserve 890 of the 1000 account concurrency for their own curtailer function, leaving only 10 reservable, so any reservation here fails the deploy."
           - id: W28
             reason: "workshop depends on fixed resource names referenced across stacks/scripts"
           - id: W89
             reason: "calls public AWS APIs, no VPC resources"
       checkov:
         skip:
+          - id: CKV_AWS_115
+            comment: "No reserved concurrency: Workshop Studio accounts reserve 890 of the 1000 account concurrency for their own curtailer function, leaving only 10 reservable, so any reservation here fails the deploy."
           - id: CKV_AWS_116
             comment: "synchronous/custom-resource invocation"
           - id: CKV_AWS_117
@@ -1774,7 +1784,6 @@ Resources:
             comment: "not a secret: inline Lambda source — IoT policy-document resource ARN f-strings and Python string constants, no credential material (certs/keys are fetched at runtime and never hardcoded)"
     Properties:
       FunctionName: pqc-workshop-bridge-provisioner
-      ReservedConcurrentExecutions: 5
       Runtime: python3.12
       Handler: index.handler
       Timeout: 60

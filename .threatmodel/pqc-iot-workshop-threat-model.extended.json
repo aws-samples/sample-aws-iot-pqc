@@ -4046,7 +4046,7 @@
       "decision": "Open",
       "residual_severity": "Low",
       "residual_likelihood": "Unlikely",
-      "rationale": "Needs the room passcode (M004). Reserved concurrency of 5 limits fan-out, but builds still queue; M006 closes it.",
+      "rationale": "Needs the room passcode (M004). There is no Lambda reserved concurrency to cap fan-out: Workshop Studio accounts leave only 10 concurrency reservable, so reservations break the deploy and were removed. CodeBuild queues builds beyond its account limit; M006 closes it.",
       "is_current": true
     },
     {

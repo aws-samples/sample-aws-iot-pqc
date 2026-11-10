@@ -1,6 +1,6 @@
 # Comprehensive Threat Model Report
 
-**Generated**: 2026-11-10 13:48:12
+**Generated**: 2026-11-10 14:41:12
 **Current Phase**: 1 - Business Context Analysis
 **Overall Completion**: 90.0%
 
@@ -728,7 +728,7 @@ Post-Quantum Cryptography Migration for IoT workshop (AWS Workshop Studio / re:I
 - **Residual Risk Decision**: Open
 - **Residual Severity**: Low
 - **Residual Likelihood**: Unlikely
-- **Residual Risk Rationale**: Needs the room passcode (M004). Reserved concurrency of 5 limits fan-out, but builds still queue; M006 closes it.
+- **Residual Risk Rationale**: Needs the room passcode (M004). There is no Lambda reserved concurrency to cap fan-out: Workshop Studio accounts leave only 10 concurrency reservable, so reservations break the deploy and were removed. CodeBuild queues builds beyond its account limit; M006 closes it.
 - **Assessment State**: Current
 
 #### T19: signed-in dashboard user

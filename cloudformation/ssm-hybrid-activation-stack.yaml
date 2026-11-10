@@ -837,7 +837,7 @@ Resources:
           - id: W89
             reason: "Function only calls public AWS APIs (SSM, Secrets Manager); no VPC resources are involved, so VPC attachment adds no value."
           - id: W92
-            reason: "ReservedConcurrentExecutions is set to bound concurrency for this workshop function."
+            reason: "No reserved concurrency: Workshop Studio accounts reserve 890 of the 1000 account concurrency for their own curtailer function, leaving only 10 reservable, so any reservation here fails the deploy."
       checkov:
         skip:
           - id: CKV_AWS_116
@@ -847,14 +847,13 @@ Resources:
           - id: CKV_AWS_173
             comment: "Environment variables use the AWS-managed Lambda key by default; values are non-sensitive config and no customer CMK is required for this workshop sample."
           - id: CKV_AWS_115
-            comment: "ReservedConcurrentExecutions is set to bound concurrency for this workshop function."
+            comment: "No reserved concurrency: Workshop Studio accounts reserve 890 of the 1000 account concurrency for their own curtailer function, leaving only 10 reservable, so any reservation here fails the deploy."
     Properties:
       FunctionName: !Sub '${WorkshopInstanceName}-ssm-activation'
       Description: Creates/deletes SSM hybrid activation and stores credentials
       Runtime: python3.12
       Handler: index.handler
       Timeout: 60
-      ReservedConcurrentExecutions: 5
       Role: !GetAtt SSMActivationLambdaRole.Arn
       Environment:
         Variables:

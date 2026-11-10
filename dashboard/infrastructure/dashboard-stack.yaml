@@ -628,10 +628,14 @@ Resources:
     Metadata:
       cfn_nag:
         rules_to_suppress:
+          - id: W92
+            reason: "No reserved concurrency: Workshop Studio accounts reserve 890 of the 1000 account concurrency for their own curtailer function, leaving only 10 reservable, so any reservation here fails the deploy."
           - id: W89
             reason: "calls public AWS APIs (IoT/DynamoDB/AppSync), no VPC resources"
       checkov:
         skip:
+          - id: CKV_AWS_115
+            comment: "No reserved concurrency: Workshop Studio accounts reserve 890 of the 1000 account concurrency for their own curtailer function, leaving only 10 reservable, so any reservation here fails the deploy."
           - id: CKV_AWS_116
             comment: "synchronous IoT-rule/AppSync invocations, no async DLQ needed"
           - id: CKV_AWS_117
@@ -643,7 +647,6 @@ Resources:
       Runtime: python3.12
       Handler: index.handler
       Timeout: 10
-      ReservedConcurrentExecutions: 10
       Role: !GetAtt TelemetryProcessorRole.Arn
       Environment:
         Variables:
@@ -697,10 +700,14 @@ Resources:
     Metadata:
       cfn_nag:
         rules_to_suppress:
+          - id: W92
+            reason: "No reserved concurrency: Workshop Studio accounts reserve 890 of the 1000 account concurrency for their own curtailer function, leaving only 10 reservable, so any reservation here fails the deploy."
           - id: W89
             reason: "calls public AWS APIs (IoT/DynamoDB/AppSync), no VPC resources"
       checkov:
         skip:
+          - id: CKV_AWS_115
+            comment: "No reserved concurrency: Workshop Studio accounts reserve 890 of the 1000 account concurrency for their own curtailer function, leaving only 10 reservable, so any reservation here fails the deploy."
           - id: CKV_AWS_116
             comment: "synchronous IoT-rule/AppSync invocations, no async DLQ needed"
           - id: CKV_AWS_117
@@ -712,7 +719,6 @@ Resources:
       Runtime: python3.12
       Handler: index.handler
       Timeout: 10
-      ReservedConcurrentExecutions: 5
       Role: !GetAtt CommandPublisherRole.Arn
       Environment:
         Variables:
@@ -835,10 +841,14 @@ Resources:
     Metadata:
       cfn_nag:
         rules_to_suppress:
+          - id: W92
+            reason: "No reserved concurrency: Workshop Studio accounts reserve 890 of the 1000 account concurrency for their own curtailer function, leaving only 10 reservable, so any reservation here fails the deploy."
           - id: W89
             reason: "calls public AWS APIs (IoT/DynamoDB/AppSync), no VPC resources"
       checkov:
         skip:
+          - id: CKV_AWS_115
+            comment: "No reserved concurrency: Workshop Studio accounts reserve 890 of the 1000 account concurrency for their own curtailer function, leaving only 10 reservable, so any reservation here fails the deploy."
           - id: CKV_AWS_116
             comment: "synchronous IoT-rule/AppSync invocations, no async DLQ needed"
           - id: CKV_AWS_117
@@ -850,7 +860,6 @@ Resources:
       Runtime: python3.12
       Handler: index.handler
       Timeout: 10
-      ReservedConcurrentExecutions: 10
       Role: !GetAtt MessageLoggerRole.Arn
       Environment:
         Variables:
@@ -993,10 +1002,14 @@ Resources:
     Metadata:
       cfn_nag:
         rules_to_suppress:
+          - id: W92
+            reason: "No reserved concurrency: Workshop Studio accounts reserve 890 of the 1000 account concurrency for their own curtailer function, leaving only 10 reservable, so any reservation here fails the deploy."
           - id: W89
             reason: "calls public AWS APIs (IoT/DynamoDB/AppSync), no VPC resources"
       checkov:
         skip:
+          - id: CKV_AWS_115
+            comment: "No reserved concurrency: Workshop Studio accounts reserve 890 of the 1000 account concurrency for their own curtailer function, leaving only 10 reservable, so any reservation here fails the deploy."
           - id: CKV_AWS_116
             comment: "synchronous IoT-rule/AppSync invocations, no async DLQ needed"
           - id: CKV_AWS_117
@@ -1008,7 +1021,6 @@ Resources:
       Runtime: python3.12
       Handler: index.handler
       Timeout: 15
-      ReservedConcurrentExecutions: 5
       Role: !GetAtt BrokerLogReaderRole.Arn
       Environment:
         Variables:
@@ -1368,10 +1380,14 @@ Resources:
     Metadata:
       cfn_nag:
         rules_to_suppress:
+          - id: W92
+            reason: "No reserved concurrency: Workshop Studio accounts reserve 890 of the 1000 account concurrency for their own curtailer function, leaving only 10 reservable, so any reservation here fails the deploy."
           - id: W89
             reason: "calls public AWS APIs (IoT/DynamoDB/AppSync), no VPC resources"
       checkov:
         skip:
+          - id: CKV_AWS_115
+            comment: "No reserved concurrency: Workshop Studio accounts reserve 890 of the 1000 account concurrency for their own curtailer function, leaving only 10 reservable, so any reservation here fails the deploy."
           - id: CKV_AWS_116
             comment: "synchronous IoT-rule/AppSync invocations, no async DLQ needed"
           - id: CKV_AWS_117
@@ -1382,7 +1398,6 @@ Resources:
       Runtime: python3.12
       Handler: index.handler
       Timeout: 900
-      ReservedConcurrentExecutions: 5
       Role: !GetAtt DashboardBuildTriggerRole.Arn
       Environment:
         Variables:
