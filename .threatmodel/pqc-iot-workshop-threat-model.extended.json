@@ -7,9 +7,9 @@
     {
       "id": "T001",
       "numericId": 1,
-      "threatSource": "anonymous internet user",
-      "prerequisites": "with the identity pool ID from the public dashboard config.json",
-      "threatAction": "obtain Cognito guest credentials and call the AppSync migrateFirmware mutation for any thingName",
+      "threatSource": "signed-in dashboard user",
+      "prerequisites": "with the shared workshop passcode (any attendee, or anyone it leaks to)",
+      "threatAction": "call the AppSync migrateFirmware mutation for any thingName",
       "threatImpact": "unrequested firmware builds and OTA pushes to any attendee's device, disrupting the live workshop and spending account resources",
       "impactedGoal": [],
       "impactedAssets": [
@@ -18,12 +18,12 @@
         "A007"
       ],
       "metadata": [],
-      "statement": "A anonymous internet user with the identity pool ID from the public dashboard config.json can obtain Cognito guest credentials and call the AppSync migrateFirmware mutation for any thingName, which leads to unrequested firmware builds and OTA pushes to any attendee's device, disrupting the live workshop and spending account resources",
+      "statement": "A signed-in dashboard user with the shared workshop passcode (any attendee, or anyone it leaks to) can call the AppSync migrateFirmware mutation for any thingName, which leads to unrequested firmware builds and OTA pushes to any attendee's device, disrupting the live workshop and spending account resources",
       "displayOrder": 1,
       "status": "threatIdentified",
       "tags": [
         "appsync",
-        "anonymous-access"
+        "shared-passcode"
       ],
       "category": "Elevation of Privilege",
       "severity": "High",
@@ -51,7 +51,7 @@
       "metadata": [],
       "statement": "A anonymous internet user with Cognito guest credentials can call the AppSync updateDevice mutation to overwrite any device's firmwareVersion, pqcAlgorithm, tlsVersion or status, which leads to a dashboard that shows false migration results, undermining the workshop's proof that devices negotiated ML-KEM",
       "displayOrder": 2,
-      "status": "threatIdentified",
+      "status": "threatResolved",
       "tags": [
         "appsync",
         "anonymous-access",
@@ -108,7 +108,7 @@
       "metadata": [],
       "statement": "A anonymous internet user with Cognito guest credentials can read broker connection logs and all device message payloads through getBrokerLog and getDeviceLog, which leads to disclosure of device client IDs, source IP addresses and full telemetry and command history",
       "displayOrder": 4,
-      "status": "threatIdentified",
+      "status": "threatResolved",
       "tags": [
         "appsync",
         "anonymous-access"
@@ -461,8 +461,8 @@
     {
       "id": "T017",
       "numericId": 17,
-      "threatSource": "anonymous internet user",
-      "prerequisites": "with Cognito guest credentials",
+      "threatSource": "signed-in dashboard user",
+      "prerequisites": "with the shared workshop passcode (any attendee, or anyone it leaks to)",
       "threatAction": "repeatedly call migrateFirmware across many devices",
       "threatImpact": "queued or throttled CodeBuild builds that stall real migrations during the session, plus avoidable build cost",
       "impactedGoal": [],
@@ -470,12 +470,13 @@
         "A009"
       ],
       "metadata": [],
-      "statement": "A anonymous internet user with Cognito guest credentials can repeatedly call migrateFirmware across many devices, which leads to queued or throttled CodeBuild builds that stall real migrations during the session, plus avoidable build cost",
+      "statement": "A signed-in dashboard user with the shared workshop passcode (any attendee, or anyone it leaks to) can repeatedly call migrateFirmware across many devices, which leads to queued or throttled CodeBuild builds that stall real migrations during the session, plus avoidable build cost",
       "displayOrder": 17,
       "status": "threatIdentified",
       "tags": [
         "appsync",
-        "cost"
+        "cost",
+        "shared-passcode"
       ],
       "category": "Denial of Service",
       "severity": "Medium",
@@ -514,21 +515,21 @@
     {
       "id": "T019",
       "numericId": 19,
-      "threatSource": "anonymous internet user",
-      "prerequisites": "with Cognito guest credentials",
-      "threatAction": "migrate or overwrite devices through AppSync",
-      "threatImpact": "actions that cannot be attributed to a person, because all callers share the unauthenticated role",
+      "threatSource": "signed-in dashboard user",
+      "prerequisites": "with the shared workshop passcode",
+      "threatAction": "migrate devices or send commands through AppSync",
+      "threatImpact": "actions that cannot be attributed to a person, because every attendee signs in as the same workshop user",
       "impactedGoal": [],
       "impactedAssets": [
         "A009"
       ],
       "metadata": [],
-      "statement": "A anonymous internet user with Cognito guest credentials can migrate or overwrite devices through AppSync, which leads to actions that cannot be attributed to a person, because all callers share the unauthenticated role",
+      "statement": "A signed-in dashboard user with the shared workshop passcode can migrate devices or send commands through AppSync, which leads to actions that cannot be attributed to a person, because every attendee signs in as the same workshop user",
       "displayOrder": 19,
       "status": "threatIdentified",
       "tags": [
         "audit",
-        "anonymous-access"
+        "shared-passcode"
       ],
       "category": "Repudiation",
       "severity": "Medium",
@@ -706,6 +707,65 @@
         "builder-pi",
         "path-traversal"
       ]
+    },
+    {
+      "id": "T026",
+      "numericId": 26,
+      "metadata": [],
+      "statement": "A anonymous internet user with the public dashboard URL and the workshop username from the public JavaScript can submit wrong passcodes for the shared workshop user until Cognito temporarily locks it, which leads to attendees being unable to sign in to the dashboard until the lockout expires, because the whole room signs in as one user",
+      "displayOrder": 26,
+      "status": "threatResolved",
+      "category": "Denial of Service",
+      "severity": "Low",
+      "likelihood": "Possible",
+      "affected_components": [
+        "C023",
+        "C025"
+      ],
+      "threatSource": "anonymous internet user",
+      "prerequisites": "with the public dashboard URL and the workshop username from the public JavaScript",
+      "threatAction": "submit wrong passcodes for the shared workshop user until Cognito temporarily locks it",
+      "threatImpact": "attendees being unable to sign in to the dashboard until the lockout expires, because the whole room signs in as one user",
+      "impactedGoal": [],
+      "impactedAssets": [
+        "A009"
+      ],
+      "tags": [
+        "cognito",
+        "availability",
+        "shared-passcode"
+      ]
+    },
+    {
+      "id": "T027",
+      "numericId": 27,
+      "metadata": [],
+      "statement": "A attacker who gains code execution in a device-management Lambda or the Builder-Pi, e.g. via a dependency flaw can use that role's IoT management permissions on Resource * to create, delete or re-attach any Thing, certificate or policy in the account, which leads to fleet-wide device lockout or a rogue identity trusted by IoT Core, well beyond the one device the role was meant to manage",
+      "displayOrder": 27,
+      "status": "threatIdentified",
+      "category": "Elevation of Privilege",
+      "severity": "Medium",
+      "likelihood": "Unlikely",
+      "affected_components": [
+        "C012",
+        "C013",
+        "C019",
+        "C018",
+        "C027"
+      ],
+      "threatSource": "attacker",
+      "prerequisites": "who gains code execution in a device-management Lambda or the Builder-Pi, e.g. via a dependency flaw",
+      "threatAction": "use that role's IoT management permissions on Resource * to create, delete or re-attach any Thing, certificate or policy in the account",
+      "threatImpact": "fleet-wide device lockout or a rogue identity trusted by IoT Core, well beyond the one device the role was meant to manage",
+      "impactedGoal": [],
+      "impactedAssets": [
+        "A001",
+        "A004"
+      ],
+      "tags": [
+        "iam",
+        "least-privilege"
+      ]
     }
   ],
   "mitigations": [
@@ -748,26 +808,26 @@
     {
       "id": "M004",
       "numericId": 4,
-      "status": "mitigationIdentified",
-      "content": "Replace anonymous dashboard access: add a Cognito user pool (operator and per-event attendee sign-in), keep the unauthenticated role read-only, and allow mutations only to authenticated users scoped to their own device where possible.",
+      "status": "mitigationResolved",
+      "content": "Replace anonymous dashboard access with a workshop passcode sign-in: a Cognito user pool (Lite tier, admin-only sign-up) holding one workshop user whose password is a random 8-character passcode generated per from-scratch deploy and stored in SSM, shown to the room by the facilitator; guest identities off; only the signed-in role gets AWS credentials.",
       "displayOrder": 4,
       "metadata": [],
       "type": "Preventive",
       "cost": "Medium",
       "effectiveness": "High",
-      "implementation_details": "Add a user pool and IdentityPoolRoleAttachment 'authenticated' role; restrict CognitoUnauthRole to appsync:GraphQL on .../types/Query/fields/listDevices and getDevice; move migrateFirmware/getDeviceLog/getBrokerLog to the authenticated role."
+      "implementation_details": "dashboard-stack.yaml DashboardUserPool / DashboardUserPoolClient (ALLOW_USER_PASSWORD_AUTH, ALLOW_REFRESH_TOKEN_AUTH, 12 h refresh), identity pool AllowUnauthenticatedIdentities false with only an authenticated role attachment; deploy-workshop.sh generates the passcode into /pqc-workshop/dashboard-auth/passcode when missing and sets it with admin-set-user-password; dashboard-v2 auth.js + LoginScreen; check_setup_status.sh verifies guest access is refused. Per-device scoping was not built: the My device filter is view-only."
     },
     {
       "id": "M005",
       "numericId": 5,
-      "status": "mitigationIdentified",
-      "content": "Remove updateDevice from browser-callable access: only the telemetry processor writes device state, so scope the guest role's appsync:GraphQL to specific Query fields.",
+      "status": "mitigationResolved",
+      "content": "Remove updateDevice from browser-callable access: the signed-in role's appsync:GraphQL is limited to listDevices, getDevice, getDeviceLog, getBrokerLog, sendCommand and migrateFirmware, so only the telemetry processor writes device state.",
       "displayOrder": 5,
       "metadata": [],
       "type": "Preventive",
       "cost": "Low",
       "effectiveness": "High",
-      "implementation_details": "Field-level IAM resource ARNs on CognitoUnauthRole; keep updateDevice for the telemetry processor's role (needed for the subscription)."
+      "implementation_details": "CognitoAuthRole policy lists the six field ARNs (types/Query/fields/*, types/Mutation/fields/sendCommand|migrateFirmware); the CognitoUnauthRole is removed; test_dashboard_auth.py asserts the exact field set and no updateDevice."
     },
     {
       "id": "M006",
@@ -929,13 +989,13 @@
       "id": "M019",
       "numericId": 19,
       "status": "mitigationIdentified",
-      "content": "Make dashboard actions auditable: enable AppSync request logging and record caller identity once sign-in exists.",
+      "content": "Make dashboard actions auditable: enable AppSync request logging (time, field, source IP); sign-in is a shared workshop user, so logs cannot name a person.",
       "displayOrder": 19,
       "metadata": [],
       "type": "Detective",
       "cost": "Low",
       "effectiveness": "Medium",
-      "implementation_details": "AppSync LogConfig with FieldLogLevel ERROR/ALL to CloudWatch; include identity in start-migration logs."
+      "implementation_details": "AppSync LogConfig with FieldLogLevel ERROR/ALL to CloudWatch; the identity is the shared workshop user's identity-pool id, so attribution is per browser session at best."
     },
     {
       "id": "M020",
@@ -1068,6 +1128,18 @@
       "cost": "Low",
       "effectiveness": "High",
       "implementation_details": "validate_download, safe_local_dir and remove_local_identity in device_manager.py; tests in tests/test_device_manager.py. Security ticket D570691687."
+    },
+    {
+      "id": "M031",
+      "numericId": 31,
+      "status": "mitigationIdentified",
+      "content": "Scope the device-management and Builder-Pi roles to workshop ARNs: thing/esp32-* and thing/pqc-workshop-broker-bridge, policy/pqc-workshop-* and esp32-* policies, and certificate ARNs where IoT allows; keep Resource * only for actions IoT cannot resource-scope (e.g. CreateKeysAndCertificate), and scope the DeviceIdentityRole KMS decrypt to the SSM key.",
+      "displayOrder": 31,
+      "metadata": [],
+      "type": "Preventive",
+      "cost": "Low",
+      "effectiveness": "Medium",
+      "implementation_details": "BridgeProvisionerRole (broker-container-stack.yaml), CertificateProvisionerRole (iot-core-setup.yaml), DeviceRegistrarRole, DeviceDeregistrarRole, FleetCleanupRole, DeviceIdentityRole (device-builder-stack.yaml), SSMManagedInstanceRole and SSMActivationLambdaRole (ssm-hybrid-activation-stack.yaml). Re-run the ProtoShield IAM least-privilege plugin to confirm."
     }
   ],
   "assumptions": [
@@ -1306,6 +1378,10 @@
     {
       "linkedId": "T025",
       "mitigationId": "M010"
+    },
+    {
+      "linkedId": "T027",
+      "mitigationId": "M031"
     }
   ],
   "businessContext": {
@@ -1555,12 +1631,12 @@
     },
     {
       "id": "C023",
-      "name": "Cognito identity pool",
+      "name": "Cognito user and identity pools",
       "type": "Security",
       "service_provider": "AWS",
-      "specific_service": "Cognito Identity Pool pqc_workshop_dashboard, AllowUnauthenticatedIdentities true",
+      "specific_service": "Cognito user pool (Lite tier, admin-only sign-up, one workshop user) + identity pool pqc_workshop_dashboard, AllowUnauthenticatedIdentities false",
       "version": null,
-      "description": "No user pool. Anyone with the pool ID (shipped in the public dashboard config.json) gets guest credentials for CognitoUnauthRole, which allows appsync:GraphQL on the whole API.",
+      "description": "One admin-created user (workshop) whose password is the room passcode: 8 random characters from a 31-symbol set, generated by deploy-workshop.sh when none is stored (every from-scratch deploy) and kept in SSM SecureString /pqc-workshop/dashboard-auth/passcode. USER_PASSWORD_AUTH plus 12 h refresh tokens. Guest identities are off; signed-in users get CognitoAuthRole, which allows appsync:GraphQL on six fields only (listDevices, getDevice, getDeviceLog, getBrokerLog, sendCommand, migrateFirmware).",
       "configuration": null
     },
     {
@@ -1580,7 +1656,7 @@
       "service_provider": "Other",
       "specific_service": "React SPA in an attendee/operator web browser",
       "version": null,
-      "description": "Gets guest credentials from Cognito, SigV4-signs AppSync calls, polls every 5 s, offers the firmware picker / migrate button.",
+      "description": "Signs in with the workshop passcode (Cognito user pool), exchanges the ID token for identity-pool credentials, SigV4-signs AppSync calls, polls every 5 s, shows each device's TLS handshake time, and offers a view-only My device filter plus the firmware picker / migrate button and LED control.",
       "configuration": null
     },
     {
@@ -1822,7 +1898,7 @@
       "protocol": "HTTPS",
       "port": 443,
       "encryption": true,
-      "description": "Browser loads the SPA and config.json (identity pool ID, AppSync URL). Public, no WAF."
+      "description": "Browser loads the SPA and config.json (user pool, client and identity pool IDs, AppSync URL). Public, no WAF; the IDs are identifiers, not secrets."
     },
     {
       "id": "CN022",
@@ -1840,7 +1916,7 @@
       "protocol": "HTTPS",
       "port": 443,
       "encryption": true,
-      "description": "GetId / GetCredentialsForIdentity as an UNAUTHENTICATED guest; no sign-in exists."
+      "description": "InitiateAuth (USER_PASSWORD_AUTH) with the workshop passcode, then GetId / GetCredentialsForIdentity with the ID token. Guest (unauthenticated) identities are refused."
     },
     {
       "id": "CN024",
@@ -1849,7 +1925,7 @@
       "protocol": "HTTPS",
       "port": 443,
       "encryption": true,
-      "description": "SigV4-signed GraphQL with guest credentials: listDevices/getDevice/getDeviceLog/getBrokerLog queries and updateDevice/migrateFirmware mutations. Reachable by anyone holding the public identity pool ID."
+      "description": "SigV4-signed GraphQL with signed-in credentials: listDevices/getDevice/getDeviceLog/getBrokerLog queries and sendCommand/migrateFirmware mutations; updateDevice is not allowed. Reachable only by holders of the workshop passcode."
     },
     {
       "id": "CN025",
@@ -2400,7 +2476,7 @@
       "classification": "Public",
       "encryption_at_rest": true,
       "backup_frequency": null,
-      "description": "Auto-named S3 bucket (SSE-S3, versioned), readable only by the CloudFront distribution via OAC. Content is public by design: the SPA and config.json, which includes the Cognito identity pool ID and AppSync endpoint."
+      "description": "Auto-named S3 bucket (SSE-S3, versioned), readable only by the CloudFront distribution via OAC. Content is public by design: the SPA and config.json, which includes the Cognito user pool, client and identity pool IDs and the AppSync endpoint (identifiers, not secrets)."
     },
     {
       "id": "D009",
@@ -2459,7 +2535,7 @@
         "Disruption / destruction"
       ],
       "resources": "Club / small group",
-      "description": "An external attacker who has read the public aws-samples repo, so knows the architecture, topic layout, resource names and the anonymous Cognito/AppSync design, and targets a live workshop deployment during an event window. Can abuse AppSync migrateFirmware to start CodeBuild builds and OTA pushes, tamper with dashboard state, and read message/broker logs.",
+      "description": "An external attacker who has read the public aws-samples repo, so knows the architecture, topic layout, resource names and the passcode-gated Cognito/AppSync design, and targets a live workshop deployment during an event window. Without the room passcode it cannot call AppSync; with a leaked passcode it could start CodeBuild builds and OTA pushes through migrateFirmware and read message/broker logs during the event.",
       "priority": 3,
       "is_relevant": true,
       "reviewed": true,
@@ -2510,7 +2586,7 @@
         "Financial gain"
       ],
       "resources": "Organization",
-      "description": "Criminals who find the anonymous AppSync API or leaked operator/Pi credentials and abuse the account for cost (repeated CodeBuild firmware builds via migrateFirmware, compute) or pivot using the Admin-level operator role. Workshop data itself has little resale value.",
+      "description": "Criminals who obtain a leaked workshop passcode or leaked operator/Pi credentials and abuse the account for cost (repeated CodeBuild firmware builds via migrateFirmware, compute) or pivot using the Admin-level operator role. Workshop data itself has little resale value.",
       "priority": 5,
       "is_relevant": true,
       "reviewed": true,
@@ -2545,7 +2621,7 @@
         "Thrill-seeking / notoriety"
       ],
       "resources": "Individual",
-      "description": "Automated internet scanning and commodity tooling. Finds the internet-facing NLB on 8883/8884, the public builder API and the CloudFront dashboard; can pull the Cognito identity pool ID from the public config.json and call the anonymous AppSync API (list/overwrite devices, trigger migrations). Mostly blocked at the broker by mTLS.",
+      "description": "Automated internet scanning and commodity tooling. Finds the internet-facing NLB on 8883/8884, the public builder API and the CloudFront dashboard; the public config.json holds only Cognito and AppSync identifiers and guest access is off, so AppSync needs the room passcode. Mostly blocked at the broker by mTLS.",
       "priority": 2,
       "is_relevant": true,
       "reviewed": true,
@@ -2649,7 +2725,7 @@
         "Disruption / destruction"
       ],
       "resources": "Individual",
-      "description": "A workshop attendee (often a security practitioner) in the room with legitimate physical access to an ESP32 board, the Builder-Pi USB station and the workshop WiFi, plus the public dashboard. Can dump their own board's flash over USB to recover its device private key and the shared WiFi PSK, join the AP, drive the unauthenticated Builder-Pi GUI on :8080, connect to the broker with their extracted cert and publish to other devices' cmd/<thing>/ota or dt topics (no broker ACLs), and call the anonymous AppSync API to migrate or overwrite other attendees' devices. Motive is curiosity, a demo of skill, or disrupting the session; impact is a broken workshop in front of an audience.",
+      "description": "A workshop attendee (often a security practitioner) in the room with legitimate physical access to an ESP32 board, the Builder-Pi USB station and the workshop WiFi, plus the public dashboard. Can dump their own board's flash over USB to recover its device private key and the shared WiFi PSK, join the AP, connect to the broker with their extracted cert and publish to other devices' cmd/<thing>/ota or dt topics (no broker ACLs), and use the room passcode to migrate other attendees' devices from the dashboard. Motive is curiosity, a demo of skill, or disrupting the session; impact is a broken workshop in front of an audience.",
       "priority": 1,
       "is_relevant": true,
       "reviewed": true,
@@ -2699,7 +2775,7 @@
         "C024",
         "D008"
       ],
-      "description": "Internet-reachable AWS front doors: broker NLB (0.0.0.0/0 on 8883/8884), builder API (SigV4), Cognito identity pool and AppSync (anonymous guest access), CloudFront and its hosting bucket."
+      "description": "Internet-reachable AWS front doors: broker NLB (0.0.0.0/0 on 8883/8884), builder API (SigV4), Cognito user and identity pools and AppSync (passcode sign-in, no guest access), CloudFront and its hosting bucket."
     },
     {
       "id": "TZ005",
@@ -2884,7 +2960,7 @@
       ],
       "authentication_method": "None",
       "authorization_method": "Role-based",
-      "description": "Browser loads the SPA from CloudFront and gets UNAUTHENTICATED Cognito guest credentials whose role allows appsync:GraphQL on the whole API. Effectively anonymous access to all queries and mutations."
+      "description": "Browser loads the SPA from CloudFront, signs in with the workshop passcode against the Cognito user pool and gets authenticated identity-pool credentials whose role allows appsync:GraphQL on six fields only. Guest credentials are refused."
     },
     {
       "id": "CP010",
@@ -2910,7 +2986,7 @@
       ],
       "authentication_method": "IAM Role",
       "authorization_method": "Policy-based",
-      "description": "AppSync migrateFirmware invokes start-migration; API Gateway invokes registrar/deregistrar/firmware-pusher. Authorization inherited from the (anonymous) AppSync caller or the SigV4 Pi caller."
+      "description": "AppSync migrateFirmware invokes start-migration; API Gateway invokes registrar/deregistrar/firmware-pusher. Authorization inherited from the (signed-in) AppSync caller or the SigV4 Pi caller."
     },
     {
       "id": "CP012",
@@ -3111,7 +3187,7 @@
         "SigV4 on the builder API",
         "HTTPS/OAC on CloudFront",
         "Presigned-URL expiry 900 s plus on-device sha256 and signature check",
-        "No WAF, no auth on Cognito guest access (gap)"
+        "Cognito passcode sign-in, guest identities off (no WAF)"
       ],
       "description": "Internet-reachable AWS endpoints: NLB, builder API, Cognito/AppSync, CloudFront, presigned S3 downloads."
     },
@@ -3159,7 +3235,7 @@
         "CP011"
       ],
       "controls": [
-        "AppSync AWS_IAM auth (but guest role allows all fields)",
+        "AppSync AWS_IAM auth, signed-in role limited to six fields (no updateDevice)",
         "Service roles per data source",
         "Variant allow-list in start-migration"
       ],
@@ -3351,7 +3427,7 @@
     },
     {
       "id": "A009",
-      "name": "Cognito guest credentials",
+      "name": "Cognito dashboard credentials",
       "type": "Token",
       "classification": "Internal",
       "lifecycle_state": "Active",
@@ -3359,8 +3435,8 @@
         "In transit",
         "In use"
       ],
-      "description": "Temporary AWS credentials for CognitoUnauthRole, obtainable by anyone with the public identity pool ID; allow every AppSync operation.",
-      "owner": "Cognito identity pool",
+      "description": "Temporary AWS credentials for CognitoAuthRole, issued only after a sign-in with the workshop passcode; allow six AppSync fields (no updateDevice).",
+      "owner": "Cognito user and identity pools",
       "criticality": 3,
       "metadata": {}
     },
@@ -3722,7 +3798,7 @@
       "destination_id": "D004",
       "transformation_type": "Other",
       "controls": [],
-      "description": "Message logger stores OTA commands (with presigned URLs) in the message log, readable through anonymous AppSync getDeviceLog.",
+      "description": "Message logger stores OTA commands (with presigned URLs) in the message log, readable through AppSync getDeviceLog by signed-in users.",
       "protocol": "HTTPS (DynamoDB)",
       "encryption": true,
       "authenticated": true,
@@ -3758,7 +3834,7 @@
         "Input Validation",
         "Authorization"
       ],
-      "description": "Telemetry processor writes telemetry to the dashboard table (registered-only guard). Anonymous AppSync updateDevice can overwrite the same fields.",
+      "description": "Telemetry processor writes telemetry to the dashboard table (registered-only guard). updateDevice is not callable from the browser (M005).",
       "protocol": "HTTPS (DynamoDB)",
       "encryption": true,
       "authenticated": true,
@@ -3773,7 +3849,7 @@
       "destination_id": "C025",
       "transformation_type": "Other",
       "controls": [],
-      "description": "Browser obtains guest credentials with no sign-in.",
+      "description": "Browser obtains credentials only after signing in with the workshop passcode.",
       "protocol": "HTTPS",
       "encryption": true,
       "authenticated": false,
@@ -3788,7 +3864,7 @@
       "destination_id": "C022",
       "transformation_type": "Verification",
       "controls": [],
-      "description": "Guest credentials authorize every AppSync query and mutation, including migrateFirmware and updateDevice.",
+      "description": "Signed-in credentials authorize six AppSync fields: four queries plus sendCommand and migrateFirmware. updateDevice is not allowed.",
       "protocol": "HTTPS (SigV4 GraphQL)",
       "encryption": true,
       "authenticated": false,
@@ -3823,7 +3899,7 @@
       "controls": [
         "Authentication"
       ],
-      "description": "Pi uses its credentials to call the builder API; anyone driving the unauthenticated GUI effectively borrows them.",
+      "description": "Pi uses its credentials to call the builder API; the GUI that drives it is loopback-only (M010).",
       "protocol": "HTTPS (SigV4)",
       "encryption": true,
       "authenticated": true,
@@ -3836,17 +3912,17 @@
     {
       "threat_id": "T001",
       "decision": "Open",
-      "residual_severity": "High",
-      "residual_likelihood": "Likely",
-      "rationale": "No sign-in exists; any internet user can trigger builds and OTA pushes. Fix with M004 and M006 before the next public event.",
+      "residual_severity": "Medium",
+      "residual_likelihood": "Possible",
+      "rationale": "Mitigated by M004: guest access is off, so an anonymous internet user can no longer do this; the caller must hold the room passcode, which is random and regenerated on every from-scratch deploy. Residual: the whole room shares one user, so migrations are not limited to the caller's own device (the My device filter is view-only). M006 would cap the impact; per-device scoping is not planned for the workshop.",
       "is_current": true
     },
     {
       "threat_id": "T002",
-      "decision": "Open",
-      "residual_severity": "High",
-      "residual_likelihood": "Very Likely",
-      "rationale": "updateDevice is callable anonymously and falsifies the workshop's PQC evidence. M005 is a low-cost fix.",
+      "decision": "Accepted",
+      "residual_severity": "Low",
+      "residual_likelihood": "Unlikely",
+      "rationale": "Resolved (M005, M004): guest identities are off and the signed-in role can call only listDevices, getDevice, getDeviceLog, getBrokerLog, sendCommand and migrateFirmware, so updateDevice is not browser-callable and only the telemetry processor writes device state. test_dashboard_auth.py pins the role to those six fields; verified on pqc-a and on the pqc-b from-scratch rebuild that a guest GetId is refused.",
       "is_current": true
     },
     {
@@ -3854,15 +3930,15 @@
       "decision": "Accepted",
       "residual_severity": "Low",
       "residual_likelihood": "Possible",
-      "rationale": "Resolved by the NVS identity design (M012): firmware images are built once per variant and carry no keys, certificates or WiFi PSK, so a leaked presigned URL discloses only public code. Presigned URLs in the message log remain an anonymous-read issue under T004 / M004 / M007.",
+      "rationale": "Resolved by the NVS identity design (M012): firmware images are built once per variant and carry no keys, certificates or WiFi PSK, so a leaked presigned URL discloses only public code. Since M004 the message log, and the presigned URLs in it, are readable only by signed-in users; M007 (redaction, shorter expiry) is still open.",
       "is_current": true
     },
     {
       "threat_id": "T004",
-      "decision": "Open",
-      "residual_severity": "Medium",
-      "residual_likelihood": "Likely",
-      "rationale": "Anonymous read of logs and payloads; low data value but closes with M004.",
+      "decision": "Accepted",
+      "residual_severity": "Low",
+      "residual_likelihood": "Possible",
+      "rationale": "Resolved (M004): logs are readable only by signed-in users holding the room passcode, the same people who see the dashboard. Low data value: synthetic telemetry, client IDs and source IPs.",
       "is_current": true
     },
     {
@@ -3964,9 +4040,9 @@
     {
       "threat_id": "T017",
       "decision": "Open",
-      "residual_severity": "Medium",
-      "residual_likelihood": "Possible",
-      "rationale": "Reserved concurrency of 5 limits fan-out but builds still queue. Closes with M004 and M006.",
+      "residual_severity": "Low",
+      "residual_likelihood": "Unlikely",
+      "rationale": "Needs the room passcode (M004). Reserved concurrency of 5 limits fan-out, but builds still queue; M006 closes it.",
       "is_current": true
     },
     {
@@ -3980,9 +4056,9 @@
     {
       "threat_id": "T019",
       "decision": "Open",
-      "residual_severity": "Medium",
-      "residual_likelihood": "Likely",
-      "rationale": "No attribution is possible today. Closes with M004 and M019.",
+      "residual_severity": "Low",
+      "residual_likelihood": "Possible",
+      "rationale": "Sign-in now exists (M004) but is shared by design, so actions cannot be attributed to a person. M019 (AppSync request logging) would add the time, field and source IP.",
       "is_current": true
     },
     {
@@ -4032,6 +4108,22 @@
       "residual_likelihood": "Unlikely",
       "rationale": "Resolved (M030, M010): download inputs are allowlisted and the local path must resolve inside FIRMWARE_DIR; /api/config is removed and the GUI is loopback-only; the local identity image is deleted whatever the flash outcome. Found by code review during security ticket D570691687 (not exploited); unit tests cover the reported traversal value.",
       "is_current": true
+    },
+    {
+      "threat_id": "T026",
+      "is_current": true,
+      "decision": "Accepted",
+      "residual_severity": "Low",
+      "residual_likelihood": "Possible",
+      "rationale": "Accepted for the workshop (a known trade-off of the shared passcode, M004): Cognito's lockout is temporary and backs off, browsers already signed in keep their session through the 12 h refresh token, and the 8-character passcode from a 31-symbol set (about 8.5 x 10^11 values) makes guessing it impractical."
+    },
+    {
+      "threat_id": "T027",
+      "is_current": true,
+      "decision": "Open",
+      "residual_severity": "Medium",
+      "residual_likelihood": "Unlikely",
+      "rationale": "Found by the ProtoShield IAM least-privilege scan (Nov 10): Resource * on IoT management actions in BridgeProvisionerRole, CertificateProvisionerRole, DeviceRegistrarRole, DeviceDeregistrarRole and FleetCleanupRole (high), plus the SSM managed-instance and activation roles and the DeviceIdentityRole KMS decrypt (medium, condition-scoped). Bounded by the per-event account and by callers being IAM/SigV4 principals only. Track M031."
     }
   ],
   "softwareProfile": {
@@ -4178,7 +4270,7 @@
       "volume_tier": "Streaming",
       "lifecycle_state": "Active",
       "business_domain": "Engineering",
-      "description": "JSON telemetry on dt/<thing>/telemetry (heap, RSSI, firmware version, negotiated PQC group, TLS version) plus lifecycle events, stored in DynamoDB (pqc-workshop-devices, pqc-workshop-message-log) and pushed to the dashboard. Its integrity is what proves to attendees that a device negotiated ML-KEM."
+      "description": "JSON telemetry on dt/<thing>/telemetry (heap, RSSI, firmware version, negotiated PQC group, TLS version, TLS handshake time) plus lifecycle events, stored in DynamoDB (pqc-workshop-devices, pqc-workshop-message-log) and pushed to the dashboard. Its integrity is what proves to attendees that a device negotiated ML-KEM."
     },
     {
       "id": "DP007",
@@ -4226,8 +4318,7 @@
       "asset_id": "DA-DASH-USERS",
       "structural_category": "Secrets and Credentials",
       "content_types": [
-        "Authentication credentials",
-        "PII"
+        "Authentication credentials"
       ],
       "sensitivity_tier": "Confidential",
       "compliance_regimes": [
@@ -4240,7 +4331,7 @@
       "volume_tier": "Small",
       "lifecycle_state": "Active",
       "business_domain": "Operations",
-      "description": "Cognito user pool identities (email address, password) and issued JWTs used to call the AppSync API that reads telemetry and sends device commands and migrations."
+      "description": "One admin-created Cognito user (workshop) whose password is the room passcode, stored in SSM /pqc-workshop/dashboard-auth/passcode, plus the ID and refresh tokens it issues to call the AppSync API that reads telemetry and sends device commands and migrations. No email address or other PII."
     },
     {
       "id": "DP010",

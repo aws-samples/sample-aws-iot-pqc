@@ -82,16 +82,16 @@
     {
       "id": "5dcba292-23e8-591e-bcb2-e7f68dbbbfbc",
       "numericId": 4,
-      "status": "mitigationIdentified",
-      "content": "Replace anonymous dashboard access: add a Cognito user pool (operator and per-event attendee sign-in), keep the unauthenticated role read-only, and allow mutations only to authenticated users scoped to their own device where possible.",
+      "status": "mitigationResolved",
+      "content": "Replace anonymous dashboard access with a workshop passcode sign-in: a Cognito user pool (Lite tier, admin-only sign-up) holding one workshop user whose password is a random 8-character passcode generated per from-scratch deploy and stored in SSM, shown to the room by the facilitator; guest identities off; only the signed-in role gets AWS credentials.",
       "displayOrder": 4,
       "metadata": []
     },
     {
       "id": "f5f6d25e-25ef-591a-9053-2f25680bf6ad",
       "numericId": 5,
-      "status": "mitigationIdentified",
-      "content": "Remove updateDevice from browser-callable access: only the telemetry processor writes device state, so scope the guest role's appsync:GraphQL to specific Query fields.",
+      "status": "mitigationResolved",
+      "content": "Remove updateDevice from browser-callable access: the signed-in role's appsync:GraphQL is limited to listDevices, getDevice, getDeviceLog, getBrokerLog, sendCommand and migrateFirmware, so only the telemetry processor writes device state.",
       "displayOrder": 5,
       "metadata": []
     },
@@ -203,7 +203,7 @@
       "id": "d316da8e-b388-52ff-b9f8-dfee8f4977f7",
       "numericId": 19,
       "status": "mitigationIdentified",
-      "content": "Make dashboard actions auditable: enable AppSync request logging and record caller identity once sign-in exists.",
+      "content": "Make dashboard actions auditable: enable AppSync request logging (time, field, source IP); sign-in is a shared workshop user, so logs cannot name a person.",
       "displayOrder": 19,
       "metadata": []
     },
@@ -293,6 +293,14 @@
       "status": "mitigationResolved",
       "content": "Validate Builder-Pi download inputs: allowlist the serial, firmware version, S3 prefix and identity key, require the local path to resolve inside the firmware directory, and delete the local identity image whether or not the flash succeeds.",
       "displayOrder": 30,
+      "metadata": []
+    },
+    {
+      "id": "f404816c-2b41-4f8f-909b-141dd91e9386",
+      "numericId": 31,
+      "status": "mitigationIdentified",
+      "content": "Scope the device-management and Builder-Pi roles to workshop ARNs: thing/esp32-* and thing/pqc-workshop-broker-bridge, policy/pqc-workshop-* and esp32-* policies, and certificate ARNs where IoT allows; keep Resource * only for actions IoT cannot resource-scope (e.g. CreateKeysAndCertificate), and scope the DeviceIdentityRole KMS decrypt to the SSM key.",
+      "displayOrder": 31,
       "metadata": []
     }
   ],
@@ -489,15 +497,19 @@
     {
       "mitigationId": "28f6cd02-0682-5137-864c-5809d1996611",
       "linkedId": "f9ec7394-7d5c-4334-80bb-e67ec4f5451d"
+    },
+    {
+      "mitigationId": "f404816c-2b41-4f8f-909b-141dd91e9386",
+      "linkedId": "54fc200c-d7a9-4222-9ae2-c669cd95f7d6"
     }
   ],
   "threats": [
     {
       "id": "ba25dd1d-cee0-5e02-a7d7-fde24d6d0f26",
       "numericId": 1,
-      "threatSource": "anonymous internet user",
-      "prerequisites": "with the identity pool ID from the public dashboard config.json",
-      "threatAction": "obtain Cognito guest credentials and call the AppSync migrateFirmware mutation for any thingName",
+      "threatSource": "signed-in dashboard user",
+      "prerequisites": "with the shared workshop passcode (any attendee, or anyone it leaks to)",
+      "threatAction": "call the AppSync migrateFirmware mutation for any thingName",
       "threatImpact": "unrequested firmware builds and OTA pushes to any attendee's device, disrupting the live workshop and spending account resources",
       "impactedGoal": [],
       "impactedAssets": [
@@ -505,12 +517,12 @@
         "A006",
         "A007"
       ],
-      "statement": "A anonymous internet user with the identity pool ID from the public dashboard config.json can obtain Cognito guest credentials and call the AppSync migrateFirmware mutation for any thingName, which leads to unrequested firmware builds and OTA pushes to any attendee's device, disrupting the live workshop and spending account resources",
+      "statement": "A signed-in dashboard user with the shared workshop passcode (any attendee, or anyone it leaks to) can call the AppSync migrateFirmware mutation for any thingName, which leads to unrequested firmware builds and OTA pushes to any attendee's device, disrupting the live workshop and spending account resources",
       "displayOrder": 1,
       "status": "threatIdentified",
       "tags": [
         "appsync",
-        "anonymous-access"
+        "shared-passcode"
       ],
       "metadata": [
         {
@@ -539,7 +551,7 @@
       ],
       "statement": "A anonymous internet user with Cognito guest credentials can call the AppSync updateDevice mutation to overwrite any device's firmwareVersion, pqcAlgorithm, tlsVersion or status, which leads to a dashboard that shows false migration results, undermining the workshop's proof that devices negotiated ML-KEM",
       "displayOrder": 2,
-      "status": "threatIdentified",
+      "status": "threatResolved",
       "tags": [
         "appsync",
         "anonymous-access",
@@ -604,7 +616,7 @@
       ],
       "statement": "A anonymous internet user with Cognito guest credentials can read broker connection logs and all device message payloads through getBrokerLog and getDeviceLog, which leads to disclosure of device client IDs, source IP addresses and full telemetry and command history",
       "displayOrder": 4,
-      "status": "threatIdentified",
+      "status": "threatResolved",
       "tags": [
         "appsync",
         "anonymous-access"
@@ -1005,20 +1017,21 @@
     {
       "id": "27084191-d624-5f92-8355-12a1051fc150",
       "numericId": 17,
-      "threatSource": "anonymous internet user",
-      "prerequisites": "with Cognito guest credentials",
+      "threatSource": "signed-in dashboard user",
+      "prerequisites": "with the shared workshop passcode (any attendee, or anyone it leaks to)",
       "threatAction": "repeatedly call migrateFirmware across many devices",
       "threatImpact": "queued or throttled CodeBuild builds that stall real migrations during the session, plus avoidable build cost",
       "impactedGoal": [],
       "impactedAssets": [
         "A009"
       ],
-      "statement": "A anonymous internet user with Cognito guest credentials can repeatedly call migrateFirmware across many devices, which leads to queued or throttled CodeBuild builds that stall real migrations during the session, plus avoidable build cost",
+      "statement": "A signed-in dashboard user with the shared workshop passcode (any attendee, or anyone it leaks to) can repeatedly call migrateFirmware across many devices, which leads to queued or throttled CodeBuild builds that stall real migrations during the session, plus avoidable build cost",
       "displayOrder": 17,
       "status": "threatIdentified",
       "tags": [
         "appsync",
-        "cost"
+        "cost",
+        "shared-passcode"
       ],
       "metadata": [
         {
@@ -1064,20 +1077,20 @@
     {
       "id": "96318db1-ff7e-59af-a3b3-cd61b9bf9ee0",
       "numericId": 19,
-      "threatSource": "anonymous internet user",
-      "prerequisites": "with Cognito guest credentials",
-      "threatAction": "migrate or overwrite devices through AppSync",
-      "threatImpact": "actions that cannot be attributed to a person, because all callers share the unauthenticated role",
+      "threatSource": "signed-in dashboard user",
+      "prerequisites": "with the shared workshop passcode",
+      "threatAction": "migrate devices or send commands through AppSync",
+      "threatImpact": "actions that cannot be attributed to a person, because every attendee signs in as the same workshop user",
       "impactedGoal": [],
       "impactedAssets": [
         "A009"
       ],
-      "statement": "A anonymous internet user with Cognito guest credentials can migrate or overwrite devices through AppSync, which leads to actions that cannot be attributed to a person, because all callers share the unauthenticated role",
+      "statement": "A signed-in dashboard user with the shared workshop passcode can migrate devices or send commands through AppSync, which leads to actions that cannot be attributed to a person, because every attendee signs in as the same workshop user",
       "displayOrder": 19,
       "status": "threatIdentified",
       "tags": [
         "audit",
-        "anonymous-access"
+        "shared-passcode"
       ],
       "metadata": [
         {
@@ -1281,6 +1294,70 @@
       "tags": [
         "builder-pi",
         "path-traversal"
+      ]
+    },
+    {
+      "id": "5cc5c121-fd7c-4b4b-bee2-2ef025a98646",
+      "numericId": 26,
+      "statement": "A anonymous internet user with the public dashboard URL and the workshop username from the public JavaScript can submit wrong passcodes for the shared workshop user until Cognito temporarily locks it, which leads to attendees being unable to sign in to the dashboard until the lockout expires, because the whole room signs in as one user",
+      "displayOrder": 26,
+      "status": "threatResolved",
+      "metadata": [
+        {
+          "key": "Priority",
+          "value": "Low"
+        },
+        {
+          "key": "STRIDE",
+          "value": [
+            "D"
+          ]
+        }
+      ],
+      "threatSource": "anonymous internet user",
+      "prerequisites": "with the public dashboard URL and the workshop username from the public JavaScript",
+      "threatAction": "submit wrong passcodes for the shared workshop user until Cognito temporarily locks it",
+      "threatImpact": "attendees being unable to sign in to the dashboard until the lockout expires, because the whole room signs in as one user",
+      "impactedGoal": [],
+      "impactedAssets": [
+        "A009"
+      ],
+      "tags": [
+        "cognito",
+        "availability",
+        "shared-passcode"
+      ]
+    },
+    {
+      "id": "54fc200c-d7a9-4222-9ae2-c669cd95f7d6",
+      "numericId": 27,
+      "statement": "A attacker who gains code execution in a device-management Lambda or the Builder-Pi, e.g. via a dependency flaw can use that role's IoT management permissions on Resource * to create, delete or re-attach any Thing, certificate or policy in the account, which leads to fleet-wide device lockout or a rogue identity trusted by IoT Core, well beyond the one device the role was meant to manage",
+      "displayOrder": 27,
+      "status": "threatIdentified",
+      "metadata": [
+        {
+          "key": "Priority",
+          "value": "Medium"
+        },
+        {
+          "key": "STRIDE",
+          "value": [
+            "E"
+          ]
+        }
+      ],
+      "threatSource": "attacker",
+      "prerequisites": "who gains code execution in a device-management Lambda or the Builder-Pi, e.g. via a dependency flaw",
+      "threatAction": "use that role's IoT management permissions on Resource * to create, delete or re-attach any Thing, certificate or policy in the account",
+      "threatImpact": "fleet-wide device lockout or a rogue identity trusted by IoT Core, well beyond the one device the role was meant to manage",
+      "impactedGoal": [],
+      "impactedAssets": [
+        "A001",
+        "A004"
+      ],
+      "tags": [
+        "iam",
+        "least-privilege"
       ]
     }
   ]
