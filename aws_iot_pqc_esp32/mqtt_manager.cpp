@@ -10,6 +10,7 @@
 #include "diagnostics.h"
 #include "status_led.h"
 #include <MQTT.h>
+#include <esp_random.h>  // esp_random(): hardware RNG for the telemetry start offset
 
 volatile bool MqttManager::s_connected = false;
 TaskHandle_t  MqttManager::s_task      = NULL;
@@ -207,6 +208,18 @@ void MqttManager::task(void* pvParameters) {
             if (connected) {
                 s_connected = true;
                 connectAttempts = 0; // Reset backoff on success
+
+                // Start the telemetry timer at a random point in the interval,
+                // so the first publish lands 0..MQTT_PUBLISH_INTERVAL_MS after
+                // connect. Devices that connect together (a room powering on,
+                // or the AP or broker restarting) would otherwise publish in
+                // lockstep forever, since they all share one interval. Non-
+                // blocking: only the timer moves, so mqttClient.loop() keeps
+                // serving commands. Uses the hardware RNG (esp_random), not
+                // random(), which setup() seeds into a software PRNG. Unsigned
+                // wraparound keeps (now - lastPublishTime) correct even when
+                // millis() is smaller than the offset just after boot.
+                lastPublishTime = millis() - (esp_random() % MQTT_PUBLISH_INTERVAL_MS);
                 ESP_LOGI(TAG_MQTT, "Connected to PQC Mosquitto broker!");
                 ESP_LOGI(TAG_MQTT, "  Client ID: %s", DeviceIdentity::thingName());
                 ESP_LOGI(TAG_MQTT, "  Broker:    %s:%d", MQTT_BROKER_ENDPOINT, MQTT_BROKER_PORT);
