@@ -224,15 +224,45 @@ else
 fi
 echo ""
 
-# ─── 8. Cognito (unauthenticated dashboard access) ───────────────────────────
+# ─── 8. Cognito (dashboard sign-in with the workshop passcode) ──────────────
 echo "─── 8. Cognito ──────────────────────────────────────────────"
 POOL_ID=$(aws cognito-identity list-identity-pools --max-results 60 \
     --query "IdentityPools[?IdentityPoolName=='pqc_workshop_dashboard'].IdentityPoolId | [0]" \
     --output text 2>/dev/null) || POOL_ID=""
 if [[ -n "$POOL_ID" && "$POOL_ID" != "None" ]]; then
     pass "Cognito identity pool 'pqc_workshop_dashboard' exists ($POOL_ID)"
+    # Guest credentials must be off: only signed-in users may call AppSync.
+    GUEST=$(aws cognito-identity describe-identity-pool --identity-pool-id "$POOL_ID" \
+        --query 'AllowUnauthenticatedIdentities' --output text 2>/dev/null) || GUEST=""
+    if [[ "$GUEST" == "False" ]]; then
+        pass "Dashboard guest (unauthenticated) access is off"
+    else
+        fail "Identity pool allows guest access (AllowUnauthenticatedIdentities=${GUEST:-unknown})"
+    fi
 else
     fail "Cognito identity pool 'pqc_workshop_dashboard' not found"
+fi
+USER_POOL_ID=$(aws cloudformation describe-stacks --stack-name "$MASTER_STACK" \
+    --query "Stacks[0].Outputs[?OutputKey=='DashboardUserPoolId'].OutputValue | [0]" \
+    --output text 2>/dev/null) || USER_POOL_ID=""
+if [[ -n "$USER_POOL_ID" && "$USER_POOL_ID" != "None" ]]; then
+    pass "Dashboard user pool exists ($USER_POOL_ID)"
+    USER_STATUS=$(aws cognito-idp admin-get-user --user-pool-id "$USER_POOL_ID" \
+        --username workshop --query 'UserStatus' --output text 2>/dev/null) || USER_STATUS=""
+    if [[ "$USER_STATUS" == "CONFIRMED" ]]; then
+        pass "Workshop passcode user is ready (CONFIRMED)"
+    else
+        fail "Workshop passcode user is not ready (status: ${USER_STATUS:-missing}); re-run deploy-workshop.sh"
+    fi
+    PASSCODE_TYPE=$(aws ssm get-parameter --name /pqc-workshop/dashboard-auth/passcode \
+        --query 'Parameter.Type' --output text 2>/dev/null) || PASSCODE_TYPE=""
+    if [[ "$PASSCODE_TYPE" == "SecureString" ]]; then
+        pass "Workshop passcode stored in SSM (/pqc-workshop/dashboard-auth/passcode)"
+    else
+        fail "Workshop passcode missing from SSM; re-run deploy-workshop.sh"
+    fi
+else
+    fail "DashboardUserPoolId stack output not found"
 fi
 echo ""
 

@@ -5,19 +5,47 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { CognitoIdentityClient, GetIdCommand, GetCredentialsForIdentityCommand } from '@aws-sdk/client-cognito-identity';
 import config from './config.js';
 import { LIST_DEVICES, SEND_COMMAND, MIGRATE_FIRMWARE, GET_DEVICE_LOG, GET_BROKER_LOG } from './graphql.js';
+import {
+  AuthRequired, PASSCODE_LENGTH, clearSession, getIdToken, hasSession, normalizePasscode, signIn, signOut,
+} from './auth.js';
 
-// ─── Auth (Cognito unauthenticated → IAM SigV4 for AppSync) ─────────────────
+// ─── Auth (workshop passcode → Cognito user pool → identity pool → SigV4) ────
 
 const cognitoClient = new CognitoIdentityClient({ region: config.region });
 let cachedCredentials = null;
 let credentialsExpiry = 0;
+// Called when the session is no longer valid, so the app shows the sign-in page.
+let onAuthLost = () => {};
+
+function forgetCredentials() {
+  cachedCredentials = null;
+  credentialsExpiry = 0;
+}
+
+function authLost() {
+  forgetCredentials();
+  clearSession();
+  onAuthLost();
+}
 
 async function getCredentials() {
   if (cachedCredentials && Date.now() < credentialsExpiry) return cachedCredentials;
-  const idResp = await cognitoClient.send(new GetIdCommand({ IdentityPoolId: config.identityPoolId }));
-  const credsResp = await cognitoClient.send(new GetCredentialsForIdentityCommand({ IdentityId: idResp.IdentityId }));
+  const idToken = await getIdToken();
+  const logins = { [`cognito-idp.${config.region}.amazonaws.com/${config.userPoolId}`]: idToken };
+  let credsResp;
+  try {
+    const idResp = await cognitoClient.send(new GetIdCommand({ IdentityPoolId: config.identityPoolId, Logins: logins }));
+    credsResp = await cognitoClient.send(new GetCredentialsForIdentityCommand({ IdentityId: idResp.IdentityId, Logins: logins }));
+  } catch (err) {
+    // The identity pool rejected the token (expired, revoked, or the pool was
+    // rebuilt): sign in again.
+    if (err && err.name === 'NotAuthorizedException') throw new AuthRequired();
+    throw err;
+  }
   cachedCredentials = credsResp.Credentials;
-  credentialsExpiry = Date.now() + 50 * 60 * 1000;
+  // Renew five minutes before the credentials expire.
+  const expiration = credsResp.Credentials.Expiration ? new Date(credsResp.Credentials.Expiration).getTime() : Date.now() + 50 * 60 * 1000;
+  credentialsExpiry = expiration - 5 * 60 * 1000;
   return cachedCredentials;
 }
 
@@ -57,10 +85,19 @@ async function appSyncQuery(query, variables = {}) {
     const authorization = `AWS4-HMAC-SHA256 Credential=${creds.AccessKeyId}/${credentialScope}, SignedHeaders=${signedHeaders}, Signature=${signature}`;
 
     const response = await fetch(config.appSyncEndpoint, { method: 'POST', headers: { ...headers, authorization }, body });
+    if (response.status === 401) {
+      // Credentials no longer accepted: renew them on the next call.
+      forgetCredentials();
+      return null;
+    }
     const result = await response.json();
     if (result.errors) console.error('GraphQL errors:', result.errors);
     return result.data;
   } catch (err) {
+    if (err instanceof AuthRequired) {
+      authLost();
+      return null;
+    }
     console.error('AppSync query failed:', err);
     return null;
   }
@@ -192,6 +229,13 @@ function DeviceCard({ device, onCommand, onShowLog, onFlash }) {
           {/* nosemgrep: jsx-not-internationalized */}
           <label>TLS Version</label>
           <span>{device.tlsVersion || '—'}</span>
+        </div>
+        <div className="metric">
+          {/* nosemgrep: jsx-not-internationalized */}
+          <label>TLS Handshake</label>
+          <span title="Time the device's last TLS handshake with the broker took">
+            {formatMs(device.handshakeMs)}
+          </span>
         </div>
         <div className="metric">
           {/* nosemgrep: jsx-not-internationalized */}
@@ -378,7 +422,108 @@ function LogPanel({ thingName, onClose }) {
 
 // ─── Main App ────────────────────────────────────────────────────────────────
 
+// ─── Sign-in ─────────────────────────────────────────────────────────────────
+
+function LoginScreen({ onSignedIn }) {
+  const [passcode, setPasscode] = useState('');
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  const submit = async (e) => {
+    e.preventDefault();
+    if (passcode.length !== PASSCODE_LENGTH || busy) return;
+    setBusy(true);
+    setError('');
+    try {
+      await signIn(passcode);
+      onSignedIn();
+    } catch (err) {
+      setError(err.message);
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="app login-page">
+      <form className="login-card" onSubmit={submit}>
+        {/* nosemgrep: jsx-not-internationalized */}
+        <h1>PQC Workshop — Device Dashboard</h1>
+        {/* nosemgrep: jsx-not-internationalized */}
+        <p className="login-hint">Enter the workshop passcode shown on the screen.</p>
+        {/* nosemgrep: jsx-not-internationalized */}
+        <label htmlFor="passcode">Workshop passcode</label>
+        <input
+          id="passcode"
+          className="passcode-input"
+          value={passcode}
+          onChange={(e) => setPasscode(normalizePasscode(e.target.value))}
+          maxLength={PASSCODE_LENGTH}
+          autoComplete="off"
+          autoCapitalize="characters"
+          spellCheck={false}
+          autoFocus
+          aria-describedby={error ? 'login-error' : undefined}
+          aria-invalid={error ? 'true' : 'false'}
+        />
+        <button type="submit" disabled={passcode.length !== PASSCODE_LENGTH || busy}>
+          {busy ? 'Signing in…' : 'Sign in'}
+        </button>
+        {error && <p id="login-error" className="login-error" role="alert">{error}</p>}
+      </form>
+    </div>
+  );
+}
+
+// ─── Device filter (view only: anyone signed in can still act on any device) ─
+
+const MY_DEVICE_KEY = 'pqcDashboard.myDevice';
+const VIEW_KEY = 'pqcDashboard.view';
+const SERIAL_LENGTH = 6;
+
+/** Upper-case a typed device code and keep only hex digits. */
+function normalizeSerial(value) {
+  return (value || '').toUpperCase().replace(/[^0-9A-F]/g, '').slice(0, SERIAL_LENGTH);
+}
+
+function readSetting(key, fallback) {
+  try {
+    return localStorage.getItem(key) || fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function writeSetting(key, value) {
+  try {
+    localStorage.setItem(key, value);
+  } catch {
+    // Storage unavailable: the choice just won't survive a reload.
+  }
+}
+
+// ─── App ─────────────────────────────────────────────────────────────────────
+
 function App() {
+  const [signedIn, setSignedIn] = useState(() => hasSession());
+
+  useEffect(() => {
+    onAuthLost = () => setSignedIn(false);
+    return () => { onAuthLost = () => {}; };
+  }, []);
+
+  const handleSignOut = async () => {
+    forgetCredentials();
+    await signOut();
+    setSignedIn(false);
+  };
+
+  if (!signedIn) return <LoginScreen onSignedIn={() => setSignedIn(true)} />;
+  return <Dashboard onSignOut={handleSignOut} />;
+}
+
+function Dashboard({ onSignOut }) {
+  const [view, setView] = useState(() => (readSetting(VIEW_KEY, 'all') === 'mine' ? 'mine' : 'all'));
+  const [mySerial, setMySerial] = useState(() => normalizeSerial(readSetting(MY_DEVICE_KEY, '')));
   const [devices, setDevices] = useState([]);
   const [loading, setLoading] = useState(true);
   const [logDevice, setLogDevice] = useState(null);
@@ -433,6 +578,23 @@ function App() {
     setTimeout(() => setMessage(''), 8000);
   };
 
+  const chooseView = (next) => {
+    setView(next);
+    writeSetting(VIEW_KEY, next);
+  };
+
+  const changeSerial = (value) => {
+    const serial = normalizeSerial(value);
+    setMySerial(serial);
+    writeSetting(MY_DEVICE_KEY, serial);
+  };
+
+  // "My device" shows only the card whose thing name is esp32-<code>. Until a
+  // full 6-character code is entered, every device stays visible.
+  const myThingName = mySerial.length === SERIAL_LENGTH ? `esp32-${mySerial}` : null;
+  const filtering = view === 'mine' && myThingName !== null;
+  const visibleDevices = filtering ? devices.filter(d => d.thingName === myThingName) : devices;
+
   const onlineCount = devices.filter(d => {
     const lastSeen = d.lastSeen ? new Date(d.lastSeen) : null;
     return d.status === 'online' && lastSeen && (Date.now() - lastSeen.getTime() < 90000);
@@ -470,6 +632,40 @@ function App() {
         </div>
       </header>
 
+      <div className="toolbar">
+        <div className="view-toggle" role="group" aria-label="Devices to show">
+          <button type="button" aria-pressed={view === 'all'} onClick={() => chooseView('all')}>
+            {/* nosemgrep: jsx-not-internationalized */}
+            All devices
+          </button>
+          <button type="button" aria-pressed={view === 'mine'} onClick={() => chooseView('mine')}>
+            {/* nosemgrep: jsx-not-internationalized */}
+            My device
+          </button>
+        </div>
+        {view === 'mine' && (
+          <div className="my-device">
+            {/* nosemgrep: jsx-not-internationalized */}
+            <label htmlFor="my-device-code">Your device code</label>
+            <input
+              id="my-device-code"
+              className="serial-input"
+              value={mySerial}
+              onChange={(e) => changeSerial(e.target.value)}
+              maxLength={SERIAL_LENGTH}
+              placeholder="C69E18"
+              autoComplete="off"
+              autoCapitalize="characters"
+              spellCheck={false}
+            />
+          </div>
+        )}
+        <button type="button" className="signout-btn" onClick={onSignOut}>
+          {/* nosemgrep: jsx-not-internationalized */}
+          Sign out
+        </button>
+      </div>
+
       {message && <div className="message-banner">{message}</div>}
 
       <main>
@@ -483,9 +679,16 @@ function App() {
             {/* nosemgrep: jsx-not-internationalized */}
             <p>Plug in your ESP32 device. It will appear here once connected to the broker.</p>
           </div>
+        ) : visibleDevices.length === 0 ? (
+          <div className="empty-state">
+            {/* nosemgrep: jsx-not-internationalized */}
+            <h2>No device {myThingName}</h2>
+            {/* nosemgrep: jsx-not-internationalized */}
+            <p>Check the 6-character code on your device's label, or choose All devices.</p>
+          </div>
         ) : (
           <div className="device-grid">
-            {devices.map(device => (
+            {visibleDevices.map(device => (
               <DeviceCard
                 key={device.thingName}
                 device={device}
@@ -521,6 +724,13 @@ function formatUptime(seconds) {
 function formatKB(bytes) {
   if (bytes === undefined || bytes === null) return '—';
   return `${Math.round(bytes / 1024)}KB`;
+}
+
+// Render a handshake duration: "850 ms" below a second, "2.05 s" above, or an
+// em dash when the device has not reported one (older firmware).
+function formatMs(ms) {
+  if (ms === undefined || ms === null) return '—';
+  return ms < 1000 ? `${ms} ms` : `${(ms / 1000).toFixed(2)} s`;
 }
 
 function truncate(str, maxLen) {

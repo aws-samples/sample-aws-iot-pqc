@@ -46,12 +46,18 @@ phases:
       - IDENTITY_POOL=$(aws ssm get-parameter --name "$SSM_PREFIX/identityPoolId" --query 'Parameter.Value' --output text)
       - API_ENDPOINT=$(aws ssm get-parameter --name "$SSM_PREFIX/apiEndpoint" --query 'Parameter.Value' --output text)
       - CONFIG_REGION=$(aws ssm get-parameter --name "$SSM_PREFIX/region" --query 'Parameter.Value' --output text)
+      # Sign-in: the Cognito user pool + app client the dashboard signs in with.
+      - USER_POOL=$(aws ssm get-parameter --name "$SSM_PREFIX/userPoolId" --query 'Parameter.Value' --output text)
+      - USER_POOL_CLIENT=$(aws ssm get-parameter --name "$SSM_PREFIX/userPoolClientId" --query 'Parameter.Value' --output text)
       - |
         if [ -z "$APPSYNC_ENDPOINT" ] || [ "$APPSYNC_ENDPOINT" = "None" ] \
            || [ -z "$IDENTITY_POOL" ] || [ "$IDENTITY_POOL" = "None" ] \
-           || [ -z "$API_ENDPOINT" ] || [ "$API_ENDPOINT" = "None" ]; then
+           || [ -z "$API_ENDPOINT" ] || [ "$API_ENDPOINT" = "None" ] \
+           || [ -z "$USER_POOL" ] || [ "$USER_POOL" = "None" ] \
+           || [ -z "$USER_POOL_CLIENT" ] || [ "$USER_POOL_CLIENT" = "None" ]; then
           echo "ERROR: dashboard config is incomplete in SSM ($SSM_PREFIX/*)."
           echo "  appSyncEndpoint=$APPSYNC_ENDPOINT identityPoolId=$IDENTITY_POOL apiEndpoint=$API_ENDPOINT"
+          echo "  userPoolId=$USER_POOL userPoolClientId=$USER_POOL_CLIENT"
           echo "  The deploy script must publish these before triggering the build."
           exit 1
         fi
@@ -66,6 +72,8 @@ phases:
         {
           "appSyncEndpoint": "$APPSYNC_ENDPOINT",
           "identityPoolId": "$IDENTITY_POOL",
+          "userPoolId": "$USER_POOL",
+          "userPoolClientId": "$USER_POOL_CLIENT",
           "apiEndpoint": "$API_ENDPOINT",
           "region": "$CONFIG_REGION",
           "pollInterval": 5000

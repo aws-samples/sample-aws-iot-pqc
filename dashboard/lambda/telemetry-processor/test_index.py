@@ -280,3 +280,28 @@ def test_registered_device_telemetry_is_not_skipped():
     item = tbl.get_item(Key={"thingName": "esp32-C69E44"})["Item"]
     assert item["messageId"] == 7
     assert item["serialNumber"] == "C69E44"  # preserved
+
+
+@mock_aws
+def test_handshake_ms_is_stored_from_telemetry_and_lifecycle():
+    tbl = _make_table()
+    _register(tbl)
+    _env()
+    mod = load_handler_module(os.path.join(HERE, "index.py"), "telemetry_processor_index")
+
+    mod.handler({"device": "esp32-FC22E0", "status": "online", "handshake_ms": 2052}, None)
+    assert tbl.get_item(Key={"thingName": "esp32-FC22E0"})["Item"]["handshakeMs"] == 2052
+
+    mod.handler({"device": "esp32-FC22E0", "message_id": 1, "handshake_ms": 3121}, None)
+    assert tbl.get_item(Key={"thingName": "esp32-FC22E0"})["Item"]["handshakeMs"] == 3121
+
+
+@mock_aws
+def test_older_firmware_without_handshake_ms_leaves_it_unset():
+    tbl = _make_table()
+    _register(tbl)
+    _env()
+    mod = load_handler_module(os.path.join(HERE, "index.py"), "telemetry_processor_index")
+
+    mod.handler({"device": "esp32-FC22E0", "message_id": 1, "uptime_sec": 5}, None)
+    assert "handshakeMs" not in tbl.get_item(Key={"thingName": "esp32-FC22E0"})["Item"]

@@ -89,8 +89,11 @@ static const char* const TAG_OTA     = "ota";
 #endif
 
 // ─── LED Configuration ──────────────────────────────────────────────────────
-// XIAO ESP32-S3 built-in LED is on GPIO 21
+// XIAO ESP32-S3 built-in LED is on GPIO 21 and is ACTIVE-LOW: it lights when
+// the pin is LOW. Always drive it through LED_ON / LED_OFF.
 #define LED_PIN                 21
+#define LED_ON                  LOW
+#define LED_OFF                 HIGH
 
 // ─── Timing Constants (milliseconds) ────────────────────────────────────────
 #define WIFI_CONNECT_TIMEOUT_MS     15000

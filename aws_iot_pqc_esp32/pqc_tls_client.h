@@ -37,6 +37,8 @@ public:
     static const char* tlsVersion()   { return s_tlsVersion; }
     static const char* tlsCipher()    { return s_tlsCipher; }
     static const char* keyExchange()  { return s_tlsKeyExchange; }
+    // Wall-clock duration of the last successful TLS handshake, in ms.
+    static unsigned long handshakeMs() { return s_handshakeMs; }
 
     // Arduino Client interface
     int connect(IPAddress ip, uint16_t port) override;
@@ -63,6 +65,7 @@ private:
     static char s_tlsVersion[32];
     static char s_tlsCipher[64];
     static char s_tlsKeyExchange[64];
+    static unsigned long s_handshakeMs;
 };
 
 #endif  // PQC_TLS_CLIENT_H
