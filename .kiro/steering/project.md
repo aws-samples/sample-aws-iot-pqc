@@ -169,6 +169,54 @@ the teardown/rebuild. Handle these to keep a from-scratch deploy clean:
   is reused across rebuilds (fine, just don't expect the stack to own it).
 
 Backlog candidates surfaced during rebuilds (not yet fixed):
+- **[Firmware — WiFi/MQTT reconnect fix; do BEFORE re:Invent] Make devices
+  recover by themselves from a weak or stalled link.** Observed in the Workshop
+  Studio event account (838462636451, Nov 10) with 8 devices: the boards on the
+  onboard antenna at -60 to -63 dBm (C69A64, FC22AC, C6A570) greyed out on the
+  dashboard; the strong ones (-15 to -46 dBm) were fine. NOT a scaling problem
+  (broker CPU ~0.1%, Pi load 0.2, AP had all 8 associated with no limit hit).
+  Adding external antennas brought all 8 to -17..-36 dBm and fixed it, but a
+  full room will have weaker links, and the firmware recovered badly:
+  - C69A64 stopped getting traffic through at 15:43 while still associated, the
+    broker dropped it on keepalive, then every re-join failed (AUTH_EXPIRE) with
+    `ESP_ERR_WIFI_NOT_INIT` / `STA config failed` and a growing backoff.
+  - FC22AC was on WiFi with an IP but its first 9 MQTT connects timed out at TCP
+    (backoff grew to 97 s) before attempt 10 succeeded.
+  Fix (shared `aws_iot_pqc_esp32/wifi_manager.cpp` + `mqtt_manager.cpp`, so all
+  three variants get it; ~30-40 lines):
+  1. Retry with `WiFi.disconnect(false, true)`, not `WiFi.disconnect(true)` —
+     `true` turns the WiFi driver OFF, so the next `WiFi.begin()` runs against a
+     de-initialised driver (the NOT_INIT / STA config failed errors).
+  2. Pick ONE reconnect mechanism: drop `WiFi.setAutoReconnect(true)` and keep
+     the task's own retry loop (the two currently fight).
+  3. Give WiFi its own retry cap (~15-20 s) instead of sharing
+     `BACKOFF_MAX_MS` (120 s) with MQTT; a local AP needs seconds, not minutes.
+  4. Link watchdog for "WiFi up but nothing gets through": after ~3
+     consecutive failed broker connects, have the MQTT task ask the WiFi task to
+     drop and re-join the AP; after a few such cycles, `ESP.restart()` (safe —
+     identity is in the certs partition).
+  Test: compile all three variants; flash one board; force each failure
+  (power-cycle the Pi AP for 1-3; a temporary nftables drop of one board's
+  traffic on the Pi for 4) and confirm recovery within ~1 min unaided; then roll
+  out via the shared firmware build. Own branch, after the Studio run. Antenna
+  step: DONE in the workshop pages (2.1, 2.2 table, 99.8.3) on mainline.
+  RELATED CHANGES ALREADY MADE (branch fix/ws-lambda-reserved-concurrency,
+  tested Nov 10 in the Studio event account, 11 boards):
+  - AP channel default 6 -> 11 (configure-wifi-ap). A neighbour router on ch 4
+    overlapped ch 6: retries to devices 78% on ch 6 vs 17% on ch 11.
+  - `WiFi.setSleep(false)` (modem sleep off; boards are USB-powered). 5-min
+    window: one board on the new firmware 8% retries vs 42% for 10 boards on
+    the old; whole fleet on the new firmware ~15% (4-23%, one outlier at 46%),
+    0 failed frames throughout.
+  - Random telemetry start offset per connect (esp_random). Code path seen on
+    hardware (first publish 4.6 s after connect); the fleet-wide spread after
+    a simultaneous reconnect was NOT measured — the Pi went offline (SSM
+    ConnectionLost ~23:42 UTC) before the AP-restart test ran. Re-run it:
+    restart the AP (re-run configure-wifi-ap), then check per-device telemetry
+    phase spread in the broker log.
+  The reconnect fixes 1-4 above are still TODO. Note: with sleep off, a board
+  that lost WiFi at 23:40 (two boards dropped together, so AP-side) was back on
+  the broker in ~4 s.
 - **[TOP PRIORITY — own change, do on its own] OTA S3 download TLS: classical
   key exchange and NO server authentication.** Found Sep 29. Two gaps in every
   sketch's OTA path (`otaCtx` + `otaHttpsGetToBuffer`):

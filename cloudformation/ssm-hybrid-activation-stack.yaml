@@ -664,9 +664,12 @@ Resources:
             type: String
             description: >
               2.4 GHz channel for the AP (1/6/11 are the non-overlapping
-              choices). Use 0 to let the driver auto-select. If two AP Pis run in
-              the same room, give them different channels (e.g. 1 and 11).
-            default: '6'
+              choices; stay within 1-11, the US range). Default 11: in testing,
+              a home router on channel 4 overlapped channel 6 and drove the
+              retry rate to devices to 78%, versus 17% on channel 11. Use 0 to
+              let the driver auto-select. If two AP Pis run in the same room,
+              give them different channels (e.g. 1 and 11).
+            default: '11'
         mainSteps:
           - action: aws:runShellScript
             name: configureWifiAp
@@ -837,7 +840,7 @@ Resources:
           - id: W89
             reason: "Function only calls public AWS APIs (SSM, Secrets Manager); no VPC resources are involved, so VPC attachment adds no value."
           - id: W92
-            reason: "ReservedConcurrentExecutions is set to bound concurrency for this workshop function."
+            reason: "No reserved concurrency: Workshop Studio accounts reserve 890 of the 1000 account concurrency for their own curtailer function, leaving only 10 reservable, so any reservation here fails the deploy."
       checkov:
         skip:
           - id: CKV_AWS_116
@@ -847,14 +850,13 @@ Resources:
           - id: CKV_AWS_173
             comment: "Environment variables use the AWS-managed Lambda key by default; values are non-sensitive config and no customer CMK is required for this workshop sample."
           - id: CKV_AWS_115
-            comment: "ReservedConcurrentExecutions is set to bound concurrency for this workshop function."
+            comment: "No reserved concurrency: Workshop Studio accounts reserve 890 of the 1000 account concurrency for their own curtailer function, leaving only 10 reservable, so any reservation here fails the deploy."
     Properties:
       FunctionName: !Sub '${WorkshopInstanceName}-ssm-activation'
       Description: Creates/deletes SSM hybrid activation and stores credentials
       Runtime: python3.12
       Handler: index.handler
       Timeout: 60
-      ReservedConcurrentExecutions: 5
       Role: !GetAtt SSMActivationLambdaRole.Arn
       Environment:
         Variables:

@@ -113,7 +113,7 @@ Resources:
           - id: W89
             reason: "Function only calls public AWS APIs (IoT control plane); no VPC resources are involved, so VPC attachment adds no value."
           - id: W92
-            reason: "ReservedConcurrentExecutions is set to bound concurrency for this workshop function."
+            reason: "No reserved concurrency: Workshop Studio accounts reserve 890 of the 1000 account concurrency for their own curtailer function, leaving only 10 reservable, so any reservation here fails the deploy."
       checkov:
         skip:
           - id: CKV_AWS_116
@@ -121,13 +121,12 @@ Resources:
           - id: CKV_AWS_117
             comment: "Function only calls public AWS APIs (IoT control plane); no VPC resources, so VPC attachment adds no value."
           - id: CKV_AWS_115
-            comment: "ReservedConcurrentExecutions is set to bound concurrency for this workshop function."
+            comment: "No reserved concurrency: Workshop Studio accounts reserve 890 of the 1000 account concurrency for their own curtailer function, leaving only 10 reservable, so any reservation here fails the deploy."
     Properties:
       FunctionName: !Sub '${ThingName}-thing-type-assoc'
       Runtime: python3.12
       Handler: index.handler
       Timeout: 30
-      ReservedConcurrentExecutions: 5
       Role: !GetAtt ThingTypeAssociationRole.Arn
       Code:
         ZipFile: |
@@ -267,7 +266,7 @@ Resources:
           - id: W89
             reason: "Function only calls public AWS APIs (IoT, Secrets Manager, SSM); no VPC resources are involved, so VPC attachment adds no value."
           - id: W92
-            reason: "ReservedConcurrentExecutions is set to bound concurrency for this workshop function."
+            reason: "No reserved concurrency: Workshop Studio accounts reserve 890 of the 1000 account concurrency for their own curtailer function, leaving only 10 reservable, so any reservation here fails the deploy."
       checkov:
         skip:
           - id: CKV_AWS_116
@@ -277,13 +276,12 @@ Resources:
           - id: CKV_AWS_173
             comment: "Environment variables use the AWS-managed Lambda key by default; THING_NAME is non-sensitive and no customer CMK is required for this workshop sample."
           - id: CKV_AWS_115
-            comment: "ReservedConcurrentExecutions is set to bound concurrency for this workshop function."
+            comment: "No reserved concurrency: Workshop Studio accounts reserve 890 of the 1000 account concurrency for their own curtailer function, leaving only 10 reservable, so any reservation here fails the deploy."
     Properties:
       FunctionName: !Sub '${ThingName}-cert-provisioner'
       Runtime: python3.12
       Handler: index.handler
       Timeout: 60
-      ReservedConcurrentExecutions: 5
       Role: !GetAtt CertificateProvisionerRole.Arn
       Environment:
         Variables:
