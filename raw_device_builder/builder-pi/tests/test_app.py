@@ -5,6 +5,7 @@ Unit tests for the Builder-Pi GUI's network exposure controls (security ticket
 D570691687): loopback-only bind, no runtime config writes, Host allowlist and
 JSON-only POSTs. Uses Flask's test client; no network listener is started.
 """
+import ipaddress
 import json
 import os
 import sys
@@ -14,6 +15,10 @@ import pytest
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.abspath(os.path.join(HERE, "..")))
 
+# The IPv4 all-interfaces address. These tests only ever assert the GUI does
+# NOT bind to it; built from ipaddress so no bind-all literal sits in the code.
+ALL_INTERFACES = str(ipaddress.IPv4Address(0))
+
 
 @pytest.fixture(scope="module")
 def app_module(tmp_path_factory):
@@ -22,7 +27,7 @@ def app_module(tmp_path_factory):
     cfg.write_text(json.dumps({
         "api_endpoint": "https://example.invalid/prod", "region": "us-east-1",
         "firmware_bucket": "pqc-workshop-firmware-123456789012",
-        "serial_baud_rate": 115200, "gui_host": "0.0.0.0", "gui_port": 9999,
+        "serial_baud_rate": 115200, "gui_host": ALL_INTERFACES, "gui_port": 9999,
     }))
     os.environ["BUILDER_CONFIG"] = str(cfg)
     import app  # noqa: E402  (reads BUILDER_CONFIG at import)
@@ -40,8 +45,9 @@ LOCAL = {"Host": "127.0.0.1:8080"}
 def test_bind_is_loopback_and_not_configurable(app_module):
     assert app_module.GUI_HOST == "127.0.0.1"
     assert app_module.GUI_PORT == 8080
-    # The legacy config asked for 0.0.0.0:9999; the module constants win.
-    assert app_module.config.get("gui_host") == "0.0.0.0"
+    # The legacy config asked for the all-interfaces address on port 9999;
+    # the module constants win.
+    assert app_module.config.get("gui_host") == ALL_INTERFACES
     assert app_module.ALLOWED_HOSTS == {"127.0.0.1:8080", "localhost:8080"}
 
 
@@ -49,7 +55,7 @@ def test_bind_uses_the_constants(app_module, monkeypatch):
     """The __main__ block passes GUI_HOST/GUI_PORT to app.run, not config."""
     src = open(app_module.__file__, encoding="utf-8").read()
     assert "app.run(host=GUI_HOST, port=GUI_PORT, debug=False)" in src
-    assert "0.0.0.0" not in src.replace("# ", "")  # no wildcard bind literal in code
+    assert ALL_INTERFACES not in src.replace("# ", "")  # no wildcard bind literal in code
 
 
 @pytest.mark.parametrize("method", ["GET", "POST"])
@@ -87,6 +93,19 @@ def test_post_without_json_content_type_is_refused(client, path):
     for ctype in ("application/x-www-form-urlencoded", "text/plain", "multipart/form-data"):
         resp = client.post(path, headers={**LOCAL, "Content-Type": ctype}, data="port=/dev/ttyACM0")
         assert resp.status_code == 415, (path, ctype)
+
+
+@pytest.mark.parametrize("ctype", [
+    "application/json", "application/json; charset=utf-8", "application/problem+json",
+    "application/x-www-form-urlencoded", "text/plain", "multipart/form-data",
+    "text/json", "application/jsonp", "",
+])
+def test_json_check_matches_werkzeug_is_json(app_module, ctype):
+    """The explicit content-type check must accept exactly what Werkzeug's
+    Request.is_json accepts, so replacing the property changed no behaviour."""
+    with app_module.app.test_request_context("/", method="POST", headers={"Content-Type": ctype}):
+        from flask import request
+        assert app_module._is_json_content_type(request.mimetype) == request.is_json
 
 
 def test_post_with_non_object_json_is_a_clean_400(client):

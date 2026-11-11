@@ -100,9 +100,15 @@ def main():
         "--dry-run", action="store_true", help="report the changes without writing"
     )
     args = parser.parse_args()
+    apply_metadata(args.dir, args.base, dry_run=args.dry_run)
 
-    tc_path = os.path.join(args.dir, f"{args.base}.tc.json")
-    ext_path = os.path.join(args.dir, f"{args.base}.extended.json")
+
+def apply_metadata(directory, base, dry_run=False):
+    """Copy Priority/STRIDE from <base>.extended.json into <base>.tc.json in
+    `directory`. Importable, so other tooling (mcp_restore.py verify) calls it
+    in-process instead of running this script in a subprocess."""
+    tc_path = os.path.join(directory, f"{base}.tc.json")
+    ext_path = os.path.join(directory, f"{base}.extended.json")
     tc = load_json(tc_path)
     ext = load_json(ext_path)
 
@@ -142,7 +148,7 @@ def main():
         vals = ", ".join(f"{e['key']}={e['value']}" for e in entries)
         print(f"  {tid}: {sev} / {cat} -> {vals}")
 
-    if args.dry_run:
+    if dry_run:
         print(f"[DRY RUN] {len(changes)} threats would be updated in {tc_path}")
         return
 
