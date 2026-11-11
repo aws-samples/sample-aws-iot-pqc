@@ -23,7 +23,8 @@
 #
 # Usage:
 #   ./setup-builder-pi-remote.sh [--region REGION] [--instance-id mi-XXXX] \
-#       [--only install-base|deploy-app|configure-service|configure-wifi-ap]
+#       [--only install-base|deploy-app|configure-service|configure-wifi-ap] \
+#       [--channel N|auto]
 #
 #   --region       AWS region (default: $AWS_DEFAULT_REGION or us-east-1)
 #   --instance-id  Target managed instance. Omit to auto-discover the single
@@ -32,6 +33,11 @@
 #                  (alias: awscli), deploy-app, configure-service, or
 #                  configure-wifi-ap.
 #   --profile      AWS CLI profile (optional; else ambient credentials)
+#   --channel      2.4 GHz channel for the workshop AP (configure-wifi-ap). A
+#                  number (1-11) sets it; 'auto' first runs the read-only
+#                  builder-pi/wifi-survey.sh on the Pi and uses its recommended
+#                  channel. Omit to keep the document's default (11). Use auto
+#                  at a venue, with the Pi where it will sit during the event.
 #
 # NOTE: configure-wifi-ap brings up the workshop 2.4GHz WiFi AP on the Pi's
 # MediaTek USB radio (wlan1). The workshop runs on controlled, consistent Pi
@@ -45,9 +51,11 @@
 
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REGION="${AWS_DEFAULT_REGION:-us-east-1}"
 INSTANCE_ID=""
 ONLY=""
+CHANNEL=""
 PROFILE=""
 
 while [[ $# -gt 0 ]]; do
@@ -55,6 +63,7 @@ while [[ $# -gt 0 ]]; do
         --region) REGION="$2"; shift 2 ;;
         --instance-id) INSTANCE_ID="$2"; shift 2 ;;
         --only) ONLY="$2"; shift 2 ;;
+        --channel) CHANNEL="$2"; shift 2 ;;
         --profile) PROFILE="$2"; shift 2 ;;
         --help|-h)
             sed -n '2,30p' "$0"; exit 0 ;;
@@ -64,6 +73,10 @@ done
 
 # Thread --profile/--region into every aws call. Using an array avoids the
 # quoting pitfalls of a flattened string.
+if [[ -n "$CHANNEL" && "$CHANNEL" != auto && ! "$CHANNEL" =~ ^([1-9]|1[01])$ ]]; then
+    echo "[ERROR] --channel must be 1-11 or auto (got '$CHANNEL')"; exit 1
+fi
+
 AWS=(aws --region "$REGION")
 [[ -n "$PROFILE" ]] && AWS+=(--profile "$PROFILE")
 
@@ -140,6 +153,11 @@ echo "    Online."
 # non-zero so the caller stops (each doc is independently re-runnable).
 run_doc() {
     local doc="$1" label="$2" onlykey="${3:-}"
+    local params=()
+    # The AP channel is the only document parameter this orchestrator sets.
+    if [[ "$onlykey" == configure-wifi-ap && -n "$CHANNEL" ]]; then
+        params=(--parameters "Channel=$CHANNEL")
+    fi
     echo ""
     echo "───────────────────────────────────────────────────────────────"
     echo "  Running: $label  ($doc)"
@@ -148,6 +166,7 @@ run_doc() {
     cid=$("${AWS[@]}" ssm send-command \
         --instance-ids "$INSTANCE_ID" \
         --document-name "$doc" \
+        ${params[@]+"${params[@]}"} \
         --query 'Command.CommandId' --output text 2>/dev/null) || {
             echo "[ERROR] send-command failed for $doc"; return 1; }
     echo "    command: $cid"
@@ -184,6 +203,24 @@ run_doc() {
     return 1
 }
 
+# ─── Resolve --channel (number, or 'auto' = survey the air first) ───────────
+# Runs just before configure-wifi-ap, so the survey reflects the room as it is.
+resolve_channel() {
+    [[ "$CHANNEL" == auto ]] || return 0
+    echo ""
+    echo "[*] --channel auto: surveying the 2.4 GHz air from the Pi (read-only, ~1 min)..."
+    local out rec
+    out=$("$SCRIPT_DIR/builder-pi/wifi-survey.sh" --region "$REGION" --instance-id "$INSTANCE_ID" \
+        ${PROFILE:+--profile "$PROFILE"}) || true
+    printf '%s\n' "$out" | grep -vE '^(RECOMMENDED_|Apply:)' | sed 's/^/    /' || true
+    rec=$(printf '%s\n' "$out" | sed -n 's/^RECOMMENDED_CHANNEL=\([0-9]*\)$/\1/p' | tail -1)
+    if [[ -n "$rec" ]]; then
+        CHANNEL="$rec"; echo "    -> using channel $CHANNEL"
+    else
+        CHANNEL=""; echo "    [WARN] survey gave no recommendation; using the document default (11)"
+    fi
+}
+
 # ─── Run the requested document(s) ───────────────────────────────────────────
 # Order: install-base (prerequisite) -> deploy-app -> configure-service ->
 # configure-wifi-ap. install-base first because deploy-app's S3/SSM calls and
@@ -193,12 +230,13 @@ case "$ONLY" in
         run_doc "$DOC_AWSCLI"    "1/4 install-base"       install-base
         run_doc "$DOC_DEPLOYAPP" "2/4 deploy-app"         deploy-app
         run_doc "$DOC_CONFIGURE" "3/4 configure-service"  configure-service
+        resolve_channel
         run_doc "$DOC_WIFIAP"    "4/4 configure-wifi-ap"  configure-wifi-ap
         ;;
     install-base|awscli) run_doc "$DOC_AWSCLI"   "install-base"      install-base ;;
     deploy-app)         run_doc "$DOC_DEPLOYAPP" "deploy-app"        deploy-app ;;
     configure-service)  run_doc "$DOC_CONFIGURE" "configure-service" configure-service ;;
-    configure-wifi-ap)  run_doc "$DOC_WIFIAP"    "configure-wifi-ap" configure-wifi-ap ;;
+    configure-wifi-ap)  resolve_channel; run_doc "$DOC_WIFIAP" "configure-wifi-ap" configure-wifi-ap ;;
     install-toolchain)
         echo "[ERROR] install-toolchain was removed: the Pi no longer compiles firmware."
         echo "        Use install-base, deploy-app, configure-service or configure-wifi-ap."; exit 1 ;;

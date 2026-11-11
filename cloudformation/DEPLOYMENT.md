@@ -316,6 +316,17 @@ configure-service → configure-wifi-ap):
 ./raw_device_builder/setup-builder-pi-remote.sh            # add --region / --profile if needed
 ```
 
+> **At the venue, add `--channel auto`.** The AP defaults to 2.4 GHz channel
+> 11, but the right channel depends on the room. With the Pi where it will sit
+> during the event, run:
+> ```bash
+> ./raw_device_builder/setup-builder-pi-remote.sh --channel auto   # add --region / --profile if needed
+> ```
+> Just before building the AP, this runs the read-only venue survey
+> (`raw_device_builder/builder-pi/wifi-survey.sh`, ~1 min) on the Pi and uses
+> the channel it recommends. See **§7 "Choosing the AP channel"** to run the
+> survey on its own or apply a channel by hand.
+
 The GUI **auto-starts** at the end (systemd `enable`d + started), reachable at
 `http://127.0.0.1:8080` in the Pi's own browser (loopback only; use the Pi's
 console or a KVM), **and the workshop 2.4 GHz WiFi AP is brought up on the
@@ -371,6 +382,8 @@ across one or two Pis; the deploy default is 100).
 > ```bash
 > ./raw_device_builder/setup-builder-pi-remote.sh --only configure-wifi-ap
 > ```
+> At a venue, survey the air and pick the channel first (add `--channel auto`).
+> See "Choosing the AP channel" below.
 
 **Hardware specification.** This is the exact Builder-Pi hardware/OS the workshop
 is validated on (a dedicated second Pi may be used instead — see the SPOF note).
@@ -405,6 +418,54 @@ force both onto the same channel/band, which would defeat the 2.4↔5 split.
 > reboots. The `configure-wifi-ap` SSM document sidesteps this by picking the AP
 > radio by its `mt76*` driver rather than by name — so you don't need to hardcode
 > `wlan1`.
+
+#### Choosing the AP channel (venue survey)
+
+The ESP32s share one 2.4 GHz channel with every other network in the room, so
+the channel matters. Overlap causes retries: in testing, a neighbouring router
+on channel 4 overlapped channel 6 and pushed retries to the devices to 78% of
+frames, against 17% on a clean channel 11.
+
+`raw_device_builder/builder-pi/wifi-survey.sh` measures the air from the Pi
+and recommends a channel. It is **read-only**. It scans with the Pi's
+station-mode radios only, so a running workshop AP and its devices are not
+disturbed, and the Pi's own AP is excluded from the results. Run it at the
+venue with the Pi in its final position, as close to the event as you can:
+
+```bash
+# From the deploy host (Pi registered with SSM):
+./raw_device_builder/builder-pi/wifi-survey.sh --region us-east-1   # --profile P if needed
+# Or on the Pi itself, e.g. before SSM registration (it is in the bundle):
+sudo ./wifi-survey.sh
+```
+
+It scans 5 times (`--scans`, `--interval`), merges what it hears and scores
+channels **1, 6 and 11**. These are the non-overlapping 20 MHz channels that are
+legal in the US and in Europe. Each network adds interference by its signal
+strength and by how much of its spectrum overlaps the channel (40 MHz networks
+count across both halves). The least-interfered channel wins; within 3 dB, the
+lower measured airtime wins, then 11, 1, 6. The output lists the strongest
+networks, a per-channel table and the verdict (clean, moderate or busy), and
+ends with:
+
+```
+Recommended channel: 11 (clean)
+Recommended pair for two APs: 1 + 11
+RECOMMENDED_CHANNEL=11
+RECOMMENDED_PAIR=1,11
+```
+
+Apply it with `--channel` (or use `--channel auto` during provisioning, §6.2):
+
+```bash
+./raw_device_builder/setup-builder-pi-remote.sh --only configure-wifi-ap --channel 11
+```
+
+Rebuilding the AP disconnects every device for about a minute while they
+rejoin, so choose the channel before devices are handed out. If even the best
+channel is **busy**, the survey warns: keep devices close to the Pi, and move
+the Pi away from the strongest networks it lists. Running two AP Pis in one
+room? Give them the recommended pair.
 
 #### What the automated `configure-wifi-ap` document does
 
