@@ -38,14 +38,18 @@ the snapshot (and the next restore) carries the change.
 """
 import argparse
 import asyncio
+import contextlib
 import difflib
+import io
 import json
 import re
 import shutil
-import subprocess
 import sys
 import tempfile
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import add_tc_metadata  # noqa: E402  (sibling module in .threatmodel/)
 
 HERE = Path(__file__).resolve().parent
 BASE = "pqc-iot-workshop-threat-model"
@@ -212,9 +216,9 @@ def verify(snapshot, project):
         for f in rt:  # move the export out of the repo before anything can fail
             shutil.move(str(f), str(tmp / f.name))
         out = tmp
-        meta = HERE / "add_tc_metadata.py"
-        subprocess.run([sys.executable, str(meta), "--dir", str(out), "--base", BASE + "-roundtrip"],
-                       check=True, stdout=subprocess.DEVNULL)
+        # In-process (no subprocess): add Priority/STRIDE to the round-trip export.
+        with contextlib.redirect_stdout(io.StringIO()):
+            add_tc_metadata.apply_metadata(str(out), BASE + "-roundtrip")
         bad = 0
         for ext in (".tc.json", ".md", ".extended.json"):
             a = normalise(HERE / f"{BASE}{ext}").splitlines()

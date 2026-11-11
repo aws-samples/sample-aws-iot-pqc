@@ -62,6 +62,13 @@ app = Flask(__name__)
 device_manager = DeviceManager(config)
 
 
+def _is_json_content_type(mimetype):
+    """True for application/json and application/*+json - the same rule as
+    Werkzeug's Request.is_json property, spelled out explicitly."""
+    return mimetype == 'application/json' or (
+        mimetype.startswith('application/') and mimetype.endswith('+json'))
+
+
 @app.before_request
 def _gate_request():
     """Refuse requests not addressed to the loopback GUI, and POSTs that are
@@ -70,7 +77,7 @@ def _gate_request():
     browser cannot drive the API either."""
     if request.host not in ALLOWED_HOSTS:
         return jsonify({'error': 'Forbidden host'}), 403
-    if request.method == 'POST' and not request.is_json:
+    if request.method == 'POST' and not _is_json_content_type(request.mimetype):
         return jsonify({'error': 'Content-Type must be application/json'}), 415
     return None
 
