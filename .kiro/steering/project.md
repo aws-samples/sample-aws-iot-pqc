@@ -198,8 +198,25 @@ Backlog candidates surfaced during rebuilds (not yet fixed):
   Test: compile all three variants; flash one board; force each failure
   (power-cycle the Pi AP for 1-3; a temporary nftables drop of one board's
   traffic on the Pi for 4) and confirm recovery within ~1 min unaided; then roll
-  out via the shared firmware build. Own branch, after the Studio run. Also add
-  "attach the external antenna" to the device setup steps in the workshop pages.
+  out via the shared firmware build. Own branch, after the Studio run. Antenna
+  step: DONE in the workshop pages (2.1, 2.2 table, 99.8.3) on mainline.
+  RELATED CHANGES ALREADY MADE (branch fix/ws-lambda-reserved-concurrency,
+  tested Nov 10 in the Studio event account, 11 boards):
+  - AP channel default 6 -> 11 (configure-wifi-ap). A neighbour router on ch 4
+    overlapped ch 6: retries to devices 78% on ch 6 vs 17% on ch 11.
+  - `WiFi.setSleep(false)` (modem sleep off; boards are USB-powered). 5-min
+    window: one board on the new firmware 8% retries vs 42% for 10 boards on
+    the old; whole fleet on the new firmware ~15% (4-23%, one outlier at 46%),
+    0 failed frames throughout.
+  - Random telemetry start offset per connect (esp_random). Code path seen on
+    hardware (first publish 4.6 s after connect); the fleet-wide spread after
+    a simultaneous reconnect was NOT measured — the Pi went offline (SSM
+    ConnectionLost ~23:42 UTC) before the AP-restart test ran. Re-run it:
+    restart the AP (re-run configure-wifi-ap), then check per-device telemetry
+    phase spread in the broker log.
+  The reconnect fixes 1-4 above are still TODO. Note: with sleep off, a board
+  that lost WiFi at 23:40 (two boards dropped together, so AP-side) was back on
+  the broker in ~4 s.
 - **[TOP PRIORITY — own change, do on its own] OTA S3 download TLS: classical
   key exchange and NO server authentication.** Found Sep 29. Two gaps in every
   sketch's OTA path (`otaCtx` + `otaHttpsGetToBuffer`):
