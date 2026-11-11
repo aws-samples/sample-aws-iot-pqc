@@ -17,7 +17,7 @@ import boto3
 import os
 import json
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 
 dynamodb = boto3.resource('dynamodb')
 table = dynamodb.Table(os.environ['TABLE_NAME'])
@@ -175,18 +175,76 @@ def handler(event, context):
     # unhide the picker mid-migration. The conditional write makes this safe
     # under concurrency — if the field changed underneath us, the reconcile is
     # simply skipped.
+    #
+    # "Back on the new firmware" must mean the report comes FROM the new
+    # firmware. The state machine sets "rebooting" as soon as it has published
+    # the OTA command, but the board keeps running (and publishing telemetry
+    # from) the OLD image for the ~30-60 s it spends downloading. Measured with a
+    # 32-board burst: clearing on that telemetry returned the picker ~30 s
+    # before the reboot, with the old version still showing. So the state
+    # machine also stores migrationTargetVersion, and we clear only when the
+    # report's firmware_version matches it. A row without a target (written by
+    # an older state machine) keeps the previous behaviour so it cannot get
+    # stuck. Limitation: an OTA to the version already running cannot be told
+    # apart from the old image, so it clears as early as before.
     is_live_report = ('message_id' in event) or (event.get('status') == 'online')
+    reported_fw = event.get('firmware_version')
     if is_live_report:
+        condition = 'migrationStatus = :rebooting AND attribute_not_exists(migrationTargetVersion)'
+        values = {':rebooting': 'rebooting'}
+        if reported_fw:
+            condition = ('migrationStatus = :rebooting AND (attribute_not_exists(migrationTargetVersion)'
+                         ' OR migrationTargetVersion = :fw)')
+            values[':fw'] = reported_fw
         try:
             table.update_item(
                 Key={'thingName': thing_name},
-                UpdateExpression='REMOVE migrationStatus, migrationError',
-                ConditionExpression='migrationStatus = :rebooting',
-                ExpressionAttributeValues={':rebooting': 'rebooting'},
+                UpdateExpression='REMOVE migrationStatus, migrationError, migrationTargetVersion, migrationRebootingSince',
+                ConditionExpression=condition,
+                ExpressionAttributeValues=values,
             )
             print(f"Reconciled finished migration for {thing_name} (cleared rebooting status)")
         except dynamodb.meta.client.exceptions.ConditionalCheckFailedException:
             # Not in the rebooting state (the common case) — nothing to reconcile.
-            pass
+            if reported_fw:
+                _fail_stalled_migration(thing_name, reported_fw)
 
     return {'statusCode': 200, 'body': f'Updated {thing_name}'}
+
+
+# A board that is still reporting its OLD version this long after the OTA was
+# sent did not install it: the download or the signature check failed on the
+# board, which then carries on running the old image without telling the cloud.
+# The download takes ~60-90 s even in a 32-board burst, so 5 minutes is well
+# clear of a slow success.
+REBOOT_TIMEOUT_SEC = int(os.environ.get('MIGRATION_REBOOT_TIMEOUT_SEC', '300'))
+
+
+def _iso_ms(dt):
+    """Same format as Step Functions' $$.State.EnteredTime (UTC, ms, 'Z'), so
+    the two compare correctly as strings."""
+    return dt.strftime('%Y-%m-%dT%H:%M:%S.') + f"{dt.microsecond // 1000:03d}Z"
+
+
+def _fail_stalled_migration(thing_name, reported_fw):
+    """Mark a migration failed when the board reports a version other than the
+    target REBOOT_TIMEOUT_SEC after the OTA was sent. Without this, the card
+    would wait for the target version forever and lock the board out of a retry."""
+    cutoff = _iso_ms(datetime.fromtimestamp(time.time() - REBOOT_TIMEOUT_SEC, timezone.utc))
+    try:
+        table.update_item(
+            Key={'thingName': thing_name},
+            UpdateExpression=('SET migrationStatus = :failed, migrationError = :err '
+                              'REMOVE migrationTargetVersion, migrationRebootingSince'),
+            ConditionExpression=('migrationStatus = :rebooting AND migrationTargetVersion <> :fw '
+                                 'AND migrationRebootingSince < :cutoff'),
+            ExpressionAttributeValues={
+                ':failed': 'failed', ':rebooting': 'rebooting', ':fw': reported_fw, ':cutoff': cutoff,
+                ':err': (f"The board is still running {reported_fw} {REBOOT_TIMEOUT_SEC // 60} minutes after "
+                         "the update was sent, so the download or its signature check failed on the "
+                         "board. Try the migration again."),
+            },
+        )
+        print(f"Marked stalled migration failed for {thing_name} (still on {reported_fw})")
+    except dynamodb.meta.client.exceptions.ConditionalCheckFailedException:
+        pass

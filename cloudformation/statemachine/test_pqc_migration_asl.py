@@ -114,6 +114,33 @@ def test_variant_and_shared_key_threaded_through(asl):
     assert payload["version.$"] == "$.prepare.version"
 
 
+_THROTTLE = {"Lambda.TooManyRequestsException", "Lambda.ServiceException"}
+
+
+@pytest.mark.parametrize("state_name", ["PrepareBuild", "PublishOta"])
+def test_lambda_tasks_retry_throttling(asl, state_name):
+    """A burst of migrations (a room clicking Migrate together) can throttle
+    Lambda: a Workshop Studio account leaves only 110 concurrent executions.
+    Every Lambda task must retry it instead of failing the migration."""
+    retries = asl["States"][state_name].get("Retry", [])
+    assert any(_THROTTLE <= set(r["ErrorEquals"]) and r["MaxAttempts"] >= 3 for r in retries), state_name
+
+
+def test_rebooting_records_the_target_version(asl):
+    """The telemetry processor ends a migration only when the board reports the
+    target version, so the 'rebooting' write must record it."""
+    p = asl["States"]["SetStatusRebooting"]["Parameters"]
+    assert "migrationTargetVersion = :v" in p["UpdateExpression"]
+    assert p["ExpressionAttributeValues"][":v"] == {"S.$": "$.prepare.version"}
+    # ...and when, so a board that never installs the update times out to 'failed'.
+    assert "migrationRebootingSince = :t" in p["UpdateExpression"]
+    assert p["ExpressionAttributeValues"][":t"] == {"S.$": "$$.State.EnteredTime"}
+    for name in ("SetStatusBuilding", "SetStatusFailed"):   # never left stale
+        assert "REMOVE" in asl["States"][name]["Parameters"]["UpdateExpression"]
+        assert "migrationTargetVersion" in asl["States"][name]["Parameters"]["UpdateExpression"]
+        assert "migrationRebootingSince" in asl["States"][name]["Parameters"]["UpdateExpression"]
+
+
 def test_substitution_placeholders_present(asl):
     raw = json.dumps(asl)
     for placeholder in ("${DeviceTableName}", "${PrepareBuildFunctionArn}",
@@ -162,7 +189,8 @@ def inline_asl():
     return _load_inline_definition()
 
 
-@pytest.mark.parametrize("state_name", ["PrepareBuild", "PublishOta", "SetStatusPushing"])
+@pytest.mark.parametrize("state_name", ["PrepareBuild", "PublishOta", "SetStatusPushing",
+                                        "SetStatusBuilding", "SetStatusRebooting", "SetStatusFailed"])
 def test_inline_definition_matches_asl_file(asl, inline_asl, state_name):
     """The deployed (inline) definition must match the tested .asl.json on the
     states that carry the variant + build-env contract. Comment fields are
