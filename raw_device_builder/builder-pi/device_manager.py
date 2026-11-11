@@ -118,10 +118,12 @@ def esptool_write_flash_args(port: str, address_args: List[str]) -> List[str]:
         '--port', port,
         '--baud', '921600',
         '--chip', 'esp32s3',
-        'write_flash',
-        '--flash_mode', 'dio',
-        '--flash_freq', '80m',
-        '--flash_size', '8MB',
+        # esptool 5 names (hyphens); the old underscore names still work but
+        # print a deprecation warning on every flash.
+        'write-flash',
+        '--flash-mode', 'dio',
+        '--flash-freq', '80m',
+        '--flash-size', '8MB',
         *address_args,
     ]
 
@@ -255,7 +257,7 @@ class DeviceManager:
         """Read the ESP32 chip MAC/serial via esptool."""
         try:
             result = subprocess.run(
-                ['esptool', '--port', port, 'read_mac'],
+                ['esptool', '--port', port, 'read-mac'],
                 capture_output=True, text=True, timeout=15, env=esptool_env()
             )
             output = result.stdout + result.stderr

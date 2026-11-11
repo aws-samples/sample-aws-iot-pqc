@@ -101,7 +101,11 @@ def test_flash_writes_pieces_and_identity_at_partition_offsets(env, monkeypatch)
     assert dm.flash_firmware(slot.port, fw_dir) is True
 
     argv = run.argv
-    assert argv[:argv.index("write_flash")] == [
+    # esptool 5 command/option names (hyphens), not the deprecated underscores.
+    assert "write_flash" not in argv and "--flash_size" not in argv
+    assert argv[argv.index("write-flash"):argv.index("8MB") + 1] == [
+        "write-flash", "--flash-mode", "dio", "--flash-freq", "80m", "--flash-size", "8MB"]
+    assert argv[:argv.index("write-flash")] == [
         "esptool", "--port", slot.port, "--baud", "921600", "--chip", "esp32s3"]
     pairs = argv[argv.index("8MB") + 1:]
     assert [(o, os.path.basename(p)) for o, p in zip(pairs[::2], pairs[1::2])] == [
