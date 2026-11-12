@@ -169,6 +169,44 @@ the teardown/rebuild. Handle these to keep a from-scratch deploy clean:
   is reused across rebuilds (fine, just don't expect the stack to own it).
 
 Backlog candidates surfaced during rebuilds (not yet fixed):
+- **[TOP PRIORITY #1 — do BEFORE re:Invent] Firmware: retry a failed OTA
+  download and report OTA failures to the cloud.** Found Nov 11 on pqc-a in a
+  32-board simultaneous OTA burst (4.0.0 -> 5.0.0 via the dashboard migration
+  path): 1 of 32 boards (esp32-ED4220) received the OTA command, failed the
+  download or verification, and silently kept running the old image. A manual
+  retry then succeeded, so the failure was transient (most likely the S3
+  TCP/TLS connect or a stalled read with 32 downloads sharing one AP). At 1 in
+  32, a 100-board room should expect ~3 such boards per migration wave.
+  Today (`aws_iot_pqc_esp32/ota_updater.cpp`, otaTask) EVERY failure path
+  (TCP connect to S3, S3 TLS handshake, header read, bad content length,
+  download stall / sslErr, esp_ota_write/end, sha256 mismatch, signature or
+  chain check) just `ESP_LOGE`s, sets `g_otaPending = false` and gives up:
+  no retry, and nothing tells the cloud.
+  CURRENT MITIGATION (branch fix/migration-status-and-retry, dca6284): the
+  telemetry processor marks the migration `failed` when the board still reports
+  its old version MIGRATION_REBOOT_TIMEOUT_SEC (300 s) after the OTA was sent,
+  so the picker returns and the attendee can retry — but each failure costs
+  that attendee a 5-minute wait and a vague error.
+  Fix:
+  1. Retry the transient download failures (TCP connect, TLS handshake, header
+     read, stall/sslErr, short read) 2-3 times with backoff + jitter
+     (e.g. 2 s, 5 s, 10 s), re-using the presigned URLs (15-min expiry leaves
+     ample headroom). Also retry the small sig/signer GETs
+     (`otaHttpsGetToBuffer`). Do NOT retry integrity failures (sha256
+     mismatch, signature/chain/EKU refusal): those must fail closed at once.
+  2. Report the outcome: publish `dt/<thing>/lifecycle`
+     `{"status":"ota-failed","version":"<target>","stage":"download|verify|write",
+     "reason":"<short code>","attempts":N}` (QoS 1) on final failure, and keep the
+     normal online report after a successful reboot.
+  3. Cloud side: the telemetry processor sets migrationStatus=`failed` with a
+     readable migrationError from that message immediately (keep the 300 s
+     timeout as the backstop for boards that go silent).
+  Test: compile all three variants; on pqc-a force failures (e.g. a temporary
+  nftables drop of one board's S3 traffic on the Pi for N seconds to exercise
+  the retry; an expired/garbled URL for the hard-fail report; a bad signature
+  to confirm integrity failures do NOT retry); then repeat the 32-board burst
+  (`~/pqca-burst2.py`) and expect 32/32 with no timeouts. Roll out via the
+  shared firmware build + OTA. Own branch.
 - **[Firmware — WiFi/MQTT reconnect fix; do BEFORE re:Invent] Make devices
   recover by themselves from a weak or stalled link.** Observed in the Workshop
   Studio event account (838462636451, Nov 10) with 8 devices: the boards on the
@@ -217,7 +255,7 @@ Backlog candidates surfaced during rebuilds (not yet fixed):
   The reconnect fixes 1-4 above are still TODO. Note: with sleep off, a board
   that lost WiFi at 23:40 (two boards dropped together, so AP-side) was back on
   the broker in ~4 s.
-- **[TOP PRIORITY — own change, do on its own] OTA S3 download TLS: classical
+- **[HIGH PRIORITY — own change, do on its own] OTA S3 download TLS: classical
   key exchange and NO server authentication.** Found Sep 29. Two gaps in every
   sketch's OTA path (`otaCtx` + `otaHttpsGetToBuffer`):
   1. **No peer verification.** The sketches embed `S3_ROOT_CA` (Amazon Root CA 1)
