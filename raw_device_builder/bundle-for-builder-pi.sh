@@ -21,6 +21,8 @@
 # It contains only:
 #   - setup-ssm.sh   (installs + registers the SSM agent; activation baked in)
 #   - README.txt     (the two-step runbook)
+#   - wifi-survey.sh + wifi_survey.py  (optional, read-only 2.4 GHz channel
+#                      survey to run at the venue before the AP is built)
 #
 # Prerequisites:
 #   - AWS CLI with credentials for the workshop account
@@ -252,6 +254,11 @@ sed -i.bak "s|__REGION__|$REGION|g" "$BUNDLE_DIR/setup-ssm.sh"
 rm -f "$BUNDLE_DIR/setup-ssm.sh.bak"
 chmod +x "$BUNDLE_DIR/setup-ssm.sh"
 
+# The read-only venue WiFi survey, so it can run on the Pi before (or without)
+# SSM registration. The same files also run over SSM from the deploy host.
+cp "$SCRIPT_DIR/builder-pi/wifi-survey.sh" "$SCRIPT_DIR/builder-pi/wifi_survey.py" "$BUNDLE_DIR/"
+chmod +x "$BUNDLE_DIR/wifi-survey.sh"
+
 # A short README with the two-step runbook.
 cat > "$BUNDLE_DIR/README.txt" << README
 PQC Workshop — Builder-Pi bundle (SSM bootstrap only)
@@ -264,6 +271,7 @@ afterwards from the deploy host via SSM documents — nothing else runs here.
 On the Pi:
   unzip builder-pi-bundle.zip
   cd builder-pi-bundle
+  sudo ./wifi-survey.sh      # optional, at the venue: recommends the AP channel
   sudo ./setup-ssm.sh
 
 Then, from the deploy host (the machine with AWS credentials for this account):
@@ -274,6 +282,8 @@ That orchestrator waits for the Pi to come Online, then runs, in order:
   2. deploy-app           (GUI app from S3 + esptool/pyserial, config.json)
   3. configure-service    (udev, systemd; the GUI auto-starts)
   4. configure-wifi-ap    (the workshop 2.4 GHz WiFi AP)
+At a venue, add --channel auto to survey the air first and use the best channel
+(or --channel N with the number the survey recommended).
 
 When it finishes, open http://127.0.0.1:8080 in the Pi's own browser (its
 console or a KVM). The GUI listens on loopback only.
