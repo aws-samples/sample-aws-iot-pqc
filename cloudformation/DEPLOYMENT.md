@@ -112,7 +112,7 @@ cd cloudformation
 
 # Or supply the WiFi non-interactively via env vars:
 export WORKSHOP_WIFI_SSID='reinvent-pqc-iot-wifi'
-export WORKSHOP_WIFI_PASSWORD='@reinvent2026'   # WPA2 PSK, 8–63 chars
+export WORKSHOP_WIFI_PASSWORD='CHANGE_ME_workshop_wifi_password'   # WPA2 PSK, 8–63 chars
 ./deploy-workshop.sh <region> [--profile <name>]
 
 # Or via CLI flags (SSID is fine on the CLI; avoid the real password here):

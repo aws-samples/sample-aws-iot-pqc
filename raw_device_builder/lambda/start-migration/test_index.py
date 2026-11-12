@@ -19,7 +19,7 @@ REPO_ROOT = os.path.abspath(os.path.join(HERE, "..", "..", ".."))
 sys.path.insert(0, REPO_ROOT)
 from conftest import load_handler_module  # noqa: E402
 
-STATE_MACHINE_ARN = "arn:aws:states:us-east-1:087195661091:stateMachine:pqc-workshop-pqc-migration"
+STATE_MACHINE_ARN = "arn:aws:states:us-east-1:123456789012:stateMachine:pqc-workshop-pqc-migration"
 
 
 def test_starts_execution_and_returns_success(monkeypatch):
@@ -30,7 +30,7 @@ def test_starts_execution_and_returns_success(monkeypatch):
 
     def fake_start_execution(**kwargs):
         calls.update(kwargs)
-        return {"executionArn": "arn:aws:states:us-east-1:087195661091:execution:pqc-workshop-pqc-migration:run1"}
+        return {"executionArn": "arn:aws:states:us-east-1:123456789012:execution:pqc-workshop-pqc-migration:run1"}
 
     monkeypatch.setattr(mod.sfn, "start_execution", fake_start_execution, raising=True)
 
