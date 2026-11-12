@@ -634,7 +634,7 @@ Resources:
               "Parameters": {
                 "TableName": "${DeviceTableName}",
                 "Key": { "thingName": { "S.$": "$.thingName" } },
-                "UpdateExpression": "SET migrationStatus = :s REMOVE migrationError",
+                "UpdateExpression": "SET migrationStatus = :s REMOVE migrationError, migrationTargetVersion, migrationRebootingSince",
                 "ExpressionAttributeValues": { ":s": { "S": "building" } }
               },
               "ResultPath": null,
@@ -664,6 +664,7 @@ Resources:
               },
               "ResultPath": "$.prepare",
               "Next": "SetStatusPushing",
+              "Retry": [ { "ErrorEquals": ["Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.SdkClientException", "Lambda.TooManyRequestsException"], "IntervalSeconds": 2, "MaxAttempts": 5, "BackoffRate": 2.0, "JitterStrategy": "FULL" } ],
               "Catch": [ { "ErrorEquals": ["States.ALL"], "ResultPath": "$.error", "Next": "SetStatusFailed" } ]
             },
             "SetStatusPushing": {
@@ -707,8 +708,8 @@ Resources:
               "Parameters": {
                 "TableName": "${DeviceTableName}",
                 "Key": { "thingName": { "S.$": "$.thingName" } },
-                "UpdateExpression": "SET migrationStatus = :s",
-                "ExpressionAttributeValues": { ":s": { "S": "rebooting" } }
+                "UpdateExpression": "SET migrationStatus = :s, migrationTargetVersion = :v, migrationRebootingSince = :t",
+                "ExpressionAttributeValues": { ":s": { "S": "rebooting" }, ":v": { "S.$": "$.prepare.version" }, ":t": { "S.$": "$$.State.EnteredTime" } }
               },
               "ResultPath": null,
               "Next": "Succeed"
@@ -720,7 +721,7 @@ Resources:
               "Parameters": {
                 "TableName": "${DeviceTableName}",
                 "Key": { "thingName": { "S.$": "$.thingName" } },
-                "UpdateExpression": "SET migrationStatus = :s, migrationError = :e",
+                "UpdateExpression": "SET migrationStatus = :s, migrationError = :e REMOVE migrationTargetVersion, migrationRebootingSince",
                 "ExpressionAttributeValues": {
                   ":s": { "S": "failed" },
                   ":e": { "S.$": "States.Format('{}', $.error.Cause)" }

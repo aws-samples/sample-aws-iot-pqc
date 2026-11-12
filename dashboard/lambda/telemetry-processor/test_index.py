@@ -194,6 +194,94 @@ def test_reconciles_rebooting_on_online_lifecycle():
 
 
 @mock_aws
+def test_old_firmware_telemetry_does_not_end_the_migration():
+    """While the board downloads the OTA it still runs the OLD image and keeps
+    publishing telemetry. With a target version recorded, that telemetry must
+    not clear 'rebooting' (seen in the 32-board burst: the picker came back
+    ~30 s before the reboot)."""
+    tbl = _make_table()
+    _register(tbl, migrationStatus="rebooting", migrationTargetVersion="4.0.0-signer")
+    _env()
+    mod = load_handler_module(os.path.join(HERE, "index.py"), "telemetry_processor_target_old")
+    mod.handler({"device": "esp32-FC22E0", "message_id": 7, "firmware_version": "5.0.0-verified"}, None)
+    item = tbl.get_item(Key={"thingName": "esp32-FC22E0"})["Item"]
+    assert item["migrationStatus"] == "rebooting"
+    assert item["migrationTargetVersion"] == "4.0.0-signer"
+
+
+@mock_aws
+@pytest.mark.parametrize("event", [
+    {"device": "esp32-FC22E0", "message_id": 1, "firmware_version": "4.0.0-signer"},
+    {"thingName": "esp32-FC22E0", "status": "online", "firmware_version": "4.0.0-signer"},
+])
+def test_report_from_the_target_firmware_ends_the_migration(event):
+    tbl = _make_table()
+    _register(tbl, migrationStatus="rebooting", migrationError="", migrationTargetVersion="4.0.0-signer")
+    _env()
+    mod = load_handler_module(os.path.join(HERE, "index.py"), "telemetry_processor_target_new")
+    mod.handler(event, None)
+    item = tbl.get_item(Key={"thingName": "esp32-FC22E0"})["Item"]
+    for field in ("migrationStatus", "migrationError", "migrationTargetVersion"):
+        assert field not in item
+
+
+@mock_aws
+def test_report_without_a_version_does_not_clear_a_targeted_migration():
+    tbl = _make_table()
+    _register(tbl, migrationStatus="rebooting", migrationTargetVersion="4.0.0-signer")
+    _env()
+    mod = load_handler_module(os.path.join(HERE, "index.py"), "telemetry_processor_target_nover")
+    mod.handler({"device": "esp32-FC22E0", "message_id": 3}, None)
+    item = tbl.get_item(Key={"thingName": "esp32-FC22E0"})["Item"]
+    assert item["migrationStatus"] == "rebooting"
+
+
+def _ago(seconds):
+    """A Step Functions-style EnteredTime this many seconds in the past."""
+    import datetime as _dt
+    t = _dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(seconds=seconds)
+    return t.strftime("%Y-%m-%dT%H:%M:%S.") + f"{t.microsecond // 1000:03d}Z"
+
+
+@mock_aws
+def test_ota_that_never_installed_is_marked_failed_after_the_timeout():
+    """Seen in the 32-board burst: one board got the OTA command, failed the
+    download, and stayed on the old image. After the timeout the migration must
+    become 'failed' (picker back, error shown) instead of 'rebooting' forever."""
+    tbl = _make_table()
+    _register(tbl, migrationStatus="rebooting", migrationTargetVersion="4.0.0-signer",
+              migrationRebootingSince=_ago(301))
+    _env()
+    mod = load_handler_module(os.path.join(HERE, "index.py"), "telemetry_processor_stalled")
+    mod.handler({"device": "esp32-FC22E0", "message_id": 9, "firmware_version": "5.0.0-verified"}, None)
+    item = tbl.get_item(Key={"thingName": "esp32-FC22E0"})["Item"]
+    assert item["migrationStatus"] == "failed"
+    assert "still running 5.0.0-verified" in item["migrationError"]
+    assert "migrationTargetVersion" not in item and "migrationRebootingSince" not in item
+
+
+@mock_aws
+def test_ota_still_downloading_is_not_failed_early():
+    tbl = _make_table()
+    _register(tbl, migrationStatus="rebooting", migrationTargetVersion="4.0.0-signer",
+              migrationRebootingSince=_ago(90))
+    _env()
+    mod = load_handler_module(os.path.join(HERE, "index.py"), "telemetry_processor_downloading")
+    mod.handler({"device": "esp32-FC22E0", "message_id": 9, "firmware_version": "5.0.0-verified"}, None)
+    item = tbl.get_item(Key={"thingName": "esp32-FC22E0"})["Item"]
+    assert item["migrationStatus"] == "rebooting"
+
+
+@mock_aws
+def test_iso_ms_matches_the_step_functions_timestamp_format():
+    import datetime as _dt
+    _env()
+    mod = load_handler_module(os.path.join(HERE, "index.py"), "telemetry_processor_iso")
+    t = _dt.datetime(2026, 11, 11, 17, 56, 39, 782000)
+    assert mod._iso_ms(t) == "2026-11-11T17:56:39.782Z"
+
+
+@mock_aws
 def test_does_not_reconcile_building_or_pushing():
     """During building / pushing-ota the device is still on the OLD firmware and
     legitimately publishing telemetry — the picker must stay hidden, so these
